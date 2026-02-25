@@ -1,0 +1,39 @@
+#version 450
+
+#define INDEX_GATHER  0
+#define INDEX_SCATTER 1
+#define INDEX_SCATTER_ADD 2
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer SrcBuf { float src_data[]; };
+layout(set = 0, binding = 1) readonly  buffer IdxBuf { int   idx_data[]; };
+layout(set = 0, binding = 2) writeonly buffer DstBuf { float dst_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;           // number of output elements
+    uint op;
+    uint idx_size;    // size of index dimension
+    uint src_stride;  // stride of indexed dimension in source
+    uint dst_stride;  // stride in destination
+} params;
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= params.n) return;
+
+    if (params.op == INDEX_GATHER) {
+        uint out_elem = tid / params.dst_stride;
+        uint within   = tid % params.dst_stride;
+        int src_idx   = idx_data[out_elem % params.idx_size];
+        if (src_idx < 0) src_idx += int(params.src_stride);
+        uint src_pos  = uint(src_idx) * params.src_stride + within;
+        dst_data[tid] = src_data[src_pos];
+    } else if (params.op == INDEX_SCATTER) {
+        // Scatter: dst[indices[i]] = src[i]
+        int dst_idx = idx_data[tid / params.src_stride];
+        if (dst_idx < 0) dst_idx += int(params.idx_size);
+        uint dst_pos = uint(dst_idx) * params.dst_stride + (tid % params.src_stride);
+        dst_data[dst_pos] = src_data[tid];
+    }
+}

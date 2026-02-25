@@ -1,0 +1,51 @@
+#version 450
+
+#define QUANT_AFFINE   0
+#define DEQUANT_AFFINE 1
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer InBuf    { float in_data[];    };
+layout(set = 0, binding = 1) readonly buffer ScaleBuf { float scale_data[]; };
+layout(set = 0, binding = 2) readonly buffer BiasBuf  { float bias_data[];  };
+layout(set = 0, binding = 3) buffer          OutBuf   { uint  out_data[];   };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint op;
+    uint group_size;
+    uint bits;
+} params;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    uint group = idx / params.group_size;
+    float scale = scale_data[group];
+    float bias  = bias_data[group];
+
+    if (params.op == DEQUANT_AFFINE) {
+        uint elems_per_word = 32u / params.bits;
+        uint packed = out_data[idx / elems_per_word];
+        uint shift  = (idx % elems_per_word) * params.bits;
+        uint mask   = (1u << params.bits) - 1u;
+        uint q      = (packed >> shift) & mask;
+        float val   = float(q) * scale + bias;
+        out_data[idx] = floatBitsToUint(val);
+    } else {
+        float val = in_data[idx];
+        float q_float = (val - bias) / max(scale, 1e-8);
+        uint max_val = (1u << params.bits) - 1u;
+        uint q = clamp(uint(round(q_float)), 0u, max_val);
+        if (params.bits == 8u) {
+            out_data[idx] = q;
+        } else {
+            uint word_idx = idx / 8u;
+            uint nibble   = idx % 8u;
+            uint shift    = nibble * 4u;
+            uint mask     = ~(0xFu << shift);
+            out_data[word_idx] = (out_data[word_idx] & mask) | ((q & 0xFu) << shift);
+        }
+    }
+}

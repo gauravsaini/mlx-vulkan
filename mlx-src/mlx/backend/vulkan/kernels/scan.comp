@@ -1,0 +1,77 @@
+#version 450
+
+#define SCAN_ADD 0
+#define SCAN_MUL 1
+#define SCAN_MAX 2
+#define SCAN_MIN 3
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
+layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint scan_size;
+    uint n_scans;
+    uint op;
+    uint inclusive;  // 1=inclusive, 0=exclusive
+    uint reverse;    // 1=scan in reverse
+} params;
+
+shared float sdata[512];
+
+void main() {
+    uint scan_idx = gl_WorkGroupID.x;
+    uint tid      = gl_LocalInvocationID.x;
+
+    if (scan_idx >= params.n_scans) return;
+
+    uint base = scan_idx * params.scan_size;
+
+    // Load into shared memory
+    if (tid < params.scan_size) {
+        uint load_idx = params.reverse == 1u ? (params.scan_size - 1 - tid) : tid;
+        sdata[tid] = in_data[base + load_idx];
+    }
+    barrier();
+
+    // Up-sweep (reduce)
+    for (uint stride = 1; stride < params.scan_size; stride <<= 1) {
+        uint idx = (tid + 1) * stride * 2 - 1;
+        if (idx < params.scan_size) {
+            if (params.op == SCAN_ADD)      sdata[idx] += sdata[idx - stride];
+            else if (params.op == SCAN_MUL) sdata[idx] *= sdata[idx - stride];
+            else if (params.op == SCAN_MAX) sdata[idx]  = max(sdata[idx], sdata[idx - stride]);
+            else if (params.op == SCAN_MIN) sdata[idx]  = min(sdata[idx], sdata[idx - stride]);
+        }
+        barrier();
+    }
+
+    // Down-sweep
+    if (tid == 0) {
+        sdata[params.scan_size - 1] =
+            (params.op == SCAN_ADD) ? 0.0 :
+            (params.op == SCAN_MUL) ? 1.0 :
+            (params.op == SCAN_MAX) ? -3.402823466e+38 : 3.402823466e+38;
+    }
+    barrier();
+
+    for (uint stride = params.scan_size >> 1; stride > 0; stride >>= 1) {
+        uint idx = (tid + 1) * stride * 2 - 1;
+        if (idx < params.scan_size) {
+            float tmp = sdata[idx - stride];
+            sdata[idx - stride] = sdata[idx];
+            if (params.op == SCAN_ADD)      sdata[idx] = tmp + sdata[idx - stride];
+            else if (params.op == SCAN_MUL) sdata[idx] = tmp * sdata[idx - stride];
+            else if (params.op == SCAN_MAX) sdata[idx] = max(tmp, sdata[idx - stride]);
+            else if (params.op == SCAN_MIN) sdata[idx] = min(tmp, sdata[idx - stride]);
+        }
+        barrier();
+    }
+
+    if (tid < params.scan_size) {
+        uint store_idx = params.reverse == 1u ? (params.scan_size - 1 - tid) : tid;
+        out_data[base + store_idx] = sdata[tid];
+    }
+}

@@ -1,0 +1,58 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
+layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;        // reduction axis size
+    uint n_rows;   // number of independent softmax rows
+} params;
+
+shared float sdata[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+
+    if (row >= params.n_rows) return;
+
+    uint base = row * params.n;
+
+    // Pass 1: find max
+    float local_max = -3.402823466e+38;
+    for (uint i = tid; i < params.n; i += 256) {
+        local_max = max(local_max, in_data[base + i]);
+    }
+    sdata[tid] = local_max;
+    barrier();
+
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (tid < stride) sdata[tid] = max(sdata[tid], sdata[tid + stride]);
+        barrier();
+    }
+    float global_max = sdata[0];
+    barrier();
+
+    // Pass 2: compute exp sum
+    float local_sum = 0.0;
+    for (uint i = tid; i < params.n; i += 256) {
+        local_sum += exp(in_data[base + i] - global_max);
+    }
+    sdata[tid] = local_sum;
+    barrier();
+
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (tid < stride) sdata[tid] += sdata[tid + stride];
+        barrier();
+    }
+    float global_sum = sdata[0];
+    barrier();
+
+    // Pass 3: normalize
+    for (uint i = tid; i < params.n; i += 256) {
+        out_data[base + i] = exp(in_data[base + i] - global_max) / global_sum;
+    }
+}

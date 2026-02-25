@@ -1,0 +1,26 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer CondBuf { float cond_data[]; };
+layout(set = 0, binding = 1) readonly  buffer TrueBuf { float true_data[]; };
+layout(set = 0, binding = 2) readonly  buffer FalseBuf{ float false_data[];};
+layout(set = 0, binding = 3) writeonly buffer OutBuf  { float out_data[];  };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint cond_is_scalar;
+    uint true_is_scalar;
+    uint false_is_scalar;
+} params;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    float c = cond_data[params.cond_is_scalar  == 1u ? 0u : idx];
+    float t = true_data[params.true_is_scalar  == 1u ? 0u : idx];
+    float f = false_data[params.false_is_scalar == 1u ? 0u : idx];
+
+    out_data[idx] = c != 0.0 ? t : f;
+}

@@ -1,0 +1,17 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) writeonly buffer OutBuf { float out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    float start;
+    float step;
+} params;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+    out_data[idx] = params.start + float(idx) * params.step;
+}

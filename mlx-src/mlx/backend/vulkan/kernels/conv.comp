@@ -1,0 +1,51 @@
+#version 450
+
+// Simplified 2D convolution (depthwise or small kernels)
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf     { float in_data[];     };
+layout(set = 0, binding = 1) readonly  buffer FilterBuf { float filter_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf    { float out_data[];    };
+
+layout(push_constant) uniform Params {
+    uint N;   // batch
+    uint C;   // channels
+    uint H;   // input height
+    uint W;   // input width
+    uint KH;  // kernel height
+    uint KW;  // kernel width
+    uint OH;  // output height
+    uint OW;  // output width
+    uint SH;  // stride height
+    uint SW;  // stride width
+    uint PH;  // padding height
+    uint PW;  // padding width
+    uint OC;  // output channels (filters)
+} params;
+
+void main() {
+    uint oc = gl_GlobalInvocationID.z;
+    uint oh = gl_GlobalInvocationID.y;
+    uint ow = gl_GlobalInvocationID.x;
+
+    if (oc >= params.OC || oh >= params.OH || ow >= params.OW) return;
+
+    // For batch=1 simplification
+    float sum = 0.0;
+    for (uint ic = 0; ic < params.C; ic++) {
+        for (uint kh = 0; kh < params.KH; kh++) {
+            for (uint kw = 0; kw < params.KW; kw++) {
+                int ih = int(oh * params.SH) + int(kh) - int(params.PH);
+                int iw = int(ow * params.SW) + int(kw) - int(params.PW);
+                if (ih >= 0 && ih < int(params.H) && iw >= 0 && iw < int(params.W)) {
+                    float inp = in_data[ic * params.H * params.W + uint(ih) * params.W + uint(iw)];
+                    float flt = filter_data[oc * params.C * params.KH * params.KW +
+                                           ic * params.KH * params.KW +
+                                           kh * params.KW + kw];
+                    sum += inp * flt;
+                }
+            }
+        }
+    }
+    out_data[oc * params.OH * params.OW + oh * params.OW + ow] = sum;
+}

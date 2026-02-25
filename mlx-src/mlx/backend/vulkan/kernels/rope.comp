@@ -1,0 +1,32 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
+layout(set = 0, binding = 1) readonly  buffer CosBuf { float cos_data[]; };
+layout(set = 0, binding = 2) readonly  buffer SinBuf { float sin_data[]; };
+layout(set = 0, binding = 3) writeonly buffer OutBuf { float out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;         // total elements
+    uint D;         // dimension (must be even)
+    uint n_heads;
+} params;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n / 2) return;
+
+    // Each thread handles a pair (x, x + D/2)
+    uint pos  = idx / (params.D / 2);
+    uint dim  = idx % (params.D / 2);
+    uint base = pos * params.D;
+
+    float x1 = in_data[base + dim];
+    float x2 = in_data[base + dim + params.D / 2];
+    float c  = cos_data[dim];
+    float s  = sin_data[dim];
+
+    out_data[base + dim]             = x1 * c - x2 * s;
+    out_data[base + dim + params.D / 2] = x1 * s + x2 * c;
+}

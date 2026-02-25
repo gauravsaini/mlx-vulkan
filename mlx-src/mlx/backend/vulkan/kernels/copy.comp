@@ -1,0 +1,88 @@
+#version 450
+
+// Copy type constants
+#define COPY_SCALAR          0
+#define COPY_VECTOR          1
+#define COPY_GENERAL         2
+#define COPY_GENERAL_GENERAL 3
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer SrcBuf  { uint src_data[]; };
+layout(set = 0, binding = 1) buffer          DstBuf  { uint dst_data[]; };
+layout(set = 0, binding = 2) readonly buffer MetaBuf { int  meta_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint copy_type;
+    uint ndim;
+    uint src_stride0;
+    uint dst_stride0;
+    uint elem_size;
+} params;
+
+uint strided_offset_src(uint idx) {
+    uint offset = 0u;
+    uint tmp = idx;
+    for (int d = int(params.ndim) - 1; d >= 0; d--) {
+        uint shape_d  = uint(meta_data[d]);
+        uint stride_d = uint(meta_data[int(params.ndim) + d]);
+        offset += (tmp % shape_d) * stride_d;
+        tmp /= shape_d;
+    }
+    return offset;
+}
+
+uint strided_offset_dst(uint idx) {
+    uint offset = 0u;
+    uint tmp = idx;
+    for (int d = int(params.ndim) - 1; d >= 0; d--) {
+        uint shape_d  = uint(meta_data[d]);
+        uint stride_d = uint(meta_data[2 * int(params.ndim) + d]);
+        offset += (tmp % shape_d) * stride_d;
+        tmp /= shape_d;
+    }
+    return offset;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    uint src_idx = 0u;
+    uint dst_idx = 0u;
+
+    if (params.copy_type == COPY_SCALAR) {
+        src_idx = 0u;
+        dst_idx = idx;
+    } else if (params.copy_type == COPY_VECTOR) {
+        src_idx = idx;
+        dst_idx = idx;
+    } else if (params.copy_type == COPY_GENERAL) {
+        src_idx = strided_offset_src(idx);
+        dst_idx = idx;
+    } else {
+        src_idx = strided_offset_src(idx);
+        dst_idx = strided_offset_dst(idx);
+    }
+
+    if (params.elem_size == 4u) {
+        dst_data[dst_idx] = src_data[src_idx];
+    } else if (params.elem_size == 8u) {
+        dst_data[dst_idx * 2u]      = src_data[src_idx * 2u];
+        dst_data[dst_idx * 2u + 1u] = src_data[src_idx * 2u + 1u];
+    } else if (params.elem_size == 2u) {
+        uint src_word = src_data[src_idx / 2u];
+        uint val = ((src_idx & 1u) == 0u) ? (src_word & 0xFFFFu) : (src_word >> 16u);
+        if ((dst_idx & 1u) == 0u) {
+            dst_data[dst_idx / 2u] = (dst_data[dst_idx / 2u] & 0xFFFF0000u) | val;
+        } else {
+            dst_data[dst_idx / 2u] = (dst_data[dst_idx / 2u] & 0x0000FFFFu) | (val << 16u);
+        }
+    } else {
+        uint src_word = src_data[src_idx / 4u];
+        uint val = (src_word >> ((src_idx & 3u) * 8u)) & 0xFFu;
+        uint shift = (dst_idx & 3u) * 8u;
+        dst_data[dst_idx / 4u] = (dst_data[dst_idx / 4u] & ~(0xFFu << shift)) | (val << shift);
+    }
+}

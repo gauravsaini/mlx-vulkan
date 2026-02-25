@@ -1,0 +1,79 @@
+#version 450
+
+// Binary operation constants
+#define BINARY_ADD          0
+#define BINARY_SUB          1
+#define BINARY_MUL          2
+#define BINARY_DIV          3
+#define BINARY_MAX          4
+#define BINARY_MIN          5
+#define BINARY_POW          6
+#define BINARY_EQUAL        7
+#define BINARY_NOT_EQUAL    8
+#define BINARY_LESS         9
+#define BINARY_LESS_EQ      10
+#define BINARY_GREATER      11
+#define BINARY_GREATER_EQ   12
+#define BINARY_LOGADDEXP    13
+#define BINARY_ARCTAN2      14
+#define BINARY_REMAINDER    15
+#define BINARY_FLOOR_DIV    16
+#define BINARY_LOGICAL_AND  17
+#define BINARY_LOGICAL_OR   18
+#define BINARY_BITWISE_AND  19
+#define BINARY_BITWISE_OR   20
+#define BINARY_BITWISE_XOR  21
+#define BINARY_LEFT_SHIFT   22
+#define BINARY_RIGHT_SHIFT  23
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InA  { float a_data[]; };
+layout(set = 0, binding = 1) readonly  buffer InB  { float b_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutC { float c_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint op;
+    uint a_is_scalar; // 1 if a has size 1 (broadcast)
+    uint b_is_scalar; // 1 if b has size 1 (broadcast)
+} params;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    uint ai = params.a_is_scalar == 1u ? 0u : idx;
+    uint bi = params.b_is_scalar == 1u ? 0u : idx;
+
+    float a = a_data[ai];
+    float b = b_data[bi];
+    float result;
+
+    switch (params.op) {
+        case BINARY_ADD:        result = a + b; break;
+        case BINARY_SUB:        result = a - b; break;
+        case BINARY_MUL:        result = a * b; break;
+        case BINARY_DIV:        result = a / b; break;
+        case BINARY_MAX:        result = max(a, b); break;
+        case BINARY_MIN:        result = min(a, b); break;
+        case BINARY_POW:        result = pow(a, b); break;
+        case BINARY_EQUAL:      result = float(a == b); break;
+        case BINARY_NOT_EQUAL:  result = float(a != b); break;
+        case BINARY_LESS:       result = float(a < b); break;
+        case BINARY_LESS_EQ:    result = float(a <= b); break;
+        case BINARY_GREATER:    result = float(a > b); break;
+        case BINARY_GREATER_EQ: result = float(a >= b); break;
+        case BINARY_LOGADDEXP: {
+            float m = max(a, b);
+            result = m + log(exp(a - m) + exp(b - m));
+            break;
+        }
+        case BINARY_ARCTAN2:    result = atan(a, b); break;
+        case BINARY_REMAINDER:  result = mod(a, b); break;
+        case BINARY_FLOOR_DIV:  result = floor(a / b); break;
+        default: result = a + b; break;
+    }
+
+    c_data[idx] = result;
+}

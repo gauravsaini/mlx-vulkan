@@ -1,0 +1,52 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
+layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint reduce_size;
+    uint n_outputs;
+} params;
+
+shared float sdata[256];
+
+void main() {
+    uint out_idx = gl_WorkGroupID.x;
+    uint tid     = gl_LocalInvocationID.x;
+    if (out_idx >= params.n_outputs) return;
+
+    uint base = out_idx * params.reduce_size;
+
+    // Find max
+    float local_max = -3.402823466e+38;
+    for (uint i = tid; i < params.reduce_size; i += 256) {
+        local_max = max(local_max, in_data[base + i]);
+    }
+    sdata[tid] = local_max;
+    barrier();
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] = max(sdata[tid], sdata[tid + s]);
+        barrier();
+    }
+    float global_max = sdata[0];
+    barrier();
+
+    // Sum exp(x - max)
+    float local_sum = 0.0;
+    for (uint i = tid; i < params.reduce_size; i += 256) {
+        local_sum += exp(in_data[base + i] - global_max);
+    }
+    sdata[tid] = local_sum;
+    barrier();
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        barrier();
+    }
+
+    if (tid == 0) {
+        out_data[out_idx] = log(sdata[0]) + global_max;
+    }
+}

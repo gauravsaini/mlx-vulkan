@@ -1,0 +1,128 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+// Unary operation constants
+#define UNARY_ABS       0
+#define UNARY_NEG       1
+#define UNARY_SIGN      2
+#define UNARY_SQRT      3
+#define UNARY_RSQRT     4
+#define UNARY_SQUARE    5
+#define UNARY_EXP       6
+#define UNARY_EXPM1     7
+#define UNARY_LOG       8
+#define UNARY_LOG1P     9
+#define UNARY_LOG2      10
+#define UNARY_SIN       11
+#define UNARY_COS       12
+#define UNARY_TAN       13
+#define UNARY_SINH      14
+#define UNARY_COSH      15
+#define UNARY_TANH      16
+#define UNARY_ARCSIN    17
+#define UNARY_ARCCOS    18
+#define UNARY_ARCTAN    19
+#define UNARY_ARCSINH   20
+#define UNARY_ARCCOSH   21
+#define UNARY_ARCTANH   22
+#define UNARY_CEIL      23
+#define UNARY_FLOOR     24
+#define UNARY_ROUND     25
+#define UNARY_ERF       26
+#define UNARY_ERFINV    27
+#define UNARY_SIGMOID   28
+#define UNARY_RELU      29
+#define UNARY_CONJUGATE 30
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
+layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint op;
+} params;
+
+// Error function approximation (Horner's method)
+float erf_approx(float x) {
+    float t = 1.0 / (1.0 + 0.3275911 * abs(x));
+    float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+                      - 0.284496736) * t + 0.254829592) * t * exp(-x * x);
+    return sign(x) * y;
+}
+
+// Inverse erf using Newton's method
+float erfinv_approx(float x) {
+    float w = -log((1.0 - x) * (1.0 + x));
+    float p;
+    if (w < 5.0) {
+        w -= 2.5;
+        p = 2.81022636e-08;
+        p = 3.43273939e-07 + p * w;
+        p = -3.5233877e-06 + p * w;
+        p = -4.39150654e-06 + p * w;
+        p = 0.00021858087 + p * w;
+        p = -0.00125372503 + p * w;
+        p = -0.00417768164 + p * w;
+        p = 0.246640727 + p * w;
+        p = 1.50140941 + p * w;
+    } else {
+        w = sqrt(w) - 3.0;
+        p = -0.000200214257;
+        p = 0.000100950558 + p * w;
+        p = 0.00134934322 + p * w;
+        p = -0.00367342844 + p * w;
+        p = 0.00573950773 + p * w;
+        p = -0.0076224613 + p * w;
+        p = 0.00943887047 + p * w;
+        p = 1.00167406 + p * w;
+        p = 2.83297682 + p * w;
+    }
+    return p * x;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    float val = in_data[idx];
+    float result;
+
+    switch (params.op) {
+        case UNARY_ABS:     result = abs(val); break;
+        case UNARY_NEG:     result = -val; break;
+        case UNARY_SIGN:    result = sign(val); break;
+        case UNARY_SQRT:    result = sqrt(val); break;
+        case UNARY_RSQRT:   result = inversesqrt(val); break;
+        case UNARY_SQUARE:  result = val * val; break;
+        case UNARY_EXP:     result = exp(val); break;
+        case UNARY_EXPM1:   result = exp(val) - 1.0; break;
+        case UNARY_LOG:     result = log(val); break;
+        case UNARY_LOG1P:   result = log(1.0 + val); break;
+        case UNARY_LOG2:    result = log2(val); break;
+        case UNARY_SIN:     result = sin(val); break;
+        case UNARY_COS:     result = cos(val); break;
+        case UNARY_TAN:     result = tan(val); break;
+        case UNARY_SINH:    result = sinh(val); break;
+        case UNARY_COSH:    result = cosh(val); break;
+        case UNARY_TANH:    result = tanh(val); break;
+        case UNARY_ARCSIN:  result = asin(val); break;
+        case UNARY_ARCCOS:  result = acos(val); break;
+        case UNARY_ARCTAN:  result = atan(val); break;
+        case UNARY_ARCSINH: result = log(val + sqrt(val*val + 1.0)); break;
+        case UNARY_ARCCOSH: result = log(val + sqrt(val*val - 1.0)); break;
+        case UNARY_ARCTANH: result = 0.5 * log((1.0 + val) / (1.0 - val)); break;
+        case UNARY_CEIL:    result = ceil(val); break;
+        case UNARY_FLOOR:   result = floor(val); break;
+        case UNARY_ROUND:   result = round(val); break;
+        case UNARY_ERF:     result = erf_approx(val); break;
+        case UNARY_ERFINV:  result = erfinv_approx(val); break;
+        case UNARY_SIGMOID: result = 1.0 / (1.0 + exp(-val)); break;
+        case UNARY_RELU:    result = max(0.0, val); break;
+        case UNARY_CONJUGATE: result = val; break; // real types: noop
+        default: result = val; break;
+    }
+
+    out_data[idx] = result;
+}

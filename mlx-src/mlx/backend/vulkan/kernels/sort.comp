@@ -1,0 +1,59 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer DataBuf { float data[]; };
+layout(set = 0, binding = 1) buffer IdxBuf  { uint  indices[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint sort_size;
+    uint n_sorts;
+    uint ascending;  // 1=ascending, 0=descending
+    uint with_index; // 1=also sort indices
+} params;
+
+// Bitonic sort - each workgroup sorts one subarray
+// Requires sort_size <= 2 * local_size_x and sort_size is power of 2
+shared float s_data[512];
+shared uint  s_idxs[512];
+
+void main() {
+    uint sort_idx = gl_WorkGroupID.x;
+    uint tid      = gl_LocalInvocationID.x;
+
+    if (sort_idx >= params.n_sorts) return;
+    uint base = sort_idx * params.sort_size;
+
+    // Load
+    if (tid < params.sort_size) {
+        s_data[tid] = (base + tid < params.n) ? data[base + tid] : 3.402823466e+38;
+        s_idxs[tid] = tid;
+    }
+    barrier();
+
+    // Bitonic sort
+    for (uint k = 2; k <= params.sort_size; k <<= 1) {
+        for (uint j = k >> 1; j > 0; j >>= 1) {
+            uint i = tid;
+            uint l = i ^ j;
+            if (l > i && i < params.sort_size) {
+                bool ascending_dir = ((i & k) == 0) == (params.ascending == 1u);
+                bool swap = (s_data[i] > s_data[l]) == ascending_dir;
+                if (swap) {
+                    float tmp_d = s_data[i]; s_data[i] = s_data[l]; s_data[l] = tmp_d;
+                    uint  tmp_i = s_idxs[i]; s_idxs[i] = s_idxs[l]; s_idxs[l] = tmp_i;
+                }
+            }
+            barrier();
+        }
+    }
+
+    // Store
+    if (tid < params.sort_size && base + tid < params.n) {
+        data[base + tid] = s_data[tid];
+        if (params.with_index == 1u) {
+            indices[base + tid] = s_idxs[tid];
+        }
+    }
+}

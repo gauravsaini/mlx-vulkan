@@ -1,0 +1,33 @@
+#version 450
+
+// Two-output binary operations (e.g., divmod)
+#define BINARY_TWO_DIVMOD 0
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InA   { float a_data[];   };
+layout(set = 0, binding = 1) readonly  buffer InB   { float b_data[];   };
+layout(set = 0, binding = 2) writeonly buffer Out0  { float out0_data[]; };
+layout(set = 0, binding = 3) writeonly buffer Out1  { float out1_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint op;
+    uint a_is_scalar;
+    uint b_is_scalar;
+} params;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    uint ai = params.a_is_scalar == 1u ? 0u : idx;
+    uint bi = params.b_is_scalar == 1u ? 0u : idx;
+    float a = a_data[ai];
+    float b = b_data[bi];
+
+    if (params.op == BINARY_TWO_DIVMOD) {
+        out0_data[idx] = floor(a / b);  // quotient
+        out1_data[idx] = mod(a, b);     // remainder
+    }
+}
