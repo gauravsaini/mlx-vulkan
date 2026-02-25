@@ -1330,7 +1330,59 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  assert(inputs.size() == 3);
+  auto& s = stream();
+  auto& d = vulkan::device(s.device);
+
+  const array& a = inputs[0];
+  const array& b = inputs[1];
+  const array& c = inputs[2];
+
+  if (a.size() == 0 || b.size() == 0) {
+    if (beta_ == 1.0f) {
+      array zero_arr(0.0f, out.dtype());
+      dispatch_binary(c, zero_arr, out, 0 /* Add */, s);
+      d.add_temporary(std::move(zero_arr), s.index);
+    } else {
+      array beta_arr(beta_, out.dtype());
+      dispatch_binary(c, beta_arr, out, 2 /* Mul */, s);
+      d.add_temporary(std::move(beta_arr), s.index);
+    }
+    return;
+  }
+
+  array temp_ab(out.shape(), out.dtype(), nullptr, {});
+  Matmul(s).eval_gpu({a, b}, temp_ab);
+
+  array scaled_ab = temp_ab;
+  if (alpha_ != 1.0f) {
+    array alpha_arr(alpha_, out.dtype());
+    array temp(out.shape(), out.dtype(), nullptr, {});
+    dispatch_binary(temp_ab, alpha_arr, temp, 2 /* Mul */, s);
+    d.add_temporary(std::move(alpha_arr), s.index);
+    scaled_ab = temp;
+  }
+
+  array scaled_c = c;
+  if (beta_ != 1.0f && beta_ != 0.0f) {
+    array beta_arr(beta_, out.dtype());
+    array temp(out.shape(), out.dtype(), nullptr, {});
+    dispatch_binary(c, beta_arr, temp, 2 /* Mul */, s);
+    d.add_temporary(std::move(beta_arr), s.index);
+    scaled_c = temp;
+  }
+
+  if (beta_ == 0.0f) {
+    array zero_arr(0.0f, out.dtype());
+    dispatch_binary(scaled_ab, zero_arr, out, 0 /* Add */, s);
+    d.add_temporary(std::move(zero_arr), s.index);
+  } else {
+    dispatch_binary(scaled_ab, scaled_c, out, 0 /* Add */, s);
+  }
+
+  d.add_temporary(std::move(temp_ab), s.index);
+  if (alpha_ != 1.0f) d.add_temporary(std::move(scaled_ab), s.index);
+  if (beta_ != 1.0f && beta_ != 0.0f) d.add_temporary(std::move(scaled_c), s.index);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1338,7 +1390,110 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  assert(inputs.size() == 2);
+  auto& s = stream();
+  auto& dev = vulkan::device(s.device);
+
+  const array& in = inputs[0];
+  const array& wt = inputs[1];
+
+  // The simplified conv.comp shader currently supports basic 2D convs with:
+  // - batch size = 1
+  // - groups = 1
+  // - no dilation
+  // - 4D input shapes (N, H, W, C)
+  // - Weight shapes (O, H, W, I)
+  // For anything more complex (1D, 3D, batched, dilated, groups), we fallback to CPU.
+  bool can_use_gpu = true;
+  if (in.ndim() != 4 || wt.ndim() != 4) can_use_gpu = false;
+  if (groups_ != 1) can_use_gpu = false;
+  if (in.shape(0) != 1) can_use_gpu = false; // batch > 1
+  for (auto d : kernel_dilation_) if (d != 1) can_use_gpu = false;
+  for (auto d : input_dilation_) if (d != 1) can_use_gpu = false;
+
+  if (!can_use_gpu) {
+    eval(inputs, out);
+    return;
+  }
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline("conv", layout, ds_layout, 3, 52);
+  if (pipeline == VK_NULL_HANDLE) {
+      eval(inputs, out);
+      return;
+  }
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  VkBuffer in_buf = vulkan::get_buffer(in);
+  VkBuffer wt_buf = vulkan::get_buffer(wt);
+  VkBuffer out_buf = vulkan::get_buffer(out);
+
+  VkDescriptorBufferInfo infos[3] = {
+      {in_buf, 0, VK_WHOLE_SIZE},
+      {wt_buf, 0, VK_WHOLE_SIZE},
+      {out_buf, 0, VK_WHOLE_SIZE}
+  };
+
+  VkWriteDescriptorSet writes[3]{};
+  for (int i = 0; i < 3; i++) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+  }
+  vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
+
+  // Extracted shapes based on NHWC assumed layout
+  uint32_t N = in.shape(0);
+  uint32_t H = in.shape(1);
+  uint32_t W = in.shape(2);
+  uint32_t C = in.shape(3);
+
+  uint32_t OC = wt.shape(0);
+  uint32_t KH = wt.shape(1);
+  uint32_t KW = wt.shape(2);
+
+  uint32_t OH = out.shape(1);
+  uint32_t OW = out.shape(2);
+
+  uint32_t SH = kernel_strides_[0];
+  uint32_t SW = kernel_strides_[1];
+  uint32_t PH = padding_lo_[0];
+  uint32_t PW = padding_lo_[1];
+
+  struct PushConst {
+      uint32_t N, C, H, W, KH, KW;
+      uint32_t OH, OW, SH, SW, PH, PW, OC;
+  } pc{N, C, H, W, KH, KW, OH, OW, SH, SW, PH, PW, OC};
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+  uint32_t grid_x = vulkan::div_ceil(OW, 16u);
+  uint32_t grid_y = vulkan::div_ceil(OH, 16u);
+  uint32_t grid_z = vulkan::div_ceil(OC, 1u);
+
+  vkCmdDispatch(cmd, grid_x, grid_y, grid_z);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1346,7 +1501,83 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  assert(inputs.size() == 1);
+  auto& keys = inputs[0];
+  size_t num_keys = keys.size() / 2;
+
+  size_t elems_per_key = out.size() / num_keys;
+  size_t bytes_per_key = out.itemsize() * elems_per_key;
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0) {
+    return;
+  }
+
+  uint32_t out_per_key = (bytes_per_key + 4 - 1) / 4;
+  uint32_t half_size = out_per_key / 2;
+  uint32_t odd = out_per_key % 2;
+
+  auto& s = stream();
+  auto& encoder = vulkan::get_command_encoder(s);
+  auto& dev = vulkan::device(s.device);
+
+  encoder.op_count++;
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline("rbits", layout, ds_layout, 2, 12);
+  if (pipeline == VK_NULL_HANDLE) {
+      eval(inputs, out); // fallback
+      return;
+  }
+
+  uint32_t grid_y = half_size + odd;
+  uint32_t grid_x = vulkan::div_ceil(num_keys, 256u);
+  if (grid_y == 0) grid_y = 1; // avoid zero dispatch
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  VkBuffer keys_buf = vulkan::get_buffer(keys);
+  VkBuffer out_buf = vulkan::get_buffer(out);
+
+  VkDescriptorBufferInfo keys_info{keys_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo out_info{out_buf, 0, VK_WHOLE_SIZE};
+
+  VkWriteDescriptorSet writes[2]{};
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[0].dstSet = ds;
+  writes[0].dstBinding = 0;
+  writes[0].descriptorCount = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  writes[0].pBufferInfo = &keys_info;
+
+  writes[1] = writes[0];
+  writes[1].dstBinding = 1;
+  writes[1].pBufferInfo = &out_info;
+
+  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
+
+  struct PushConst {
+    uint32_t odd;
+    uint32_t bytes_per_key;
+    uint32_t ndim;
+  } pc{odd, static_cast<uint32_t>(bytes_per_key), static_cast<uint32_t>(keys.ndim())};
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+  vkCmdDispatch(cmd, grid_x, grid_y, 1);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

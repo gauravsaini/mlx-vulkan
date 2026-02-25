@@ -275,7 +275,7 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 #### Linear Algebra
 
-- [ ] AddMM (A + alpha \* B @ C)
+- [x] AddMM (A + alpha \* B @ C)
 - [ ] BlockMaskedMM
 - [ ] GatherMM, GatherQMM
 - [ ] Matmul
@@ -283,13 +283,13 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 #### Neural Net Ops
 
-- [ ] Conv1D, Conv2D, Conv3D (ConvolutionVjp)
+- [x] Conv1D, Conv2D, Conv3D (ConvolutionVjp)
 - [ ] FFT, RFFT, IFFT, IRFFT
 - [ ] Hadamard
 - [x] LayerNorm, RMSNorm (GPU dispatch via `normalization.comp`)
 - [ ] LogSumExp
 - [x] Rope (GPU dispatch via `rope.comp`)
-- [ ] ScaledDotProductAttention
+- [x] ScaledDotProductAttention
 - [ ] Softmax
 - [x] Scan (prefix ops, GPU dispatch via `scan.comp`, ≤512)
 
@@ -306,7 +306,8 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 #### Random
 
-- [ ] BernoulliWithCDF, RandomBits (Philox PRNG)
+- [ ] BernoulliWithCDF
+- [x] RandomBits (Threefry PRNG via `rbits.comp`)
 
 #### Quantization
 

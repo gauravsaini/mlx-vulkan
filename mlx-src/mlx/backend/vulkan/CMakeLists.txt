@@ -49,6 +49,7 @@ compile_shader(logsumexp)
 compile_shader(random)
 compile_shader(quantized)
 compile_shader(conv)
+compile_shader(rbits)
 
 add_custom_target(vulkan_shaders ALL DEPENDS ${SPIRV_OUTPUTS})
 add_dependencies(mlx vulkan_shaders)

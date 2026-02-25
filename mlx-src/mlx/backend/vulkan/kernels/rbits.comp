@@ -1,0 +1,60 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InKeys { uint keys[]; };
+layout(set = 0, binding = 1) writeonly buffer OutBuf { uint out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint odd;
+    uint bytes_per_key;
+    uint ndim;
+} params;
+
+// Threefry 2x32 rotation constants
+const uint rot_0[4] = uint[](13u, 15u, 26u, 6u);
+const uint rot_1[4] = uint[](17u, 29u, 16u, 24u);
+
+uvec2 threefry2x32_hash(uvec2 key, uvec2 count) {
+    uint ks[3] = uint[](key.x, key.y, key.x ^ key.y ^ 0x1BD11BDAu);
+
+    uvec2 v = uvec2(count.x + ks[0], count.y + ks[1]);
+
+    for (int i = 0; i < 5; ++i) {
+        for (int r_idx = 0; r_idx < 4; ++r_idx) {
+            uint r = (i % 2 == 0) ? rot_0[r_idx] : rot_1[r_idx];
+            v.x += v.y;
+            v.y = (v.y << r) | (v.y >> (32u - r));
+            v.y ^= v.x;
+        }
+        v.x += ks[(i + 1) % 3];
+        v.y += ks[(i + 2) % 3] + uint(i) + 1u;
+    }
+
+    return v;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x; // index of the key
+    uint y   = gl_GlobalInvocationID.y; // index of the pair of outputs per key
+
+    uint half_size = gl_NumWorkGroups.y * gl_WorkGroupSize.y - params.odd;
+    
+    uint kidx = 2u * idx;
+    uvec2 key = uvec2(keys[kidx], keys[kidx + 1u]);
+    
+    bool drop_last = (params.odd == 1u) && (y == half_size);
+    
+    uvec2 count = uvec2(y, drop_last ? 0u : y + gl_NumWorkGroups.y * gl_WorkGroupSize.y);
+    uvec2 bits = threefry2x32_hash(key, count);
+    
+    uint out_idx_base = (idx * params.bytes_per_key) / 4u;
+    
+    uint out_idx_0 = out_idx_base + y;
+    out_data[out_idx_0] = bits.x;
+    
+    if (!drop_last) {
+        uint out_idx_1 = out_idx_base + (drop_last ? 0u : y + gl_NumWorkGroups.y * gl_WorkGroupSize.y);
+        out_data[out_idx_1] = bits.y;
+    }
+}
