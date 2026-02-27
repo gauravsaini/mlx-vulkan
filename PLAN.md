@@ -13,19 +13,24 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
 **Current device**: Apple M1 via MoltenVK (macOS development)
-**Last verified**: 2026-02-27
+**Last verified**: 2026-02-28
 
 ---
 
-## Build Status (as of 2026-02-27)
+## Build Status (as of 2026-02-28)
 
 | Step                                                                                   | Status                  |
 | -------------------------------------------------------------------------------------- | ----------------------- |
 | `cmake -B build_vulkan -DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CPU=ON` | ✅ PASSES               |
 | `cmake --build build_vulkan -j4`                                                       | ✅ PASSES (zero errors) |
-| All 24 SPIR-V shaders compiled (incl. fft_stockham/rader/bluestein + hadamard)        | ✅                      |
+| All SPIR-V shaders pass `spirv-val`                                                    | ✅                      |
 | Python bindings (`mlx.core` importable)                                                | ✅                      |
+| `test_stage13_indexing.py` (Gather/GatherAxis/ScatterAxis)                             | ✅ 7/7 PASS             |
+| `test_stage14_sort.py` (Sort)                                                          | ✅ 6/6 PASS             |
+| `test_stage15_scan.py` (Scan / prefix ops)                                             | ✅ 5/5 PASS             |
+| `test_stage16_nn_extended.py` (LayerNorm, RMSNorm, RoPE, SoftMax)                     | ✅ 8/8 PASS             |
 | `test_stage17_fft.py` (FFT/RFFT)                                                      | ✅ 3/3 PASS             |
+| `test_stage18_concat.py` (Concatenate)                                                 | ✅ 3/3 PASS             |
 
 **Post-build workflow** (required after any `.cpp` change):
 
@@ -71,11 +76,24 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 10. **RFFT support**: Added binding 2 (`float src_real[]`) to `fft.comp`. When `params.real==1 && params.inv==0`, loads float input as `vec2(x, 0.0)` and truncates output to `n/2+1`. Removed Metal-specific 2-RFFT batch halving from `fft.cpp`.
 
+### Fixed (2026-02-28) — Gather/Scatter ND + Scan GPU dispatch
+
+11. **Gather::eval_gpu — only handled 1D axis=0**: `mx.take(2D_array, idx, axis=1)` threw "Fallback to eval_cpu is unsupported". Fixed: added INDEX_GATHER_GEN (op=3) to `indexing.comp` — general ND gather using `j = tid / slice_total`, `outer_off = within / inner`, `inner_off = within % inner`, `src_pos = outer_off * src_outer_stride + idx[j] * inner + inner_off`. Now all single-axis gather cases are handled on GPU.
+
+12. **GatherAxis/ScatterAxis push constant size mismatch**: Both functions were calling `get_pipeline("indexing", ..., 3, 32)` with a 9- or 8-field struct, but the shader declared 9 fields = 36 bytes. After the push constant was extended to 11 fields (44 bytes), the 32-byte pipeline layout caused vkCmdPushConstants to be out-of-range. Fixed: unified all three indexing ops to use shared `IndexPushConst` (44 bytes, 11 fields) via `indexing_dispatch()` helper.
+
+13. **MoltenVK stale pipeline cache crash**: After changing the indexing push constant layout from 36→44 bytes, the on-disk pipeline cache (`~/.cache/mlx_vulkan_pipeline_cache.bin`) retained the old binary pipeline. MoltenVK's pipeline cache loader crashed with SIGKILL on dlopen. Fixed: added version suffix to cache path (`mlx_vulkan_pipeline_cache_v2.bin`); bump version whenever push constant layouts change.
+
+14. **ScatterAxis negative-index wrap using wrong field**: `INDEX_SCATTER` was wrapping with `int(params.idx_size)` instead of `int(params.src_ax_size)`. Fixed in `indexing.comp`.
+
+15. **Scan::eval_gpu unconditionally threw**: Prefix scan (cumsum/cumprod) always failed with a runtime_error. Implemented full GPU dispatch via a two-level Hillis-Steele scan in `scan.comp`: serial inclusive scan within each thread's chunk (chunk_size = ceil(scan_size/256)), parallel cross-chunk prefix on stotals[], propagate back, exclusive conversion at writeback. Supports scan_size ≤ 1024; Sum/Prod/Max/Min; inclusive and exclusive; reverse.
+
 ### Known Remaining Issues
 
 - `unary.comp`: Similar int32 dtype issue may exist for ops like `abs`/`neg` on int32 inputs (not yet tested).
 - Hadamard: Not yet implemented (`kernels/hadamard.comp` stub only).
-- Full `test_array.py` suite: Not yet fully passing (in progress).
+- Scan: scan_size > 1024 throws (multi-pass GPU scan not yet implemented). LogAddExp variant not on GPU.
+- Full `test_array.py` suite: Not yet fully run.
 - `test_ops.py` suite: Not yet run.
 
 ---
@@ -351,7 +369,7 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 - [x] Rope (GPU dispatch via `rope.comp`)
 - [x] ScaledDotProductAttention
 - [x] Softmax — verified via smoke test ✅
-- [x] Scan (prefix ops, native dispatch via exceptions)
+- [x] Scan (prefix ops — GPU dispatch via scan.comp; Hillis-Steele 2-level; scan_size ≤ 1024; 5/5 tests pass)
 
 #### Indexing
 
