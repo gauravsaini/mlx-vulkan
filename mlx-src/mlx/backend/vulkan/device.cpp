@@ -309,10 +309,15 @@ void Device::create_vma() {
 // Pipeline cache (persisted to disk across runs)
 // ────────────────────────────────────────────────────────────────────────────
 
+// Bump this version whenever shader push-constant layouts change.
+// Prevents MoltenVK from loading stale binary cache blobs.
+static constexpr int kPipelineCacheVersion = 2;
+
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");
   if (!home) home = "/tmp";
-  return std::string(home) + "/.cache/mlx_vulkan_pipeline_cache.bin";
+  return std::string(home) + "/.cache/mlx_vulkan_pipeline_cache_v"
+       + std::to_string(kPipelineCacheVersion) + ".bin";
 }
 
 void Device::create_pipeline_cache() {

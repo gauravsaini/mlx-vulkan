@@ -987,117 +987,38 @@ void DivMod::eval_gpu(
 // Gather / Scatter (indexing)
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
-  if (inputs.size() == 2 && axes_.size() == 1 && axes_[0] == 0 &&
-      slice_sizes_.size() == 1 && slice_sizes_[0] == 1 &&
-      inputs[0].ndim() == 1) {
-    // Fast path exactly for mx.take(1D_array, idx)
-    out.set_data(allocator::malloc(out.nbytes()));
-    if (out.size() == 0) return;
+// Shared push constant layout for all indexing ops — 44 bytes (11 × uint32).
+// Fields inner and src_outer_stride are only read by INDEX_GATHER_GEN (op=3).
+struct IndexPushConst {
+  uint32_t n;
+  uint32_t op;
+  uint32_t idx_size;
+  uint32_t src_stride;        // INDEX_GATHER/SCATTER: stride of indexed dim in src
+  uint32_t dst_stride;        // INDEX_GATHER/SCATTER: stride in dst
+  uint32_t src_offset;
+  uint32_t idx_offset;
+  uint32_t dst_offset;
+  uint32_t src_ax_size;
+  uint32_t inner;             // INDEX_GATHER_GEN: product(src dims after gather axis)
+  uint32_t src_outer_stride;  // INDEX_GATHER_GEN: d_ax * inner
+};
+static constexpr uint32_t kIndexPushSize = sizeof(IndexPushConst); // 44
 
-    auto& encoder = vulkan::get_command_encoder(stream());
-    auto& dev = vulkan::device(stream().device);
-    encoder.op_count++;
-
-    const array& src = inputs[0];
-    const array& idx = inputs[1];
-
-    VkBuffer src_buf = vulkan::get_buffer(src);
-    VkBuffer idx_buf = vulkan::get_buffer(idx);
-    VkBuffer out_buf = vulkan::get_buffer(out);
-
-    VkPipelineLayout layout;
-    VkDescriptorSetLayout ds_layout;
-    VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 32);
-    if (pipeline == VK_NULL_HANDLE) {
-      throw std::runtime_error("[Gather::eval_gpu] Pipeline indexing not found.");
-    }
-
-    VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
-    VkDescriptorBufferInfo infos[3]{
-      {src_buf, 0, VK_WHOLE_SIZE},
-      {idx_buf, 0, VK_WHOLE_SIZE},
-      {out_buf, 0, VK_WHOLE_SIZE}
-    };
-    VkWriteDescriptorSet writes[3]{};
-    for (int i = 0; i < 3; i++) {
-      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[i].dstSet = ds;
-      writes[i].dstBinding = i;
-      writes[i].descriptorCount = 1;
-      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      writes[i].pBufferInfo = &infos[i];
-    }
-    vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
-
-    struct PushConst {
-      uint32_t n;
-      uint32_t op;
-      uint32_t idx_size;
-      uint32_t src_stride;
-      uint32_t dst_stride;
-      uint32_t src_offset;
-      uint32_t idx_offset;
-      uint32_t dst_offset;
-      uint32_t src_ax_size;
-    } pc{
-      static_cast<uint32_t>(out.size()),
-      0u, // INDEX_GATHER
-      static_cast<uint32_t>(idx.size()),
-      1u, // src_stride = 1 for 1D flatten
-      1u, // dst_stride = 1 for 1D flatten
-      static_cast<uint32_t>(src.offset() * src.itemsize()),
-      static_cast<uint32_t>(idx.offset() * idx.itemsize()),
-      static_cast<uint32_t>(out.offset() * out.itemsize()),
-      static_cast<uint32_t>(src.shape(0))
-    };
-
-    VkCommandBuffer cmd = encoder.cmd;
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-    vkCmdDispatch(cmd, vulkan::div_ceil(out.size(), vulkan::WORKGROUP_SIZE), 1, 1);
-
-    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(
-        cmd,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 1, &barrier, 0, nullptr, 0, nullptr);
-    return;
-  }
-  
-  throw std::runtime_error("[vulkan::Gather::eval_gpu] Fallback to eval_cpu is unsupported");
-}
-
-// GatherAxis: simple axis-indexed gather → GPU dispatch
-void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
-  out.set_data(allocator::malloc(out.nbytes()));
-  if (out.size() == 0) return;
-
-  auto& encoder = vulkan::get_command_encoder(stream());
-  auto& dev = vulkan::device(stream().device);
-  encoder.op_count++;
-
-  const array& src = inputs[0];
-  const array& idx = inputs[1];
-
-  VkBuffer src_buf = vulkan::get_buffer(src);
-  VkBuffer idx_buf = vulkan::get_buffer(idx);
-  VkBuffer out_buf = vulkan::get_buffer(out);
-
+static void indexing_dispatch(
+    vulkan::Device& dev,
+    vulkan::CommandEncoder& encoder,
+    VkBuffer src_buf,
+    VkBuffer idx_buf,
+    VkBuffer out_buf,
+    const IndexPushConst& pc,
+    size_t n_out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 32);
-  if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error("[GatherAxis::eval_gpu] Pipeline indexing not found.");
-  }
+  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, kIndexPushSize);
+  if (pipeline == VK_NULL_HANDLE)
+    throw std::runtime_error("[indexing_dispatch] Pipeline not found.");
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
-  // macOS MoltenVK requires storage buffer bindings to be aligned to minStorageBufferOffsetAlignment (often 256 bytes).
-  // Therefore we bind at offset 0 and pass the byte offsets to the shader manually.
   VkDescriptorBufferInfo infos[3]{
     {src_buf, 0, VK_WHOLE_SIZE},
     {idx_buf, 0, VK_WHOLE_SIZE},
@@ -1114,46 +1035,11 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
   vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
 
-  // Compute strides for the gather axis
-  uint32_t src_stride = 1;
-  for (int i = axis_ + 1; i < src.ndim(); i++) {
-    src_stride *= static_cast<uint32_t>(src.shape(i));
-  }
-  uint32_t dst_stride = 1;
-  for (int i = axis_ + 1; i < out.ndim(); i++) {
-    dst_stride *= static_cast<uint32_t>(out.shape(i));
-  }
-
-  struct PushConst {
-    uint32_t n;
-    uint32_t op;         // 0 = GATHER
-    uint32_t idx_size;
-    uint32_t src_stride;
-    uint32_t dst_stride;
-    uint32_t src_offset;
-    uint32_t idx_offset;
-    uint32_t dst_offset;
-    uint32_t src_ax_size;
-  } pc{
-    static_cast<uint32_t>(out.size()),
-    0u,  // INDEX_GATHER
-    static_cast<uint32_t>(idx.size()),
-    src_stride,
-    dst_stride,
-    static_cast<uint32_t>(src.offset() * src.itemsize()),
-    static_cast<uint32_t>(idx.offset() * idx.itemsize()),
-    static_cast<uint32_t>(out.offset() * out.itemsize()),
-    static_cast<uint32_t>(src.shape(axis_))
-  };
-
   VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  
+  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, kIndexPushSize, &pc);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  
-  vkCmdDispatch(cmd, vulkan::div_ceil(out.size(), vulkan::WORKGROUP_SIZE), 1, 1);
+  vkCmdDispatch(cmd, vulkan::div_ceil(n_out, vulkan::WORKGROUP_SIZE), 1, 1);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1162,7 +1048,91 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       0, 1, &barrier, 0, nullptr, 0, nullptr);
-      
+}
+
+void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // Handle single-axis gather (mx.take(src, indices, axis=ax)):
+  //   axes_.size()==1, slice_sizes_[ax]==1 for the gathered axis
+  // Covers 1D (ax=0) and ND cases via INDEX_GATHER_GEN.
+  if (inputs.size() == 2 && axes_.size() == 1 &&
+      slice_sizes_[axes_[0]] == 1) {
+    out.set_data(allocator::malloc(out.nbytes()));
+    if (out.size() == 0) return;
+
+    auto& encoder = vulkan::get_command_encoder(stream());
+    auto& dev = vulkan::device(stream().device);
+    encoder.op_count++;
+
+    uint32_t ax = static_cast<uint32_t>(axes_[0]);
+    const array& src = inputs[0];
+    const array& idx = inputs[1];
+
+    // inner = product(src dims after the gather axis)
+    uint32_t inner = 1;
+    for (int d = ax + 1; d < (int)src.ndim(); d++) inner *= src.shape(d);
+
+    uint32_t d_ax = static_cast<uint32_t>(src.shape(ax));
+    IndexPushConst pc{};
+    pc.n               = static_cast<uint32_t>(out.size());
+    pc.op              = 3u; // INDEX_GATHER_GEN
+    pc.idx_size        = static_cast<uint32_t>(idx.size());
+    pc.src_stride      = 1u;  // unused by this op
+    pc.dst_stride      = 1u;  // unused by this op
+    pc.src_offset      = static_cast<uint32_t>(src.offset() * src.itemsize());
+    pc.idx_offset      = static_cast<uint32_t>(idx.offset() * idx.itemsize());
+    pc.dst_offset      = static_cast<uint32_t>(out.offset() * out.itemsize());
+    pc.src_ax_size     = d_ax;
+    pc.inner           = inner;
+    pc.src_outer_stride= d_ax * inner;
+
+    indexing_dispatch(dev, encoder,
+                      vulkan::get_buffer(src),
+                      vulkan::get_buffer(idx),
+                      vulkan::get_buffer(out),
+                      pc, out.size());
+    return;
+  }
+
+  throw std::runtime_error("[vulkan::Gather::eval_gpu] Fallback to eval_cpu is unsupported");
+}
+
+// GatherAxis: simple axis-indexed gather → GPU dispatch
+void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0) return;
+
+  auto& encoder = vulkan::get_command_encoder(stream());
+  auto& dev = vulkan::device(stream().device);
+  encoder.op_count++;
+
+  const array& src = inputs[0];
+  const array& idx = inputs[1];
+
+  // Stride of the indexed axis in source and destination
+  uint32_t src_stride = 1;
+  for (int i = axis_ + 1; i < src.ndim(); i++)
+    src_stride *= static_cast<uint32_t>(src.shape(i));
+  uint32_t dst_stride = 1;
+  for (int i = axis_ + 1; i < out.ndim(); i++)
+    dst_stride *= static_cast<uint32_t>(out.shape(i));
+
+  IndexPushConst pc{};
+  pc.n           = static_cast<uint32_t>(out.size());
+  pc.op          = 0u; // INDEX_GATHER
+  pc.idx_size    = static_cast<uint32_t>(idx.size());
+  pc.src_stride  = src_stride;
+  pc.dst_stride  = dst_stride;
+  pc.src_offset  = static_cast<uint32_t>(src.offset() * src.itemsize());
+  pc.idx_offset  = static_cast<uint32_t>(idx.offset() * idx.itemsize());
+  pc.dst_offset  = static_cast<uint32_t>(out.offset() * out.itemsize());
+  pc.src_ax_size = static_cast<uint32_t>(src.shape(axis_));
+  // inner / src_outer_stride unused for INDEX_GATHER — leave as 0
+
+  indexing_dispatch(dev, encoder,
+                    vulkan::get_buffer(src),
+                    vulkan::get_buffer(idx),
+                    vulkan::get_buffer(out),
+                    pc, out.size());
 }
 
 // General Scatter: multi-axis → CPU fallback
@@ -1173,11 +1143,10 @@ void Scatter::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ScatterAxis: simple axis-indexed scatter → GPU dispatch
 void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   // inputs: [src, indices, updates]
-  // First copy src to out, then scatter updates
+  // Copy src→out first, then scatter updates into it
   out.set_data(allocator::malloc(out.nbytes()));
   if (out.size() == 0) return;
 
-  // Copy src to out first
   copy_gpu_inplace(inputs[0], out, CopyType::Vector, stream());
 
   if (inputs.size() < 3 || inputs[2].size() == 0) return;
@@ -1189,81 +1158,33 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& idx     = inputs[1];
   const array& updates = inputs[2];
 
-  VkBuffer upd_buf = vulkan::get_buffer(updates);
-  VkBuffer idx_buf = vulkan::get_buffer(idx);
-  VkBuffer out_buf = vulkan::get_buffer(out);
-
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 32);
-  if (pipeline == VK_NULL_HANDLE) {
-  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
-    return;
-  }
-
-  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
-  // macOS MoltenVK alignment bypass: pass byte offsets in push constants
-  VkDescriptorBufferInfo infos[3]{
-    {upd_buf, 0, VK_WHOLE_SIZE},  // src for scatter = updates
-    {idx_buf, 0, VK_WHOLE_SIZE},
-    {out_buf, 0, VK_WHOLE_SIZE}   // dst = output
-  };
-  VkWriteDescriptorSet writes[3]{};
-  for (int i = 0; i < 3; i++) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = ds;
-    writes[i].dstBinding = i;
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
-
   uint32_t src_stride = 1;
-  for (int i = axis_ + 1; i < updates.ndim(); i++) {
+  for (int i = axis_ + 1; i < updates.ndim(); i++)
     src_stride *= static_cast<uint32_t>(updates.shape(i));
-  }
   uint32_t dst_stride = 1;
-  for (int i = axis_ + 1; i < out.ndim(); i++) {
+  for (int i = axis_ + 1; i < out.ndim(); i++)
     dst_stride *= static_cast<uint32_t>(out.shape(i));
-  }
 
-  // Use SCATTER or SCATTER_ADD based on reduce_type
+  // INDEX_SCATTER=1, INDEX_SCATTER_ADD=2
   uint32_t op = (reduce_type_ == ScatterAxis::ReduceType::Sum) ? 2u : 1u;
 
-  struct PushConst {
-    uint32_t n;
-    uint32_t op;
-    uint32_t idx_size;
-    uint32_t src_stride;
-    uint32_t dst_stride;
-    uint32_t src_offset;
-    uint32_t idx_offset;
-    uint32_t dst_offset;
-  } pc{
-    static_cast<uint32_t>(updates.size()),
-    op,
-    static_cast<uint32_t>(idx.size()),
-    src_stride,
-    dst_stride,
-    static_cast<uint32_t>(updates.offset() * updates.itemsize()),
-    static_cast<uint32_t>(idx.offset() * idx.itemsize()),
-    static_cast<uint32_t>(out.offset() * out.itemsize())
-  };
+  IndexPushConst pc{};
+  pc.n           = static_cast<uint32_t>(updates.size());
+  pc.op          = op;
+  pc.idx_size    = static_cast<uint32_t>(idx.size());
+  pc.src_stride  = src_stride;
+  pc.dst_stride  = dst_stride;
+  pc.src_offset  = static_cast<uint32_t>(updates.offset() * updates.itemsize());
+  pc.idx_offset  = static_cast<uint32_t>(idx.offset() * idx.itemsize());
+  pc.dst_offset  = static_cast<uint32_t>(out.offset() * out.itemsize());
+  pc.src_ax_size = static_cast<uint32_t>(out.shape(axis_)); // axis size for neg-idx wrap
+  // inner / src_outer_stride unused — leave as 0
 
-  VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  vkCmdDispatch(cmd, vulkan::div_ceil(updates.size(), vulkan::WORKGROUP_SIZE), 1, 1);
-
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0, 1, &barrier, 0, nullptr, 0, nullptr);
+  indexing_dispatch(dev, encoder,
+                    vulkan::get_buffer(updates),
+                    vulkan::get_buffer(idx),
+                    vulkan::get_buffer(out),
+                    pc, updates.size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
