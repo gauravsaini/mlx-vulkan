@@ -1,5 +1,13 @@
 #version 450
 
+// Two-level parallel prefix scan supporting scan_size ≤ 1024.
+//
+// Algorithm (for chunk_size = ceil(scan_size / 256) elements per thread):
+//   Phase 1: Serial inclusive scan within each thread's chunk
+//   Phase 2: Hillis-Steele inclusive scan on per-chunk totals → exclusive conversion
+//   Phase 3: Add chunk prefix (exclusive) to each element in the chunk
+//   Writeback: output inclusive or exclusive result based on params.inclusive
+
 #define SCAN_ADD 0
 #define SCAN_MUL 1
 #define SCAN_MAX 2
@@ -11,67 +19,112 @@ layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
 layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
 
 layout(push_constant) uniform Params {
-    uint n;
-    uint scan_size;
-    uint n_scans;
-    uint op;
-    uint inclusive;  // 1=inclusive, 0=exclusive
-    uint reverse;    // 1=scan in reverse
+    uint n;          // total output elements
+    uint scan_size;  // elements per segment (≤ 1024)
+    uint n_scans;    // number of independent segments
+    uint op;         // SCAN_ADD / SCAN_MUL / SCAN_MAX / SCAN_MIN
+    uint inclusive;  // 1 = inclusive, 0 = exclusive
+    uint reverse;    // 1 = scan in reverse direction
 } params;
 
-shared float sdata[512];
+shared float sdata[1024];  // flat storage for all elements of one scan segment
+shared float stotals[256]; // per-thread partial totals for the cross-chunk prefix
+
+float identity_val() {
+    if (params.op == SCAN_MUL) return 1.0;
+    if (params.op == SCAN_MAX) return -3.402823466e+38;
+    if (params.op == SCAN_MIN) return  3.402823466e+38;
+    return 0.0; // SCAN_ADD
+}
+
+float combine(float a, float b) {
+    if (params.op == SCAN_MUL) return a * b;
+    if (params.op == SCAN_MAX) return max(a, b);
+    if (params.op == SCAN_MIN) return min(a, b);
+    return a + b; // SCAN_ADD
+}
 
 void main() {
     uint scan_idx = gl_WorkGroupID.x;
     uint tid      = gl_LocalInvocationID.x;
+    uint N        = 256u;
 
     if (scan_idx >= params.n_scans) return;
 
-    uint base = scan_idx * params.scan_size;
+    uint base        = scan_idx * params.scan_size;
+    uint chunk_size  = (params.scan_size + N - 1u) / N; // ceil(scan_size / 256)
+    uint chunk_base  = tid * chunk_size;
 
-    // Load into shared memory
-    if (tid < params.scan_size) {
-        uint load_idx = params.reverse == 1u ? (params.scan_size - 1 - tid) : tid;
-        sdata[tid] = in_data[base + load_idx];
+    float ident = identity_val();
+
+    // ── Phase 0: Load into sdata[] ──────────────────────────────────────────
+    for (uint k = 0u; k < chunk_size; k++) {
+        uint pos = chunk_base + k;
+        float val = ident;
+        if (pos < params.scan_size) {
+            uint src = (params.reverse == 1u) ? (params.scan_size - 1u - pos) : pos;
+            val = in_data[base + src];
+        }
+        sdata[pos] = val;
     }
     barrier();
 
-    // Up-sweep (reduce)
-    for (uint stride = 1; stride < params.scan_size; stride <<= 1) {
-        uint idx = (tid + 1) * stride * 2 - 1;
-        if (idx < params.scan_size) {
-            if (params.op == SCAN_ADD)      sdata[idx] += sdata[idx - stride];
-            else if (params.op == SCAN_MUL) sdata[idx] *= sdata[idx - stride];
-            else if (params.op == SCAN_MAX) sdata[idx]  = max(sdata[idx], sdata[idx - stride]);
-            else if (params.op == SCAN_MIN) sdata[idx]  = min(sdata[idx], sdata[idx - stride]);
+    // ── Phase 1: Serial inclusive scan within each chunk ────────────────────
+    // After this: sdata[chunk_base + k] = scan of elements [chunk_base .. chunk_base+k]
+    for (uint k = 1u; k < chunk_size; k++) {
+        uint pos = chunk_base + k;
+        if (pos < params.scan_size) {
+            sdata[pos] = combine(sdata[pos - 1u], sdata[pos]);
         }
-        barrier();
     }
-
-    // Down-sweep
-    if (tid == 0) {
-        sdata[params.scan_size - 1] =
-            (params.op == SCAN_ADD) ? 0.0 :
-            (params.op == SCAN_MUL) ? 1.0 :
-            (params.op == SCAN_MAX) ? -3.402823466e+38 : 3.402823466e+38;
+    // Capture the total of this thread's chunk
+    {
+        uint last = chunk_base + chunk_size - 1u;
+        stotals[tid] = (last < params.scan_size) ? sdata[last] : ident;
     }
     barrier();
 
-    for (uint stride = params.scan_size >> 1; stride > 0; stride >>= 1) {
-        uint idx = (tid + 1) * stride * 2 - 1;
-        if (idx < params.scan_size) {
-            float tmp = sdata[idx - stride];
-            sdata[idx - stride] = sdata[idx];
-            if (params.op == SCAN_ADD)      sdata[idx] = tmp + sdata[idx - stride];
-            else if (params.op == SCAN_MUL) sdata[idx] = tmp * sdata[idx - stride];
-            else if (params.op == SCAN_MAX) sdata[idx] = max(tmp, sdata[idx - stride]);
-            else if (params.op == SCAN_MIN) sdata[idx] = min(tmp, sdata[idx - stride]);
-        }
+    // ── Phase 2: Hillis-Steele inclusive scan on stotals[] ──────────────────
+    for (uint offset = 1u; offset < N; offset <<= 1u) {
+        float left = (tid >= offset) ? stotals[tid - offset] : ident;
+        barrier();
+        stotals[tid] = combine(stotals[tid], left);
+        barrier();
+    }
+    // stotals[tid] is now the inclusive prefix of chunk totals [0..tid].
+    // Convert to exclusive: stotals[tid] = sum of chunks [0..tid-1]
+    {
+        float val = (tid > 0u) ? stotals[tid - 1u] : ident;
+        barrier();
+        stotals[tid] = (tid == 0u) ? ident : val;
         barrier();
     }
 
-    if (tid < params.scan_size) {
-        uint store_idx = params.reverse == 1u ? (params.scan_size - 1 - tid) : tid;
-        out_data[base + store_idx] = sdata[tid];
+    // ── Phase 3: Add chunk prefix (stotals[tid]) to all elements in chunk ───
+    // After: sdata[pos] = inclusive scan of the full segment up to pos.
+    float prefix = stotals[tid];
+    for (uint k = 0u; k < chunk_size; k++) {
+        uint pos = chunk_base + k;
+        if (pos < params.scan_size) {
+            sdata[pos] = combine(prefix, sdata[pos]);
+        }
+    }
+    barrier(); // ensure all writes complete before writeback reads
+
+    // ── Phase 4: Write output ────────────────────────────────────────────────
+    // For exclusive: output[pos] = inclusive[pos-1] = sdata[pos-1] (or identity at pos=0)
+    for (uint k = 0u; k < chunk_size; k++) {
+        uint pos = chunk_base + k;
+        if (pos < params.scan_size) {
+            float val;
+            if (params.inclusive == 1u) {
+                val = sdata[pos];
+            } else {
+                // exclusive[pos] = inclusive[pos-1]
+                val = (pos > 0u) ? sdata[pos - 1u] : ident;
+            }
+            uint store = (params.reverse == 1u) ? (params.scan_size - 1u - pos) : pos;
+            out_data[base + store] = val;
+        }
     }
 }

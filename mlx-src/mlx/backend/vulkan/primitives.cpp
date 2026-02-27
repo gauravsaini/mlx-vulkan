@@ -1294,7 +1294,88 @@ void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error("[vulkan::Scan::eval_gpu] Fallback to eval_cpu is unsupported");
+  const array& in = inputs[0];
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0) return;
+
+  uint32_t scan_size = static_cast<uint32_t>(in.shape(axis_));
+
+  // Shader supports scan_size ≤ 1024 (256 threads × chunk_size ≤ 4).
+  // LogAddExp is not implemented in scan.comp.
+  if (scan_size > 1024 || reduce_type_ == Scan::ReduceType::LogAddExp) {
+    throw std::runtime_error(
+        "[vulkan::Scan::eval_gpu] scan_size > 1024 or LogAddExp: unsupported");
+  }
+
+  // Map reduce type to shader op code
+  uint32_t op;
+  switch (reduce_type_) {
+    case Sum:  op = 0u; break;
+    case Prod: op = 1u; break;
+    case Max:  op = 2u; break;
+    case Min:  op = 3u; break;
+    default:
+      throw std::runtime_error("[vulkan::Scan::eval_gpu] unsupported reduce_type");
+  }
+
+  uint32_t n_scans = static_cast<uint32_t>(in.size() / scan_size);
+
+  auto& encoder = vulkan::get_command_encoder(stream());
+  auto& dev = vulkan::device(stream().device);
+  encoder.op_count++;
+
+  struct ScanPushConst {
+    uint32_t n;
+    uint32_t scan_size;
+    uint32_t n_scans;
+    uint32_t op;
+    uint32_t inclusive;
+    uint32_t reverse;
+  } pc{
+    static_cast<uint32_t>(out.size()),
+    scan_size,
+    n_scans,
+    op,
+    inclusive_ ? 1u : 0u,
+    reverse_   ? 1u : 0u
+  };
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline("scan", layout, ds_layout, 2, sizeof(pc));
+  if (pipeline == VK_NULL_HANDLE)
+    throw std::runtime_error("[vulkan::Scan::eval_gpu] scan pipeline not found");
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  VkDescriptorBufferInfo infos[2]{
+    {vulkan::get_buffer(in),  0, VK_WHOLE_SIZE},
+    {vulkan::get_buffer(out), 0, VK_WHOLE_SIZE}
+  };
+  VkWriteDescriptorSet writes[2]{};
+  for (int i = 0; i < 2; i++) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+  }
+  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  // Dispatch one workgroup per independent scan segment
+  vkCmdDispatch(cmd, n_scans, 1, 1);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 
 
