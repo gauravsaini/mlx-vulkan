@@ -1,0 +1,345 @@
+#version 450
+
+// local_size_x = 1024: covers the largest threads_per_fft (n=4096, ept=8 → tpf=512).
+// Inactive threads (lid >= threads_per_fft * tg_batch_size) participate in barrier()
+// calls but skip all shared-memory reads/writes.
+layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
+
+// ─── Complex helpers ──────────────────────────────────────────────────────
+
+vec2 complex_mul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+vec2 get_twiddle(int k, int p) {
+    float theta = -2.0 * float(k) * 3.14159265358979323846 / float(p);
+    return vec2(cos(theta), sin(theta));
+}
+
+// ─── Radix codelets (match Metal fft/radix.h exactly) ──────────────────────
+
+void radix2(in vec2 x[2], out vec2 y[2]) {
+    y[0] = x[0] + x[1];
+    y[1] = x[0] - x[1];
+}
+
+void radix4(in vec2 x[4], out vec2 y[4]) {
+    vec2 z_0 = x[0] + x[2];
+    vec2 z_1 = x[0] - x[2];
+    vec2 z_2 = x[1] + x[3];
+    vec2 z_3 = x[1] - x[3];
+    vec2 z_3_i = vec2(z_3.y, -z_3.x);  // = -i * z_3
+    y[0] = z_0 + z_2;
+    y[1] = z_1 + z_3_i;
+    y[2] = z_0 - z_2;
+    y[3] = z_1 - z_3_i;
+}
+
+// Metal radix8: even/odd split → two radix4 → combine with twiddles.
+void radix8(in vec2 x[8], out vec2 y[8]) {
+    const float cos_pi_4 = 0.7071067811865476;
+    vec2 w_0 = vec2(cos_pi_4, -cos_pi_4);   // exp(-i*pi/4)
+    vec2 w_1 = vec2(-cos_pi_4, -cos_pi_4);  // exp(-i*3*pi/4)
+
+    // Even/odd permutation
+    vec2 t_lo[4] = vec2[4](x[0], x[2], x[4], x[6]);
+    vec2 t_hi[4] = vec2[4](x[1], x[3], x[5], x[7]);
+    vec2 a[4], b[4];
+    radix4(t_lo, a);
+    radix4(t_hi, b);
+
+    y[0] = a[0] + b[0];
+    y[4] = a[0] - b[0];
+
+    vec2 b1 = complex_mul(b[1], w_0);
+    y[1] = a[1] + b1;
+    y[5] = a[1] - b1;
+
+    vec2 b2 = vec2(b[2].y, -b[2].x);  // -i * b[2]
+    y[2] = a[2] + b2;
+    y[6] = a[2] - b2;
+
+    vec2 b3 = complex_mul(b[3], w_1);
+    y[3] = a[3] + b3;
+    y[7] = a[3] - b3;
+}
+
+// ─── Bindings ───────────────────────────────────────────────────────────────
+
+layout(std430, set = 0, binding = 0) readonly buffer SrcBuf     { vec2  src[]; };
+layout(std430, set = 0, binding = 1) buffer       DstBuf     { vec2  dst[]; };
+layout(std430, set = 0, binding = 2) readonly buffer SrcRealBuf { float src_real[]; };
+
+// Push constant layout matches FFTPushConstants in fft.cpp exactly.
+// stockham[9]: indices map to supported_radices = {13,11,8,7,6,5,4,3,2}
+//   [0]=r13  [1]=r11  [2]=r8  [3]=r7  [4]=r6  [5]=r5  [6]=r4  [7]=r3  [8]=r2
+layout(push_constant) uniform Params {
+    uint inv;
+    uint power_of_2;
+    uint stockham[9];
+    // rader[] removed — not read by fft.comp; was pushing struct over 128-byte limit.
+    uint elems_per_thread;
+    uint rader_m;
+    uint batch_size;
+    uint total_batch_size;
+    uint threadgroup_batch_size;
+    uint threads_per_fft;
+    uint p_n;
+    uint p_n1;
+    uint p_n2;
+    uint bluestein_n;
+    uint rader_n;
+    uint step;
+    uint real;
+} params;
+
+// Shared memory: max 4096 complex values (32 KB) = n=4096 with tg_batch=1
+shared vec2 shared_mem[4096];
+
+// ─── Butterfly helpers ──────────────────────────────────────────────────────
+
+void radix_butterfly_2(uint i, uint p, inout vec2 x[2], out vec2 y[2], out uint indices[2]) {
+    uint k, j;
+    if (params.power_of_2 == 1u) {
+        k = i & (p - 1u);
+        j = ((i - k) << 1u) + k;
+    } else {
+        k = i % p;
+        j = (i / p) * 2u * p + k;
+    }
+    if (p > 1u) {
+        vec2 tw = get_twiddle(int(k), int(2u * p));
+        if (params.inv == 1u) tw.y = -tw.y;
+        x[1] = complex_mul(x[1], tw);
+    }
+    radix2(x, y);
+    indices[0] = j;
+    indices[1] = j + p;
+}
+
+void radix_butterfly_4(uint i, uint p, inout vec2 x[4], out vec2 y[4], out uint indices[4]) {
+    uint k, j;
+    if (params.power_of_2 == 1u) {
+        k = i & (p - 1u);
+        j = ((i - k) << 2u) + k;
+    } else {
+        k = i % p;
+        j = (i / p) * 4u * p + k;
+    }
+    if (p > 1u) {
+        vec2 tw = get_twiddle(int(k), int(4u * p));
+        if (params.inv == 1u) tw.y = -tw.y;
+        vec2 t = tw;
+        x[1] = complex_mul(x[1], t);
+        t = complex_mul(t, tw);
+        x[2] = complex_mul(x[2], t);
+        t = complex_mul(t, tw);
+        x[3] = complex_mul(x[3], t);
+    }
+    radix4(x, y);
+    indices[0] = j;
+    indices[1] = j + p;
+    indices[2] = j + 2u * p;
+    indices[3] = j + 3u * p;
+}
+
+void radix_butterfly_8(uint i, uint p, inout vec2 x[8], out vec2 y[8], out uint indices[8]) {
+    uint k, j;
+    if (params.power_of_2 == 1u) {
+        k = i & (p - 1u);
+        j = ((i - k) << 3u) + k;
+    } else {
+        k = i % p;
+        j = (i / p) * 8u * p + k;
+    }
+    if (p > 1u) {
+        vec2 tw = get_twiddle(int(k), int(8u * p));
+        if (params.inv == 1u) tw.y = -tw.y;
+        vec2 t = tw;
+        x[1] = complex_mul(x[1], t);
+        t = complex_mul(t, tw);
+        x[2] = complex_mul(x[2], t);
+        t = complex_mul(t, tw);
+        x[3] = complex_mul(x[3], t);
+        t = complex_mul(t, tw);
+        x[4] = complex_mul(x[4], t);
+        t = complex_mul(t, tw);
+        x[5] = complex_mul(x[5], t);
+        t = complex_mul(t, tw);
+        x[6] = complex_mul(x[6], t);
+        t = complex_mul(t, tw);
+        x[7] = complex_mul(x[7], t);
+    }
+    radix8(x, y);
+    indices[0] = j;
+    indices[1] = j + p;
+    indices[2] = j + 2u * p;
+    indices[3] = j + 3u * p;
+    indices[4] = j + 4u * p;
+    indices[5] = j + 5u * p;
+    indices[6] = j + 6u * p;
+    indices[7] = j + 7u * p;
+}
+
+// ─── perform_fft ────────────────────────────────────────────────────────────
+// Radix pass order matches Metal: radix-2 → radix-4 → radix-8
+// (Metal: RADIX_STEP(2,..) RADIX_STEP(4,..) RADIX_STEP(8,..) ...)
+
+void perform_fft(uint fft_idx, inout uint p, uint m, uint n, uint shared_offset, bool is_active) {
+
+    // ── Radix-2 passes (stockham[8] = plan.stockham[8]) ──
+    for (uint s = 0u; s < params.stockham[8]; s++) {
+        uint m_r = n / 2u;
+        uint max_r = (params.elems_per_thread + 1u) / 2u;
+
+        vec2 tv2[8]; uint ti2[8];  // max_r*2 ≤ 8
+
+        for (uint t = 0u; t < max_r; t++) {
+            uint idx = fft_idx + t * m;
+            if (is_active && idx < m_r) {
+                vec2 inp[2];
+                inp[0] = shared_mem[shared_offset + idx];
+                inp[1] = shared_mem[shared_offset + idx + m_r];
+                vec2 lv[2]; uint li[2];
+                radix_butterfly_2(idx, p, inp, lv, li);
+                tv2[t * 2u + 0u] = lv[0]; tv2[t * 2u + 1u] = lv[1];
+                ti2[t * 2u + 0u] = li[0]; ti2[t * 2u + 1u] = li[1];
+            }
+        }
+        barrier();
+        for (uint t = 0u; t < max_r; t++) {
+            uint idx = fft_idx + t * m;
+            if (is_active && idx < m_r) {
+                shared_mem[shared_offset + ti2[t * 2u + 0u]] = tv2[t * 2u + 0u];
+                shared_mem[shared_offset + ti2[t * 2u + 1u]] = tv2[t * 2u + 1u];
+            }
+        }
+        barrier();
+        p *= 2u;
+    }
+
+    // ── Radix-4 passes (stockham[6] = plan.stockham[6]) ──
+    for (uint s = 0u; s < params.stockham[6]; s++) {
+        uint m_r = n / 4u;
+        uint max_r = (params.elems_per_thread + 3u) / 4u;
+
+        vec2 tv4[16]; uint ti4[16];  // max_r*4 ≤ 16
+
+        for (uint t = 0u; t < max_r; t++) {
+            uint idx = fft_idx + t * m;
+            if (is_active && idx < m_r) {
+                vec2 inp[4];
+                inp[0] = shared_mem[shared_offset + idx];
+                inp[1] = shared_mem[shared_offset + idx + m_r];
+                inp[2] = shared_mem[shared_offset + idx + 2u * m_r];
+                inp[3] = shared_mem[shared_offset + idx + 3u * m_r];
+                vec2 lv[4]; uint li[4];
+                radix_butterfly_4(idx, p, inp, lv, li);
+                tv4[t * 4u + 0u] = lv[0]; tv4[t * 4u + 1u] = lv[1];
+                tv4[t * 4u + 2u] = lv[2]; tv4[t * 4u + 3u] = lv[3];
+                ti4[t * 4u + 0u] = li[0]; ti4[t * 4u + 1u] = li[1];
+                ti4[t * 4u + 2u] = li[2]; ti4[t * 4u + 3u] = li[3];
+            }
+        }
+        barrier();
+        for (uint t = 0u; t < max_r; t++) {
+            uint idx = fft_idx + t * m;
+            if (is_active && idx < m_r) {
+                shared_mem[shared_offset + ti4[t * 4u + 0u]] = tv4[t * 4u + 0u];
+                shared_mem[shared_offset + ti4[t * 4u + 1u]] = tv4[t * 4u + 1u];
+                shared_mem[shared_offset + ti4[t * 4u + 2u]] = tv4[t * 4u + 2u];
+                shared_mem[shared_offset + ti4[t * 4u + 3u]] = tv4[t * 4u + 3u];
+            }
+        }
+        barrier();
+        p *= 4u;
+    }
+
+    // ── Radix-8 passes (stockham[2] = plan.stockham[2]) ──
+    // Used for n >= 512 (since skip condition is orig_n < 512 only).
+    for (uint s = 0u; s < params.stockham[2]; s++) {
+        uint m_r = n / 8u;
+        uint max_r = (params.elems_per_thread + 7u) / 8u;
+
+        vec2 tv8[8]; uint ti8[8];  // max_r*8 (max_r==1 for elems_per_thread=8)
+
+        for (uint t = 0u; t < max_r; t++) {
+            uint idx = fft_idx + t * m;
+            if (is_active && idx < m_r) {
+                vec2 inp[8];
+                for (uint r = 0u; r < 8u; r++) {
+                    inp[r] = shared_mem[shared_offset + idx + r * m_r];
+                }
+                vec2 lv[8]; uint li[8];
+                radix_butterfly_8(idx, p, inp, lv, li);
+                for (uint r = 0u; r < 8u; r++) {
+                    tv8[t * 8u + r] = lv[r];
+                    ti8[t * 8u + r] = li[r];
+                }
+            }
+        }
+        barrier();
+        for (uint t = 0u; t < max_r; t++) {
+            uint idx = fft_idx + t * m;
+            if (is_active && idx < m_r) {
+                for (uint r = 0u; r < 8u; r++) {
+                    shared_mem[shared_offset + ti8[t * 8u + r]] = tv8[t * 8u + r];
+                }
+            }
+        }
+        barrier();
+        p *= 8u;
+    }
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+void main() {
+    // One workgroup per batch item.
+    // Flat thread layout: local threads cover threads_per_fft * threadgroup_batch_size.
+    uint batch_idx = gl_WorkGroupID.x;
+    if (batch_idx >= params.batch_size) return;
+
+    uint lid = gl_LocalInvocationID.x;
+    uint local_fft_id   = lid % params.threads_per_fft;
+    uint local_batch_id = lid / params.threads_per_fft;
+
+    uint custom_batch_idx = batch_idx * params.threadgroup_batch_size + local_batch_id;
+    bool is_active = (local_batch_id < params.threadgroup_batch_size)
+                  && (custom_batch_idx < params.total_batch_size);
+
+    uint n             = params.p_n;
+    bool is_rfft       = (params.real == 1u && params.inv == 0u);
+    // RFFT output is only n/2+1 complex values; complex FFT output is full n.
+    uint out_n_eff     = is_rfft ? (n / 2u + 1u) : n;
+    uint base_idx      = custom_batch_idx * n;
+    uint out_base_idx  = custom_batch_idx * out_n_eff;
+    uint shared_offset = local_batch_id * n;
+
+    // Load global → shared (strided)
+    // For RFFT: read float input from binding 2 and zero-pad imaginary part.
+    // For complex FFT: read vec2 from binding 0.
+    for (uint e = 0u; e < params.elems_per_thread; e++) {
+        uint stride = local_fft_id + e * params.threads_per_fft;
+        if (is_active && stride < n) {
+            if (is_rfft) {
+                shared_mem[shared_offset + stride] = vec2(src_real[base_idx + stride], 0.0);
+            } else {
+                shared_mem[shared_offset + stride] = src[base_idx + stride];
+            }
+        }
+    }
+    barrier();
+
+    uint p = 1u;
+    perform_fft(local_fft_id, p, params.threads_per_fft, n, shared_offset, is_active);
+
+    // Write back shared → global.
+    // For RFFT: only write first n/2+1 outputs (Hermitian symmetry).
+    for (uint e = 0u; e < params.elems_per_thread; e++) {
+        uint stride = local_fft_id + e * params.threads_per_fft;
+        if (is_active && stride < out_n_eff) {
+            dst[out_base_idx + stride] = shared_mem[shared_offset + stride];
+        }
+    }
+}

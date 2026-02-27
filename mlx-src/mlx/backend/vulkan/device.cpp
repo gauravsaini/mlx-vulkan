@@ -80,6 +80,11 @@ Device::~Device() {
 
   // Destroy encoders
   for (auto& [idx, enc] : encoders_) {
+    for (auto& handler : enc.completion_handlers) {
+      handler();
+    }
+    enc.completion_handlers.clear();
+    
     if (enc.fence != VK_NULL_HANDLE) vkDestroyFence(device_, enc.fence, nullptr);
     if (enc.pool  != VK_NULL_HANDLE) vkDestroyCommandPool(device_, enc.pool, nullptr);
   }
@@ -114,6 +119,9 @@ void Device::init_instance() {
 
   std::vector<const char*> extensions = {
     VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+#if defined(__APPLE__)
+    "VK_KHR_portability_enumeration",
+#endif
   };
 
   std::vector<const char*> layers;
@@ -125,6 +133,9 @@ void Device::init_instance() {
 
   VkInstanceCreateInfo inst_info{};
   inst_info.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+#if defined(__APPLE__)
+  inst_info.flags                   |= 0x00000001; // VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
+#endif
   inst_info.pApplicationInfo        = &app_info;
   inst_info.enabledLayerCount       = static_cast<uint32_t>(layers.size());
   inst_info.ppEnabledLayerNames     = layers.data();
@@ -415,7 +426,7 @@ CommandEncoder& Device::get_command_encoder(Stream s) {
 }
 
 void Device::commit(Stream s) {
-  std::lock_guard<std::mutex> lk(mutex_);
+  std::unique_lock<std::mutex> lk(mutex_);
   auto it = encoders_.find(s.index);
   if (it == encoders_.end()) return;
 
@@ -437,16 +448,13 @@ void Device::commit(Stream s) {
            "vkQueueSubmit");
 
   // Run completion handlers async (after fence signals)
-  // In a full implementation, use a worker thread or VK_EXT_host_query_reset
-  // For now: wait immediately then run handlers
+  // Wait immediately then run handlers
   vkWaitForFences(device_, 1, &enc.fence, VK_TRUE, UINT64_MAX);
 
   auto handlers = std::move(enc.completion_handlers);
   enc.completion_handlers.clear();
   enc.temporaries.clear();
   enc.op_count = 0;
-
-  for (auto& h : handlers) h();
 
   // Reset and begin new command buffer
   vkResetCommandPool(device_, enc.pool, 0);
@@ -455,10 +463,23 @@ void Device::commit(Stream s) {
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(enc.cmd, &begin);
   enc.recording = true;
+
+  // IMPORTANT: Drop lock before executing handlers, as handlers might schedule
+  // new MLX tasks which can recursively call Device/Allocator methods and deadlock!
+  lk.unlock();
+
+  for (auto& h : handlers) h();
 }
 
 void Device::synchronize(Stream s) {
-  commit(s);  // commit submits and waits
+  // Commit any pending work for the stream first
+  commit(s);
+  
+  // Physically block the CPU thread until the Vulkan compute queue is fully idle.
+  // This is critical for CPU fallbacks (e.g. Gather::eval_gpu) which need to safely 
+  // read GPU memory that was written by previously submitted command buffers.
+  std::lock_guard<std::mutex> lk(mutex_);
+  vkQueueWaitIdle(compute_queue_);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

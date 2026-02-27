@@ -88,7 +88,20 @@ stage_run 11 "Matmul GPU Op" \
 
 stage_run 12 "Neural Net GPU Ops" \
     "python '$SCRIPT_DIR/test_stage12_nn_ops.py'"
+stage_run 13 "Indexing GPU Ops" \
+    "python '$SCRIPT_DIR/test_stage13_indexing.py'"
 
+stage_run 14 "Sorting GPU Ops" \
+    "python '$SCRIPT_DIR/test_stage14_sort.py'"
+
+stage_run 15 "Scan Prefix GPU Ops" \
+    "python '$SCRIPT_DIR/test_stage15_scan.py'"
+
+stage_run 16 "NN Extended GPU Ops" \
+    "python '$SCRIPT_DIR/test_stage16_nn_extended.py'"
+
+stage_run 17 "AddMM/Conv/Random GPU Ops" \
+    "python '$SCRIPT_DIR/test_stage17_addmm_random.py'"
 echo ""
 echo "╔═══════════════════════════════════════╗"
 echo "║  Final Results                        ║"

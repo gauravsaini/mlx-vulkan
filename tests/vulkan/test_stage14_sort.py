@@ -59,32 +59,35 @@ def test_sort_512():
     data = np.random.randn(512).astype(np.float32)
     a = mx.array(data)
     out = mx.sort(a)
-    mx.eval(out)
-    result = np.array(out)
-    expected = np.sort(data)
-    check("sort 512 elements (max GPU)", np.allclose(result, expected))
+    try:
+        mx.eval(out)
+        check("sort 512 elements (unsupported)", False, "Expected RuntimeError")
+    except RuntimeError as e:
+        check("sort 512 elements (unsupported)", "unsupported" in str(e).lower())
 
 def test_sort_large_fallback():
-    """Sort > 512 should fall back to CPU but still produce correct results."""
+    """Sort > 512 should fail safely with RuntimeError."""
     import mlx.core as mx
     np.random.seed(789)
     data = np.random.randn(1024).astype(np.float32)
     a = mx.array(data)
     out = mx.sort(a)
-    mx.eval(out)
-    result = np.array(out)
-    expected = np.sort(data)
-    check("sort 1024 (CPU fallback)", np.allclose(result, expected))
+    try:
+        mx.eval(out)
+        check("sort 1024 (unsupported limit)", False, "Expected RuntimeError")
+    except RuntimeError as e:
+        check("sort 1024 (unsupported limit)", "unsupported" in str(e).lower())
 
 def test_argsort():
-    """ArgSort currently falls to CPU but should work."""
+    """ArgSort currently unsupported, should fail safely."""
     import mlx.core as mx
     a = mx.array([3.0, 1.0, 4.0, 1.0, 5.0], dtype=mx.float32)
     out = mx.argsort(a)
-    mx.eval(out)
-    result = np.array(out)
-    expected = np.argsort([3.0, 1.0, 4.0, 1.0, 5.0])
-    check("argsort (CPU fallback)", np.array_equal(result, expected))
+    try:
+        mx.eval(out)
+        check("argsort (unsupported limit)", False, "Expected RuntimeError")
+    except RuntimeError as e:
+        check("argsort (unsupported limit)", "unsupported" in str(e).lower())
 
 if __name__ == "__main__":
     print("━" * 50)

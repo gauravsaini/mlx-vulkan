@@ -1,35 +1,46 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_shader_8bit_storage : require
 
 // Reduction operation constants
 #define REDUCE_SUM  0
 #define REDUCE_MAX  1
 #define REDUCE_MIN  2
 #define REDUCE_PROD 3
+#define REDUCE_AND  4
+#define REDUCE_OR   5
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
+// Raw uint32 input so we can handle any 4-byte type by reinterpretation
+layout(set = 0, binding = 0) readonly  buffer InBuf  { uint in_raw[];  };
 layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+// Bool output buffer (uint8_t) for AND/OR ops
+layout(set = 0, binding = 2) writeonly buffer OutBoolBuf { uint8_t out_bool[]; };
+// Bool input buffer (uint8_t) for AND/OR ops on bool input
+layout(set = 0, binding = 3) readonly buffer InBoolBuf { uint8_t in_bool[]; };
 
 layout(push_constant) uniform Params {
-    uint n;           // total input elements
-    uint reduce_size; // size of reduction axis
-    uint n_outputs;   // number of independent reductions
-    uint op;          // REDUCE_*
+    uint n;            // total input elements
+    uint reduce_size;  // size of reduction axis
+    uint n_outputs;    // number of independent reductions
+    uint op;           // REDUCE_*
+    uint input_is_bool;  // 1 if input dtype is bool (uint8_t)
+    uint output_is_bool; // 1 if output dtype is bool (uint8_t)
 } params;
 
 shared float sdata[256];
+shared uint sdata_uint[256];
 
-float identity(uint op) {
+float identity_f(uint op) {
     if (op == REDUCE_SUM)  return 0.0;
-    if (op == REDUCE_MAX)  return -3.402823466e+38; // -FLT_MAX
-    if (op == REDUCE_MIN)  return  3.402823466e+38; //  FLT_MAX
+    if (op == REDUCE_MAX)  return -3.402823466e+38;
+    if (op == REDUCE_MIN)  return  3.402823466e+38;
     if (op == REDUCE_PROD) return 1.0;
     return 0.0;
 }
 
-float combine(uint op, float a, float b) {
+float combine_f(uint op, float a, float b) {
     if (op == REDUCE_SUM)  return a + b;
     if (op == REDUCE_MAX)  return max(a, b);
     if (op == REDUCE_MIN)  return min(a, b);
@@ -44,25 +55,67 @@ void main() {
     if (out_idx >= params.n_outputs) return;
 
     uint in_base = out_idx * params.reduce_size;
+    bool is_bool_reduction = (params.op == REDUCE_AND || params.op == REDUCE_OR);
 
-    // Each thread accumulates its portion
-    float acc = identity(params.op);
-    for (uint i = tid; i < params.reduce_size; i += 256) {
-        acc = combine(params.op, acc, in_data[in_base + i]);
-    }
-
-    // Workgroup reduction via shared memory
-    sdata[tid] = acc;
-    barrier();
-
-    for (uint stride = 128; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-            sdata[tid] = combine(params.op, sdata[tid], sdata[tid + stride]);
+    if (is_bool_reduction) {
+        // Boolean AND / OR reduction — uses uint8 input and uint8 output
+        uint acc = (params.op == REDUCE_AND) ? 1u : 0u;  // 1=true for AND, 0=false for OR
+        for (uint i = tid; i < params.reduce_size; i += 256) {
+            uint idx = in_base + i;
+            uint val = (params.input_is_bool == 1u)
+                ? uint(uint(in_bool[idx]) != 0u ? 1u : 0u)
+                : ((in_raw[idx] != 0u) ? 1u : 0u);
+            if (params.op == REDUCE_AND) acc = acc & (val != 0u ? 1u : 0u);
+            else                         acc = acc | (val != 0u ? 1u : 0u);
         }
-        barrier();
-    }
 
-    if (tid == 0) {
-        out_data[out_idx] = sdata[0];
+        sdata_uint[tid] = acc;
+        barrier();
+
+        for (uint stride = 128; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                if (params.op == REDUCE_AND)
+                    sdata_uint[tid] = sdata_uint[tid] & sdata_uint[tid + stride];
+                else
+                    sdata_uint[tid] = sdata_uint[tid] | sdata_uint[tid + stride];
+            }
+            barrier();
+        }
+
+        if (tid == 0) {
+            if (params.output_is_bool == 1u)
+                out_bool[out_idx] = uint8_t(sdata_uint[0] != 0u ? 1 : 0);
+            else
+                out_data[out_idx] = float(sdata_uint[0]);
+        }
+    } else {
+        // Float SUM / MAX / MIN / PROD reduction
+        float acc = identity_f(params.op);
+        for (uint i = tid; i < params.reduce_size; i += 256) {
+            uint idx = in_base + i;
+            float val;
+            if (params.input_is_bool == 1u)
+                val = float(uint(in_bool[idx]));
+            else
+                val = uintBitsToFloat(in_raw[idx]);
+            acc = combine_f(params.op, acc, val);
+        }
+
+        sdata[tid] = acc;
+        barrier();
+
+        for (uint stride = 128; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                sdata[tid] = combine_f(params.op, sdata[tid], sdata[tid + stride]);
+            }
+            barrier();
+        }
+
+        if (tid == 0) {
+            if (params.output_is_bool == 1u)
+                out_bool[out_idx] = uint8_t(sdata[0] != 0.0 ? 1 : 0);
+            else
+                out_data[out_idx] = sdata[0];
+        }
     }
 }

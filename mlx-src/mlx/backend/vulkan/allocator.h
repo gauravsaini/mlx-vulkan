@@ -11,7 +11,9 @@
 
 #include "mlx/allocator.h"
 
-namespace mlx::core::vulkan {
+namespace mlx::core {
+class array;
+namespace vulkan {
 
 // Internal buffer tracking struct
 struct VulkanBuffer {
@@ -26,6 +28,8 @@ class VulkanAllocator : public allocator::Allocator {
   allocator::Buffer malloc(size_t size) override;
   void free(allocator::Buffer buffer) override;
   size_t size(allocator::Buffer buffer) const override;
+  allocator::Buffer make_buffer(void* ptr, size_t size) override;
+  void release(allocator::Buffer buffer) override;
 
   // Host-visible staging buffer (for CPU<->GPU transfers)
   VulkanBuffer* alloc_staging(size_t size);
@@ -57,4 +61,5 @@ VulkanAllocator& allocator();
 // Get VkBuffer from an mlx array
 VkBuffer get_buffer(const array& arr);
 
-} // namespace mlx::core::vulkan
+} // namespace vulkan
+} // namespace mlx::core

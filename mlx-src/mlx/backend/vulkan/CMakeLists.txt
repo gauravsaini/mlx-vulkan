@@ -51,6 +51,30 @@ compile_shader(quantized)
 compile_shader(conv)
 compile_shader(rbits)
 
+# Compile fft.comp into the various C++ dispatch names
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_stockham.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -o ${VULKAN_SHADER_OUTPUT_DIR}/fft_stockham.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_stockham.spv)
+
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -o ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv)
+
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_bluestein.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -o ${VULKAN_SHADER_OUTPUT_DIR}/fft_bluestein.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_bluestein.spv)
+
+compile_shader(hadamard)
+
 add_custom_target(vulkan_shaders ALL DEPENDS ${SPIRV_OUTPUTS})
 add_dependencies(mlx vulkan_shaders)
 
@@ -65,6 +89,7 @@ target_sources(
     ${CMAKE_CURRENT_SOURCE_DIR}/eval.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/event.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fence.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fft.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/primitives.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/slicing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.cpp)
@@ -72,10 +97,12 @@ target_sources(
 # Link Vulkan and VMA
 target_link_libraries(mlx PRIVATE Vulkan::Vulkan)
 
-# VMA via FetchContent if not found as package
+# VMA is header-only — include path only, never link as an exported target
 find_package(VulkanMemoryAllocator QUIET)
 if(VulkanMemoryAllocator_FOUND)
-  target_link_libraries(mlx PRIVATE GPUOpen::VulkanMemoryAllocator)
+  # Use include dir from the found package, not the CMake target (avoids export issues)
+  get_target_property(_vma_include GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
+  target_include_directories(mlx PRIVATE ${_vma_include})
 else()
   message(STATUS "VulkanMemoryAllocator not found via find_package, using FetchContent")
   include(FetchContent)
@@ -86,7 +113,8 @@ else()
     GIT_SHALLOW    TRUE
     EXCLUDE_FROM_ALL)
   FetchContent_MakeAvailable(VulkanMemoryAllocator)
-  target_link_libraries(mlx PRIVATE GPUOpen::VulkanMemoryAllocator)
+  # VMA is header-only — include directly rather than link, avoids export set issues
+  target_include_directories(mlx PRIVATE ${vulkanmemoryallocator_SOURCE_DIR}/include)
 endif()
 
 # Set compile definitions

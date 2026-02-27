@@ -9,6 +9,7 @@ layout(push_constant) uniform Params {
     uint odd;
     uint bytes_per_key;
     uint ndim;
+    uint num_keys;
 } params;
 
 // Threefry 2x32 rotation constants
@@ -36,6 +37,8 @@ uvec2 threefry2x32_hash(uvec2 key, uvec2 count) {
 
 void main() {
     uint idx = gl_GlobalInvocationID.x; // index of the key
+    if (idx >= params.num_keys) return;
+    
     uint y   = gl_GlobalInvocationID.y; // index of the pair of outputs per key
 
     uint half_size = gl_NumWorkGroups.y * gl_WorkGroupSize.y - params.odd;

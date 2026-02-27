@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_shader_8bit_storage : require
 
 // Copy type constants
 #define COPY_SCALAR          0
@@ -6,11 +7,31 @@
 #define COPY_GENERAL         2
 #define COPY_GENERAL_GENERAL 3
 
+// Data type constants (must match Dtype enum ordering in mlx/dtype.h)
+#define DTYPE_BOOL      0
+#define DTYPE_UINT8     1
+#define DTYPE_UINT16    2
+#define DTYPE_UINT32    3
+#define DTYPE_UINT64    4
+#define DTYPE_INT8      5
+#define DTYPE_INT16     6
+#define DTYPE_INT32     7
+#define DTYPE_INT64     8
+#define DTYPE_FLOAT16   9
+#define DTYPE_BFLOAT16  10
+#define DTYPE_FLOAT32   11
+#define DTYPE_FLOAT64   12
+#define DTYPE_COMPLEX64 13
+
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer SrcBuf  { uint src_data[]; };
-layout(set = 0, binding = 1) buffer          DstBuf  { uint dst_data[]; };
-layout(set = 0, binding = 2) readonly buffer MetaBuf { int  meta_data[]; };
+// Raw uint32 views for 4-byte elements
+layout(set = 0, binding = 0) readonly  buffer SrcBuf  { uint src_data[];  };
+layout(set = 0, binding = 1)           buffer DstBuf  { uint dst_data[];  };
+layout(set = 0, binding = 2) readonly  buffer MetaBuf { int  meta_data[]; };
+// Uint8 views for 1-byte elements (bool/uint8/int8)
+layout(set = 0, binding = 0) readonly  buffer SrcBuf8 { uint8_t src8[];   };
+layout(set = 0, binding = 1)           buffer DstBuf8 { uint8_t dst8[];   };
 
 layout(push_constant) uniform Params {
     uint n;
@@ -18,7 +39,11 @@ layout(push_constant) uniform Params {
     uint ndim;
     uint src_stride0;
     uint dst_stride0;
-    uint elem_size;
+    uint elem_size;   // in bytes (source element size)
+    uint src_offset;  // in elements
+    uint dst_offset;  // in elements
+    uint src_dtype;   // DTYPE_* constant
+    uint dst_dtype;   // DTYPE_* constant
 } params;
 
 uint strided_offset_src(uint idx) {
@@ -45,33 +70,55 @@ uint strided_offset_dst(uint idx) {
     return offset;
 }
 
-void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if (idx >= params.n) return;
-
-    uint src_idx = 0u;
-    uint dst_idx = 0u;
-
-    if (params.copy_type == COPY_SCALAR) {
-        src_idx = 0u;
-        dst_idx = idx;
-    } else if (params.copy_type == COPY_VECTOR) {
-        src_idx = idx;
-        dst_idx = idx;
-    } else if (params.copy_type == COPY_GENERAL) {
-        src_idx = strided_offset_src(idx);
-        dst_idx = idx;
+// Read a float64-equivalent value from source at element index src_idx
+// Read element at src_idx as a float, performing type conversion
+float read_as_float(uint src_idx) {
+    uint src_dtype = params.src_dtype;
+    if (src_dtype == DTYPE_BOOL || src_dtype == DTYPE_UINT8) {
+        return float(uint(src8[src_idx]));
+    } else if (src_dtype == DTYPE_INT8) {
+        // sign-extend uint8 to int
+        uint raw = uint(src8[src_idx]);
+        int signed_val = (raw & 0x80u) != 0u ? int(raw) - 256 : int(raw);
+        return float(signed_val);
+    } else if (src_dtype == DTYPE_INT32) {
+        return float(int(src_data[src_idx]));
+    } else if (src_dtype == DTYPE_UINT32) {
+        return float(src_data[src_idx]);
     } else {
-        src_idx = strided_offset_src(idx);
-        dst_idx = strided_offset_dst(idx);
+        // float16/bfloat16/float32 — treat as float32 for now
+        // (correct only for float32; f16/bf16 will need proper conversion later)
+        return uintBitsToFloat(src_data[src_idx]);
     }
+}
 
-    if (params.elem_size == 4u) {
+// Write float value to dst_idx, performing type conversion
+void write_float(uint dst_idx, float val) {
+    uint dst_dtype = params.dst_dtype;
+    if (dst_dtype == DTYPE_BOOL || dst_dtype == DTYPE_UINT8) {
+        dst8[dst_idx] = uint8_t(val != 0.0 ? 1 : 0);
+    } else if (dst_dtype == DTYPE_INT8) {
+        int clamped = int(clamp(val, -128.0, 127.0));
+        dst8[dst_idx] = uint8_t(clamped < 0 ? uint(clamped + 256) : uint(clamped));
+    } else if (dst_dtype == DTYPE_INT32) {
+        dst_data[dst_idx] = uint(int(val));
+    } else if (dst_dtype == DTYPE_UINT32) {
+        dst_data[dst_idx] = uint(val);
+    } else {
+        // float32 output
+        dst_data[dst_idx] = floatBitsToUint(val);
+    }
+}
+
+// Raw byte copy for same-type (no conversion needed)
+void raw_copy(uint src_idx, uint dst_idx) {
+    uint elem_size = params.elem_size;
+    if (elem_size == 4u) {
         dst_data[dst_idx] = src_data[src_idx];
-    } else if (params.elem_size == 8u) {
+    } else if (elem_size == 8u) {
         dst_data[dst_idx * 2u]      = src_data[src_idx * 2u];
         dst_data[dst_idx * 2u + 1u] = src_data[src_idx * 2u + 1u];
-    } else if (params.elem_size == 2u) {
+    } else if (elem_size == 2u) {
         uint src_word = src_data[src_idx / 2u];
         uint val = ((src_idx & 1u) == 0u) ? (src_word & 0xFFFFu) : (src_word >> 16u);
         if ((dst_idx & 1u) == 0u) {
@@ -80,9 +127,37 @@ void main() {
             dst_data[dst_idx / 2u] = (dst_data[dst_idx / 2u] & 0x0000FFFFu) | (val << 16u);
         }
     } else {
-        uint src_word = src_data[src_idx / 4u];
-        uint val = (src_word >> ((src_idx & 3u) * 8u)) & 0xFFu;
-        uint shift = (dst_idx & 3u) * 8u;
-        dst_data[dst_idx / 4u] = (dst_data[dst_idx / 4u] & ~(0xFFu << shift)) | (val << shift);
+        // 1-byte (bool/uint8/int8)
+        dst8[dst_idx] = src8[src_idx];
+    }
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= params.n) return;
+
+    uint src_idx = 0u;
+    uint dst_idx = 0u;
+
+    if (params.copy_type == COPY_SCALAR) {
+        src_idx = params.src_offset;
+        dst_idx = idx + params.dst_offset;
+    } else if (params.copy_type == COPY_VECTOR) {
+        src_idx = idx + params.src_offset;
+        dst_idx = idx + params.dst_offset;
+    } else if (params.copy_type == COPY_GENERAL) {
+        src_idx = strided_offset_src(idx) + params.src_offset;
+        dst_idx = idx + params.dst_offset;
+    } else {
+        src_idx = strided_offset_src(idx) + params.src_offset;
+        dst_idx = strided_offset_dst(idx) + params.dst_offset;
+    }
+
+    // If types differ, do conversion; otherwise raw copy
+    if (params.src_dtype != params.dst_dtype) {
+        float val = read_as_float(src_idx);
+        write_float(dst_idx, val);
+    } else {
+        raw_copy(src_idx, dst_idx);
     }
 }

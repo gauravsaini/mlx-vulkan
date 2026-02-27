@@ -65,7 +65,7 @@ def test_scatter_basic():
     # Use scatter_along_axis for ScatterAxis dispatch
     try:
         out = mx.zeros(5, dtype=mx.float32)
-        out = mx.put_along_axis(out, idx.reshape(-1, 1), updates.reshape(-1, 1), axis=0)
+        out = mx.put_along_axis(out, idx, updates, axis=0)
         mx.eval(out)
         check("scatter basic", True)
     except Exception as e:

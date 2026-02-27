@@ -11,22 +11,7 @@
 
 namespace mlx::core {
 
-void slice_gpu(
-    const array& in,
-    array& out,
-    const Shape& start_indices,
-    const Shape& strides,
-    const Stream& s) {
-  // Compute the data offset and output strides using the common slicing helper
-  auto [data_offset, out_strides] = prepare_slice(out, start_indices, strides);
 
-  // Set up output to point into input buffer with computed offset and strides
-  auto flags = out.flags();
-  flags.row_contiguous = false;
-  flags.col_contiguous = false;
-  flags.contiguous = false;
-  out.copy_shared_buffer(in, out_strides, flags, out.size(), data_offset);
-}
 
 void concatenate_gpu(
     const std::vector<array>& inputs,
@@ -56,35 +41,7 @@ void concatenate_gpu(
   }
 }
 
-void pad_gpu(
-    const array& in,
-    const array& val,
-    array& out,
-    const std::vector<int>& axes,
-    const Shape& low_pad_size,
-    const Stream& s) {
-  // Fill output with padding value first
-  fill_gpu(val, out, s);
 
-  // Then copy input into the appropriate region
-  if (in.size() == 0) return;
-
-  // Compute offset into out where input should be placed
-  Strides out_strides = out.strides();
-  int64_t data_offset = 0;
-  for (size_t i = 0; i < axes.size(); i++) {
-    data_offset += low_pad_size[i] * out_strides[axes[i]];
-  }
-
-  auto flags = out.flags();
-  flags.row_contiguous = false;
-  flags.col_contiguous = false;
-  flags.contiguous = false;
-
-  array out_slice(in.shape(), out.dtype(), nullptr, {});
-  out_slice.copy_shared_buffer(out, out_strides, flags, in.size(), data_offset);
-  copy_gpu_inplace(in, out_slice, CopyType::GeneralGeneral, s);
-}
 
 array compute_dynamic_offset(
     const array& indices,

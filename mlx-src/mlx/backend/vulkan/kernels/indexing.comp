@@ -16,24 +16,33 @@ layout(push_constant) uniform Params {
     uint idx_size;    // size of index dimension
     uint src_stride;  // stride of indexed dimension in source
     uint dst_stride;  // stride in destination
+    uint src_offset;
+    uint idx_offset;
+    uint dst_offset;
+    uint src_ax_size; // size of the gathered/scattered dimension for negative index bounds
 } params;
 
 void main() {
     uint tid = gl_GlobalInvocationID.x;
     if (tid >= params.n) return;
 
+    // Byte offset converted to elements (assuming 4-byte / 32-bit types)
+    uint s_off = params.src_offset / 4;
+    uint i_off = params.idx_offset / 4;
+    uint d_off = params.dst_offset / 4;
+
     if (params.op == INDEX_GATHER) {
         uint out_elem = tid / params.dst_stride;
         uint within   = tid % params.dst_stride;
-        int src_idx   = idx_data[out_elem % params.idx_size];
-        if (src_idx < 0) src_idx += int(params.src_stride);
+        int src_idx   = idx_data[i_off + (out_elem % params.idx_size)];
+        if (src_idx < 0) src_idx += int(params.src_ax_size);
         uint src_pos  = uint(src_idx) * params.src_stride + within;
-        dst_data[tid] = src_data[src_pos];
+        dst_data[d_off + tid] = src_data[s_off + src_pos];
     } else if (params.op == INDEX_SCATTER) {
         // Scatter: dst[indices[i]] = src[i]
-        int dst_idx = idx_data[tid / params.src_stride];
+        int dst_idx = idx_data[i_off + (tid / params.src_stride)];
         if (dst_idx < 0) dst_idx += int(params.idx_size);
         uint dst_pos = uint(dst_idx) * params.dst_stride + (tid % params.src_stride);
-        dst_data[dst_pos] = src_data[tid];
+        dst_data[d_off + dst_pos] = src_data[s_off + tid];
     }
 }

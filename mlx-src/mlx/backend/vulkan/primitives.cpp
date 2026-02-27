@@ -108,6 +108,9 @@ enum class UnaryOp : uint32_t {
 
 // Dispatch a binary elementwise shader
 // op_id: shader-side op constant
+// The binary.comp shader has 4 bindings:
+//   0=InA, 1=InB, 2=OutCFloat, 3=OutCBool
+// When output is bool, binding 3 is the active output; binding 2 is bound but unused.
 void dispatch_binary(
     const array& a,
     const array& b,
@@ -126,7 +129,9 @@ void dispatch_binary(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 3, 16);
+  // 4 bindings: InA(uint), InB(uint), OutC(uint raw), OutCBool(uint8)
+  // push constant size = 28 bytes (7 x uint32): added input_elem_bytes
+  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 4, 28);
   if (pipeline == VK_NULL_HANDLE) return;
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
@@ -135,8 +140,10 @@ void dispatch_binary(
   VkDescriptorBufferInfo b_info{b_buf, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo c_info{c_buf, 0, VK_WHOLE_SIZE};
 
-  VkWriteDescriptorSet writes[3]{};
-  for (int i = 0; i < 3; i++) {
+  bool output_is_bool = (out.dtype() == bool_);
+
+  VkWriteDescriptorSet writes[4]{};
+  for (int i = 0; i < 4; i++) {
     writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[i].dstSet = ds;
     writes[i].dstBinding = i;
@@ -145,20 +152,42 @@ void dispatch_binary(
   }
   writes[0].pBufferInfo = &a_info;
   writes[1].pBufferInfo = &b_info;
+  // Bind output buffer to both c_raw (binding 2) and c_bool (binding 3).
+  // The shader writes only the binding matching output_is_bool.
   writes[2].pBufferInfo = &c_info;
-  vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
+  writes[3].pBufferInfo = &c_info;
+  vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+  // input_dtype: 0=float, 1=int, 2=uint (must match binary.comp DTYPE_* constants)
+  auto to_input_dtype = [](Dtype dt) -> uint32_t {
+    switch (dt) {
+      case float32: case float16: case bfloat16: return 0; // DTYPE_FLOAT
+      case int8:    case int16:   case int32: case int64:   return 1; // DTYPE_INT
+      default:                                              return 2; // DTYPE_UINT
+    }
+  };
+
+  // Use input a's dtype for arithmetic path; if bool op, both inputs share type
+  Dtype in_dtype = a.dtype();
 
   struct PushConst {
     uint32_t n;
     uint32_t op;
     uint32_t a_scalar;
     uint32_t b_scalar;
+    uint32_t output_is_bool;
+    uint32_t input_dtype;
+    uint32_t input_elem_bytes; // bytes per input element (for sub-word types like bool=1)
   } pc{
     static_cast<uint32_t>(out.size()),
     op_id,
     a.data_size() == 1 ? 1u : 0u,
-    b.data_size() == 1 ? 1u : 0u
+    b.data_size() == 1 ? 1u : 0u,
+    output_is_bool ? 1u : 0u,
+    to_input_dtype(in_dtype),
+    static_cast<uint32_t>(in_dtype.size())  // Dtype::size() gives bytes per element
   };
+
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -277,7 +306,6 @@ UNARY_GPU(Log1p,      Log1p)
 UNARY_GPU(LogicalNot, Neg)
 UNARY_GPU(Negative,   Neg)
 UNARY_GPU(Round,      Round)
-UNARY_GPU(Rsqrt,      Rsqrt)
 UNARY_GPU(Sigmoid,    Sigmoid)
 UNARY_GPU(Sign,       Sign)
 UNARY_GPU(Sin,        Sin)
@@ -289,7 +317,7 @@ UNARY_GPU(Tanh,       Tanh)
 
 // BitwiseInvert: fall back to CPU (requires XOR with all-ones broadcast)
 void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -307,7 +335,6 @@ BINARY_GPU(Add,          Add)
 BINARY_GPU(ArcTan2,      Arctan2)
 BINARY_GPU(Divide,       Div)
 BINARY_GPU(Equal,        Equal)
-BINARY_GPU(FloorDivide,  FloorDiv)
 BINARY_GPU(Greater,      Greater)
 BINARY_GPU(GreaterEqual, GreaterEq)
 BINARY_GPU(Less,         Less)
@@ -373,7 +400,7 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("ternary", layout, ds_layout, 4, 16);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -444,7 +471,7 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("arange", layout, ds_layout, 1, 12);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -504,27 +531,34 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("reduce", layout, ds_layout, 2, 16);
+  // 4 bindings: InRaw, OutFloat, OutBool, InBool
+  VkPipeline pipeline = dev.get_pipeline("reduce", layout, ds_layout, 4, 24);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
-  VkDescriptorBufferInfo in_info{in_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo in_info{in_buf,  0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo out_info{out_buf, 0, VK_WHOLE_SIZE};
 
-  VkWriteDescriptorSet writes[2]{};
-  writes[0].sType = writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[0].dstSet = writes[1].dstSet = ds;
-  writes[0].dstBinding = 0;
-  writes[1].dstBinding = 1;
-  writes[0].descriptorCount = writes[1].descriptorCount = 1;
-  writes[0].descriptorType = writes[1].descriptorType =
-      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  writes[0].pBufferInfo = &in_info;
-  writes[1].pBufferInfo = &out_info;
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
+  VkWriteDescriptorSet writes[4]{};
+  for (int i = 0; i < 4; i++) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  }
+  // binding 0 = InRaw (uint32 view of input)
+  // binding 1 = OutFloat (float output, written when output_is_bool==0)
+  // binding 2 = OutBool (uint8 output, written when output_is_bool==1)
+  // binding 3 = InBool (uint8 view of input, used when input_is_bool==1)
+  writes[0].pBufferInfo = &in_info;   // InRaw
+  writes[1].pBufferInfo = &out_info;  // OutFloat
+  writes[2].pBufferInfo = &out_info;  // OutBool (same buffer, shader picks based on flag)
+  writes[3].pBufferInfo = &in_info;   // InBool (same buffer, shader picks based on flag)
+  vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
   uint32_t n_outputs = static_cast<uint32_t>(out.size() > 0 ? out.size() : 1);
   uint32_t reduce_size =
@@ -545,11 +579,15 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t reduce_size;
     uint32_t n_outputs;
     uint32_t op;
+    uint32_t input_is_bool;
+    uint32_t output_is_bool;
   } pc{
     static_cast<uint32_t>(inputs[0].size()),
     reduce_size,
     n_outputs,
-    op_id
+    op_id,
+    inputs[0].dtype() == bool_ ? 1u : 0u,
+    out.dtype() == bool_ ? 1u : 0u
   };
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -586,7 +624,7 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipeline pipeline =
       dev.get_pipeline("arg_reduce", layout, ds_layout, 2, 16);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -676,7 +714,7 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("matmul", layout, ds_layout, 3, 28);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -747,7 +785,7 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("softmax", layout, ds_layout, 2, 8);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -813,7 +851,7 @@ void LogSumExp::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipeline pipeline =
       dev.get_pipeline("logsumexp", layout, ds_layout, 2, 12);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -890,7 +928,7 @@ void DivMod::eval_gpu(
   VkPipeline pipeline =
       dev.get_pipeline("binary_two", layout, ds_layout, 4, 16);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, outputs);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -949,9 +987,89 @@ void DivMod::eval_gpu(
 // Gather / Scatter (indexing)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// General Gather: multi-axis + slice_sizes → CPU fallback (complex)
 void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  if (inputs.size() == 2 && axes_.size() == 1 && axes_[0] == 0 &&
+      slice_sizes_.size() == 1 && slice_sizes_[0] == 1 &&
+      inputs[0].ndim() == 1) {
+    // Fast path exactly for mx.take(1D_array, idx)
+    out.set_data(allocator::malloc(out.nbytes()));
+    if (out.size() == 0) return;
+
+    auto& encoder = vulkan::get_command_encoder(stream());
+    auto& dev = vulkan::device(stream().device);
+    encoder.op_count++;
+
+    const array& src = inputs[0];
+    const array& idx = inputs[1];
+
+    VkBuffer src_buf = vulkan::get_buffer(src);
+    VkBuffer idx_buf = vulkan::get_buffer(idx);
+    VkBuffer out_buf = vulkan::get_buffer(out);
+
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout ds_layout;
+    VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 32);
+    if (pipeline == VK_NULL_HANDLE) {
+      throw std::runtime_error("[Gather::eval_gpu] Pipeline indexing not found.");
+    }
+
+    VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+    VkDescriptorBufferInfo infos[3]{
+      {src_buf, 0, VK_WHOLE_SIZE},
+      {idx_buf, 0, VK_WHOLE_SIZE},
+      {out_buf, 0, VK_WHOLE_SIZE}
+    };
+    VkWriteDescriptorSet writes[3]{};
+    for (int i = 0; i < 3; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
+
+    struct PushConst {
+      uint32_t n;
+      uint32_t op;
+      uint32_t idx_size;
+      uint32_t src_stride;
+      uint32_t dst_stride;
+      uint32_t src_offset;
+      uint32_t idx_offset;
+      uint32_t dst_offset;
+      uint32_t src_ax_size;
+    } pc{
+      static_cast<uint32_t>(out.size()),
+      0u, // INDEX_GATHER
+      static_cast<uint32_t>(idx.size()),
+      1u, // src_stride = 1 for 1D flatten
+      1u, // dst_stride = 1 for 1D flatten
+      static_cast<uint32_t>(src.offset() * src.itemsize()),
+      static_cast<uint32_t>(idx.offset() * idx.itemsize()),
+      static_cast<uint32_t>(out.offset() * out.itemsize()),
+      static_cast<uint32_t>(src.shape(0))
+    };
+
+    VkCommandBuffer cmd = encoder.cmd;
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+    vkCmdDispatch(cmd, vulkan::div_ceil(out.size(), vulkan::WORKGROUP_SIZE), 1, 1);
+
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+    return;
+  }
+  
+  throw std::runtime_error("[vulkan::Gather::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // GatherAxis: simple axis-indexed gather → GPU dispatch
@@ -972,13 +1090,14 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 20);
+  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 32);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
-    return;
+    throw std::runtime_error("[GatherAxis::eval_gpu] Pipeline indexing not found.");
   }
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  // macOS MoltenVK requires storage buffer bindings to be aligned to minStorageBufferOffsetAlignment (often 256 bytes).
+  // Therefore we bind at offset 0 and pass the byte offsets to the shader manually.
   VkDescriptorBufferInfo infos[3]{
     {src_buf, 0, VK_WHOLE_SIZE},
     {idx_buf, 0, VK_WHOLE_SIZE},
@@ -1011,18 +1130,29 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t idx_size;
     uint32_t src_stride;
     uint32_t dst_stride;
+    uint32_t src_offset;
+    uint32_t idx_offset;
+    uint32_t dst_offset;
+    uint32_t src_ax_size;
   } pc{
     static_cast<uint32_t>(out.size()),
     0u,  // INDEX_GATHER
     static_cast<uint32_t>(idx.size()),
     src_stride,
-    dst_stride
+    dst_stride,
+    static_cast<uint32_t>(src.offset() * src.itemsize()),
+    static_cast<uint32_t>(idx.offset() * idx.itemsize()),
+    static_cast<uint32_t>(out.offset() * out.itemsize()),
+    static_cast<uint32_t>(src.shape(axis_))
   };
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  
   vkCmdDispatch(cmd, vulkan::div_ceil(out.size(), vulkan::WORKGROUP_SIZE), 1, 1);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -1032,11 +1162,12 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       0, 1, &barrier, 0, nullptr, 0, nullptr);
+      
 }
 
 // General Scatter: multi-axis → CPU fallback
 void Scatter::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::Scatter::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ScatterAxis: simple axis-indexed scatter → GPU dispatch
@@ -1064,13 +1195,14 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 20);
+  VkPipeline pipeline = dev.get_pipeline("indexing", layout, ds_layout, 3, 32);
   if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  // macOS MoltenVK alignment bypass: pass byte offsets in push constants
   VkDescriptorBufferInfo infos[3]{
     {upd_buf, 0, VK_WHOLE_SIZE},  // src for scatter = updates
     {idx_buf, 0, VK_WHOLE_SIZE},
@@ -1105,12 +1237,18 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t idx_size;
     uint32_t src_stride;
     uint32_t dst_stride;
+    uint32_t src_offset;
+    uint32_t idx_offset;
+    uint32_t dst_offset;
   } pc{
     static_cast<uint32_t>(updates.size()),
     op,
     static_cast<uint32_t>(idx.size()),
     src_stride,
-    dst_stride
+    dst_stride,
+    static_cast<uint32_t>(updates.offset() * updates.itemsize()),
+    static_cast<uint32_t>(idx.offset() * idx.itemsize()),
+    static_cast<uint32_t>(out.offset() * out.itemsize())
   };
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -1143,10 +1281,9 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   uint32_t sort_pow2 = 1;
   while (sort_pow2 < sort_size) sort_pow2 <<= 1;
 
-  // Fall back to CPU if sort dimension > 512 or not last axis
-  if (sort_pow2 > 512 || sort_axis != in.ndim() - 1) {
-    eval(inputs, out);
-    return;
+  // Throw Error if sort dimension > 256 or not last axis
+  if (sort_pow2 > 256 || sort_axis != in.ndim() - 1) {
+    throw std::runtime_error("[vulkan::Sort::eval_gpu] Fallback to eval_cpu is unsupported");
   }
 
   // Copy input to output (sort is in-place on output)
@@ -1171,7 +1308,7 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipeline pipeline = dev.get_pipeline("sort", layout, ds_layout, 2, 20);
   if (pipeline == VK_NULL_HANDLE) {
     allocator::free(idx_alloc);
-    eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
     return;
   }
 
@@ -1220,17 +1357,15 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 
 void ArgSort::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // ArgSort requires with_index=1 but returning indices only.
-  // For now, use CPU fallback (shader writes indices into separate buffer).
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::ArgSort::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 void Partition::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::Partition::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::ArgPartition::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1238,92 +1373,9 @@ void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
-  const auto& in = inputs[0];
-
-  int scan_axis = axis_ < 0 ? in.ndim() + axis_ : axis_;
-  uint32_t scan_size = static_cast<uint32_t>(in.shape(scan_axis));
-
-  // Round up to next power of 2
-  uint32_t scan_pow2 = 1;
-  while (scan_pow2 < scan_size) scan_pow2 <<= 1;
-
-  // Fall back to CPU for large sizes or non-last-axis
-  if (scan_pow2 > 512 || scan_axis != in.ndim() - 1) {
-    eval(inputs, out);
-    return;
-  }
-
-  // Map Scan::ReduceType to shader op codes
-  uint32_t op;
-  switch (reduce_type_) {
-    case Scan::ReduceType::Sum:  op = 0; break;  // SCAN_ADD
-    case Scan::ReduceType::Prod: op = 1; break;  // SCAN_MUL
-    case Scan::ReduceType::Max:  op = 2; break;  // SCAN_MAX
-    case Scan::ReduceType::Min:  op = 3; break;  // SCAN_MIN
-    default:
-      eval(inputs, out);
-      return;
-  }
-
-  out.set_data(allocator::malloc(out.nbytes()));
-
-  uint32_t n = static_cast<uint32_t>(out.size());
-  uint32_t n_scans = n / scan_size;
-
-  auto& encoder = vulkan::get_command_encoder(stream());
-  auto& dev = vulkan::device(stream().device);
-  encoder.op_count++;
-
-  VkBuffer in_buf  = vulkan::get_buffer(in);
-  VkBuffer out_buf = vulkan::get_buffer(out);
-
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("scan", layout, ds_layout, 2, 24);
-  if (pipeline == VK_NULL_HANDLE) {
-    eval(inputs, out);
-    return;
-  }
-
-  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
-  VkDescriptorBufferInfo infos[2]{
-    {in_buf,  0, VK_WHOLE_SIZE},
-    {out_buf, 0, VK_WHOLE_SIZE}
-  };
-  VkWriteDescriptorSet writes[2]{};
-  for (int i = 0; i < 2; i++) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = ds;
-    writes[i].dstBinding = i;
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
-
-  struct PushConst {
-    uint32_t n;
-    uint32_t scan_size;
-    uint32_t n_scans;
-    uint32_t op;
-    uint32_t inclusive;
-    uint32_t reverse;
-  } pc{n, scan_pow2, n_scans, op, inclusive_ ? 1u : 0u, reverse_ ? 1u : 0u};
-
-  VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  vkCmdDispatch(cmd, n_scans, 1, 1);
-
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0, 1, &barrier, 0, nullptr, 0, nullptr);
+  throw std::runtime_error("[vulkan::Scan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AddMM - CPU fallback until matmul+add pipeline is integrated
@@ -1333,6 +1385,7 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 3);
   auto& s = stream();
   auto& d = vulkan::device(s.device);
+  auto& encoder = d.get_command_encoder(s);
 
   const array& a = inputs[0];
   const array& b = inputs[1];
@@ -1342,24 +1395,26 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (beta_ == 1.0f) {
       array zero_arr(0.0f, out.dtype());
       dispatch_binary(c, zero_arr, out, 0 /* Add */, s);
-      d.add_temporary(std::move(zero_arr), s.index);
+      encoder.add_temporary(zero_arr);
     } else {
       array beta_arr(beta_, out.dtype());
       dispatch_binary(c, beta_arr, out, 2 /* Mul */, s);
-      d.add_temporary(std::move(beta_arr), s.index);
+      encoder.add_temporary(beta_arr);
     }
     return;
   }
 
   array temp_ab(out.shape(), out.dtype(), nullptr, {});
   Matmul(s).eval_gpu({a, b}, temp_ab);
+  encoder.add_temporary(temp_ab);
 
   array scaled_ab = temp_ab;
   if (alpha_ != 1.0f) {
     array alpha_arr(alpha_, out.dtype());
     array temp(out.shape(), out.dtype(), nullptr, {});
     dispatch_binary(temp_ab, alpha_arr, temp, 2 /* Mul */, s);
-    d.add_temporary(std::move(alpha_arr), s.index);
+    encoder.add_temporary(alpha_arr);
+    encoder.add_temporary(temp);
     scaled_ab = temp;
   }
 
@@ -1368,21 +1423,22 @@ void AddMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     array beta_arr(beta_, out.dtype());
     array temp(out.shape(), out.dtype(), nullptr, {});
     dispatch_binary(c, beta_arr, temp, 2 /* Mul */, s);
-    d.add_temporary(std::move(beta_arr), s.index);
+    encoder.add_temporary(beta_arr);
+    encoder.add_temporary(temp);
     scaled_c = temp;
   }
 
   if (beta_ == 0.0f) {
     array zero_arr(0.0f, out.dtype());
     dispatch_binary(scaled_ab, zero_arr, out, 0 /* Add */, s);
-    d.add_temporary(std::move(zero_arr), s.index);
+    encoder.add_temporary(zero_arr);
   } else {
     dispatch_binary(scaled_ab, scaled_c, out, 0 /* Add */, s);
   }
 
-  d.add_temporary(std::move(temp_ab), s.index);
-  if (alpha_ != 1.0f) d.add_temporary(std::move(scaled_ab), s.index);
-  if (beta_ != 1.0f && beta_ != 0.0f) d.add_temporary(std::move(scaled_c), s.index);
+  encoder.add_temporary(temp_ab);
+  if (alpha_ != 1.0f) encoder.add_temporary(scaled_ab);
+  if (beta_ != 1.0f && beta_ != 0.0f) encoder.add_temporary(scaled_c);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1412,8 +1468,7 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
   for (auto d : input_dilation_) if (d != 1) can_use_gpu = false;
 
   if (!can_use_gpu) {
-    eval(inputs, out);
-    return;
+    throw std::runtime_error("[vulkan::Convolution::eval_gpu] Fallback to eval_cpu is unsupported");
   }
 
   out.set_data(allocator::malloc(out.nbytes()));
@@ -1424,7 +1479,7 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("conv", layout, ds_layout, 3, 52);
   if (pipeline == VK_NULL_HANDLE) {
-      eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
       return;
   }
 
@@ -1526,8 +1581,7 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("rbits", layout, ds_layout, 2, 12);
   if (pipeline == VK_NULL_HANDLE) {
-      eval(inputs, out); // fallback
-      return;
+    throw std::runtime_error("[vulkan::RandomBits::eval_gpu] Fallback to eval_cpu is unsupported");
   }
 
   uint32_t grid_y = half_size + odd;
@@ -1559,7 +1613,8 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t odd;
     uint32_t bytes_per_key;
     uint32_t ndim;
-  } pc{odd, static_cast<uint32_t>(bytes_per_key), static_cast<uint32_t>(keys.ndim())};
+    uint32_t num_keys;
+  } pc{odd, static_cast<uint32_t>(bytes_per_key), static_cast<uint32_t>(keys.ndim()), static_cast<uint32_t>(num_keys)};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -1585,7 +1640,7 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1593,11 +1648,11 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Imag::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 void Real::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1605,7 +1660,7 @@ void Real::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
-  eval(inputs, out);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1614,7 +1669,7 @@ void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void Compiled::eval_gpu(
     const std::vector<array>& inputs, std::vector<array>& outputs) {
-  eval(inputs, outputs);
+  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1628,12 +1683,10 @@ NO_GPU(QuantizedMatmul)
 NO_GPU(QQMatmul)
 NO_GPU(SegmentedMM)
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FFT / Hadamard
 // ─────────────────────────────────────────────────────────────────────────────
-
-NO_GPU(FFT)
-NO_GPU(Hadamard)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Linear algebra
@@ -1937,3 +1990,4 @@ NO_GPU_MULTI(ReduceScatter)
 } // namespace distributed
 
 } // namespace mlx::core
+

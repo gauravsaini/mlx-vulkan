@@ -1,0 +1,83 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer SrcBuf { float src[]; };
+layout(std430, set = 0, binding = 1) buffer DstBuf { float dst[]; };
+
+// Shared memory for threadgroup Hadamard Transform
+shared float shared_mem[4096];
+
+layout(push_constant) uniform Params {
+    uint n;
+    uint batch_size;
+    uint scale;      // 1 if we need to scale by 1 / sqrt(N), else 0
+    uint steps;      // log2(n)
+} params;
+
+// A simple radix-2 Hadamard butterfly (no twiddles)
+void hadamard_radix2(in float x[2], out float y[2]) {
+    y[0] = x[0] + x[1];
+    y[1] = x[0] - x[1];
+}
+
+void perform_hadamard(uint fft_idx, uint m, uint n) {
+    uint p = 1u;
+    float inputs[2];
+    float values[2];
+    
+    // Process all log2(N) steps
+    for (uint s = 0; s < params.steps; s++) {
+        uint m_r = n / 2u;
+        uint index = 0;
+        
+        // Single thread maps to one or more butterflies
+        // For simplicity we assume m (threads) <= m_r here in this MVP
+        if (fft_idx < m_r) {
+            index = fft_idx;
+            inputs[0] = shared_mem[index];
+            inputs[1] = shared_mem[index + m_r];
+            
+            hadamard_radix2(inputs, values);
+            
+            // Re-map into bit-reversed or naturally ordered indices 
+            // depending on the iteration step. 
+            // In a pure Hadamard transform (Sylvester construction), the structure is very regular.
+            uint k = index & (p - 1);
+            uint j = ((index - k) << 1) + k;
+            
+            shared_mem[j] = values[0];
+            shared_mem[j + p] = values[1];
+        }
+        
+        barrier();
+        p *= 2u;
+    }
+}
+
+void main() {
+    uint batch_idx = gl_WorkGroupID.y;
+    uint elem = gl_GlobalInvocationID.x;
+    
+    uint n = params.n;
+    if (elem >= n) return;
+    
+    // Load into shared memory
+    shared_mem[elem] = src[batch_idx * n + elem];
+    barrier();
+    
+    uint fft_idx = gl_LocalInvocationID.x;
+    uint m = gl_WorkGroupSize.x;
+    
+    // Process the Hadamard Transform (stub algorithm inside threadgroup)
+    perform_hadamard(fft_idx, m, n);
+    
+    // Scale output if requested (1/sqrt(N))
+    float out_val = shared_mem[elem];
+    if (params.scale == 1u) {
+        out_val *= inversesqrt(float(n));
+    }
+    
+    // Write out results
+    dst[batch_idx * n + elem] = out_val;
+}
