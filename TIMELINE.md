@@ -62,6 +62,31 @@
 
 ---
 
+## UPDATED ON : 2026-02-26
+
+### feat (2026-02-26) — AddMM, Convolution, RandomBits GPU dispatch
+
+1. **AddMM (alpha·A@B + beta·C)**: CPU fallback via `add_mm` (BLAS); GPU dispatches matmul + scalar-multiply binary shaders
+2. **Convolution**: CPU fallback for full convolution; GPU path dispatches `conv.comp` shader for 1D/2D cases
+3. **RandomBits**: New `rbits.comp` shader implementing Philox RNG (4-round counter-based); generates random uint32 bits on GPU; supports different seeds and key splitting
+4. **Tests**: `test_stage17_addmm_conv_rbits.py` added — covers AddMM dimensions, conv correctness, random shape/seed behaviour
+5. **Files changed**: `kernels/rbits.comp`, `primitives.cpp`, `CMakeLists.txt`, `PLAN.md`, `tests/vulkan/test_stage17_addmm_conv_rbits.py`
+
+---
+
+## UPDATED ON : 2026-02-25
+
+### feat (2026-02-25) — MLX Vulkan backend foundation
+
+1. **Full Vulkan backend scaffold**: Device init (VkInstance → physical device → logical device), VMA allocator, per-stream CommandEncoder, pipeline cache (load/save binary), descriptor pool
+2. **20+ GLSL compute shaders**: `unary.comp`, `binary.comp`, `binary_two.comp`, `copy.comp`, `reduce.comp`, `arg_reduce.comp`, `matmul.comp`, `softmax.comp`, `arange.comp`, `indexing.comp`, `scan.comp`, `sort.comp`, `normalization.comp`, `rope.comp`, `logsumexp.comp`, `random.comp`, `conv.comp`, `quantized.comp`
+3. **GPU dispatch implemented** for: Unary (28 ops), Binary (18 ops), Ternary/Select, Arange, Reduce (Sum/Max/Min/Prod/And/Or), ArgReduce, Matmul, Softmax, LogSumExp, Copy, Gather (1D), Sort
+4. **MoltenVK / Apple M1**: Zero-copy path via `VK_EXT_external_memory_host`; pipeline cache persisted to `~/.cache/`
+5. **Test suite (stages 1–16)**: Device, build, shader, allocator, unified-mem, workgroup, CPU smoke, copy, unary, binary, reduce, matmul, NN ops, indexing, sort, scan, NN-extended stages
+6. **Files changed**: entire `mlx-src/mlx/backend/vulkan/`, `tests/vulkan/` (18 test files), `PLAN.md`, `REFERENCES.md`
+
+---
+
 ## UPDATED ON : 2026-02-27
 
 ### feat (2026-02-27) — FFT/RFFT Vulkan GPU implementation
