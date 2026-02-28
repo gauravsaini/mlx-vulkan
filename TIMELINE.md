@@ -154,3 +154,34 @@
 3. **Tests**: Stage 17 FFT: 0/3 → **3/3** ✅
 
 4. **Files changed**: `kernels/fft.comp`, `fft.cpp`, `PLAN.md`
+
+---
+
+## UPDATED ON : 2026-03-01
+
+### fix (2026-03-01) — Unary shader enum mismatch + float16 arithmetic correctness
+
+1. **Enum mismatch fixed in `unary.comp`**:
+   - Root cause: `unary.comp` declared `UNARY_LOG2=10` after `LOG1P=9`, pushing `Sin=11` etc. But `primitives.cpp::UnaryOp` has `Sin=10, Cos=11, ...`. Result: 15 operations dispatched to the wrong opcode — `sin(0.5)` returned `log2(0.5)=-1`.
+   - Fix: rewrote `unary.comp` constants to exactly match `primitives.cpp` enum values. All 27 subtests now pass.
+
+2. **float16 arithmetic correctness in `unary.comp`**:
+   - Root cause: float16 input was stored as 16-bit in a uint32 buffer. The shader read it with `uintBitsToFloat()` which reinterprets raw bits as float32 — producing garbage (exp(2.0 f16) returned 0.0).
+   - Fix: added `input_elem_bytes` push constant to `dispatch_unary`. When `input_elem_bytes==2`, shader uses `unpackHalf2x16()`/`packHalf2x16()` and processes 2 f16 elements per thread. exp(2.0 f16)=7.39 ✅
+
+3. **Log2/Log10 dispatch fixed**:
+   - Root cause: `log2` and `log10` are handled by a single `Log` C++ class with a `Base` enum (e/two/ten). `UNARY_GPU(Log, Log)` generated only `Log::eval_gpu` with `op=Log`, discarding log2/log10.
+   - Fix: removed `UNARY_GPU(Log, Log)` and replaced with explicit `Log::eval_gpu` that checks `state()` (the base) to select `UnaryOp::Log`, `UnaryOp::Log2`, or `UnaryOp::Log10`.
+
+4. **Allocator 4-byte alignment**: `VulkanAllocator::malloc` and `alloc_staging` now pad all allocations to 4-byte boundary. Prevents Metal out-of-bounds when reading uint32 words from a float16 buffer sized as 2N bytes.
+
+5. **Pipeline cache version v4→v7**: Bumped `kPipelineCacheVersion` to force recompilation after shader layout changes.
+
+6. **Tests** (before → after for `pytest python/tests/test_ops.py -k unary`):
+   - float32 sin/cos/tan/sinh/cosh/tanh/arcsin/arccos/arctan/arcsinh/arccosh/arctanh: ❌ wrong → ✅ correct
+   - log2(0.5)=-1.0, log10(0.5)=-0.301: ❌ not dispatched → ✅ correct
+   - float16 exp(2.0)=7.39, sin(1.0)=0.841: ❌ garbage → ✅ correct
+   - `2 passed, 0 failed` ✅
+
+7. **Files changed**: `kernels/unary.comp`, `backend/vulkan/primitives.cpp`, `backend/vulkan/device.cpp`, `backend/vulkan/allocator.cpp`
+

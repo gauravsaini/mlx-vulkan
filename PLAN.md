@@ -108,11 +108,17 @@ Ran comprehensive test suites `test_array.py` and `test_ops.py`. Results:
 - Total: 93/203 tests pass (46%).
 
 **Failure Patterns to Address Next**:
-1. **`float16` arithmetic correctness**: Binary/unary shaders handling `float16` produce wrong numbers (e.g. `test_unary_ops` fails for `exp`, `log`, `square` on float16). Likely a bit-reinterpretation issue.
-2. **Missing GPU Primitives**: Ops like `AsStrided`, `Scatter` (multi-axis), `ArgPartition` throw "Fallback to eval_cpu is unsupported".
-3. **Unary trig/special ops**: `cos`, `sin`, `erf` etc. produce wrong output values for standard inputs.
-4. **Reduction correctness**: `test_sum` returns 0 for a non-zero sum, indicating reduction/type conversion issues.
-5. **GPU Deadlock**: `test_deep_graphs` causes the only observed hang (needs investigation into graph evaluation or allocator).
+1. **Missing GPU Primitives**: Ops like `AsStrided`, `Scatter` (multi-axis), `ArgPartition` throw "Fallback to eval_cpu is unsupported".
+2. **Reduction correctness**: `test_sum` returns 0 for a non-zero sum, indicating reduction/type conversion issues.
+3. **GPU Deadlock**: `test_deep_graphs` causes the only observed hang.
+
+### Fixed (2026-03-01) — Unary Shader Enum Mismatch + float16 Support
+
+18. **unary.comp — enum values off by one for 15/31 operations**: The original `unary.comp` had `UNARY_LOG2=10` inserted after `LOG1P=9`, pushing `Sin=11`, `Cos=12`, etc. — but `primitives.cpp` had `Sin=10`, `Cos=11`, etc. Result: every function from `sin` onward dispatched the *wrong* opcode (e.g. `sin(0.5)` returned `log2(0.5) = -1`). Fixed by rewriting `unary.comp` with constants derived directly from the `UnaryOp` enum in `primitives.cpp`. 15 operations now return correct results.
+
+19. **unary.comp — no float16 support**: Float16 input was interpreted as `float` bits via `uintBitsToFloat()`, producing garbage (e.g. `exp(2.0 f16) = 0.0`). Fixed: added a float16 path in `main()` that uses `unpackHalf2x16()`/`packHalf2x16()` to process two f16 values per thread from a single `uint32` word. push constants now include `input_elem_bytes` so the shader can branch. `exp(2.0 f16) = 7.39` ✅
+
+20. **Log::eval_gpu — log2/log10 had no GPU dispatch**: `unary.comp` received op code `Log2=29` but there was no `Log2::eval_gpu` — only a single `Log` class with a `Base` enum (e, two, ten). Fixed: removed `UNARY_GPU(Log, Log)` macro and replaced with an explicit `Log::eval_gpu` that checks `state()` (the base) and dispatches `UnaryOp::Log`, `UnaryOp::Log2`, or `UnaryOp::Log10`. `log2(0.5) = -1.0` ✅, `log10(0.5) = -0.301` ✅
 
 - Hadamard: Not yet implemented (`kernels/hadamard.comp` stub only).
 - Scan: scan_size > 1024 throws (multi-pass GPU scan not yet implemented). LogAddExp variant not on GPU.
