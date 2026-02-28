@@ -60,6 +60,9 @@ float erf_approx(float x) {
 
 // Inverse erf using Newton's method
 float erfinv_approx(float x) {
+    // Explicit boundary conditions: erfinv(±1) = ±inf
+    if (x >= 1.0)  return uintBitsToFloat(0x7F800000u);  // +inf
+    if (x <= -1.0) return uintBitsToFloat(0xFF800000u);  // -inf
     float w = -log((1.0 - x) * (1.0 + x));
     float p;
     if (w < 5.0) {
@@ -114,7 +117,17 @@ float compute_op(float val) {
         case UNARY_ARCTANH: return 0.5 * log((1.0 + val) / (1.0 - val));
         case UNARY_CEIL:    return ceil(val);
         case UNARY_FLOOR:   return floor(val);
-        case UNARY_ROUND:   return round(val);
+        case UNARY_ROUND: {
+            // Banker's rounding (round-half-to-even) to match IEEE 754 / numpy behavior
+            float fl = floor(val);
+            float diff = val - fl;
+            if (diff < 0.5) return fl;
+            if (diff > 0.5) return fl + 1.0;
+            // Exactly 0.5: round to nearest even
+            float rounded = fl + 1.0;
+            float even = (mod(fl, 2.0) == 0.0) ? fl : rounded;
+            return even;
+        }
         case UNARY_ERF:     return erf_approx(val);
         case UNARY_ERFINV:  return erfinv_approx(val);
         case UNARY_SIGMOID: return 1.0 / (1.0 + exp(-val));
