@@ -100,13 +100,22 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 17. **Pipeline cache v3→v4**: binary.comp push constant layout changed (28→80 bytes). Bumped `kPipelineCacheVersion` in `device.cpp`. Additionally, the build system (`setup.py build_ext`) does not automatically detect `.comp` shader changes — manual `glslc` recompilation is required after shader edits. This was a contributing factor to debugging difficulty (stale `.spv` cached from Feb 27 was running instead of the modified shader).
 
-### Known Remaining Issues
+### Known Remaining Issues (Test Suite Audit 2026-02-28)
 
-- `unary.comp`: Similar int32 dtype issue may exist for ops like `abs`/`neg` on int32 inputs (not yet tested).
+Ran comprehensive test suites `test_array.py` and `test_ops.py`. Results:
+- `test_array.py`: 52 PASS, 16 FAIL, 1 HANG (`test_deep_graphs`)
+- `test_ops.py`: 41 PASS, 93 FAIL, 0 HANG (Zero GPU deadlocks in ops suite!)
+- Total: 93/203 tests pass (46%).
+
+**Failure Patterns to Address Next**:
+1. **`float16` arithmetic correctness**: Binary/unary shaders handling `float16` produce wrong numbers (e.g. `test_unary_ops` fails for `exp`, `log`, `square` on float16). Likely a bit-reinterpretation issue.
+2. **Missing GPU Primitives**: Ops like `AsStrided`, `Scatter` (multi-axis), `ArgPartition` throw "Fallback to eval_cpu is unsupported".
+3. **Unary trig/special ops**: `cos`, `sin`, `erf` etc. produce wrong output values for standard inputs.
+4. **Reduction correctness**: `test_sum` returns 0 for a non-zero sum, indicating reduction/type conversion issues.
+5. **GPU Deadlock**: `test_deep_graphs` causes the only observed hang (needs investigation into graph evaluation or allocator).
+
 - Hadamard: Not yet implemented (`kernels/hadamard.comp` stub only).
 - Scan: scan_size > 1024 throws (multi-pass GPU scan not yet implemented). LogAddExp variant not on GPU.
-- Full `test_array.py` suite: Not yet fully run.
-- `test_ops.py` suite: Not yet run.
 
 ---
 
