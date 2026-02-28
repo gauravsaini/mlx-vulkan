@@ -2,6 +2,32 @@
 
 ---
 
+## UPDATED ON : 2026-03-02
+
+### fix (2026-03-02) — Binary broadcast bug fix + ARM layer assessment
+
+1. **Binary broadcast bug fixed in `dispatch_binary`**:
+   - Root cause: non-contiguous broadcast arrays (zero-stride, `data_size < size`) were indexed with
+     flat `idx` in the shader, reading wrong memory positions
+   - Fix: at start of `dispatch_binary`, detect non-row-contiguous inputs with `data_size > 1` and
+     make them contiguous via `contiguous_copy_gpu()`; temporaries kept alive via `encoder.add_temporary()`
+   - Push constant layout unchanged (28 bytes, 7 fields); no pipeline cache bump required
+
+2. **ARM AI/ML Emulation Layer assessed**:
+   - Repo: `arm/ai-ml-emulation-layer-for-vulkan` — Vulkan loader extension layer
+   - No reusable ML shaders; only `copy.comp` in `tensor/shaders/`
+   - Validates our AOT SPIR-V strategy; `VK_ARM_tensors` noted as future Mali fast-path
+   - Added assessment to `PLAN.md` under External References
+
+3. **Tests** (before → after):
+   - Broadcast subtraction: ❌ wrong output → ✅ correct
+   - `logsumexp` (uses broadcast internally): ❌ wrong → ✅ correct
+   - Stages 13–18: all unchanged ✅
+
+4. **Files changed**: `primitives.cpp`, `PLAN.md`, `TIMELINE.md`, `MEMORY.md`
+
+---
+
 ## UPDATED ON : 2026-03-01
 
 ### fix (2026-03-01) — Reduce any-axis + logcumsumexp GPU support
