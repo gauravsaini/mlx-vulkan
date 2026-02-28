@@ -88,6 +88,18 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 15. **Scan::eval_gpu unconditionally threw**: Prefix scan (cumsum/cumprod) always failed with a runtime_error. Implemented full GPU dispatch via a two-level Hillis-Steele scan in `scan.comp`: serial inclusive scan within each thread's chunk (chunk_size = ceil(scan_size/256)), parallel cross-chunk prefix on stotals[], propagate back, exclusive conversion at writeback. Supports scan_size ≤ 1024; Sum/Prod/Max/Min; inclusive and exclusive; reverse.
 
+### Fixed (2026-02-28) — Binary broadcast stride-based indexing
+
+16. **binary.comp — broadcast arrays caused GPU hang**: Binary shader used flat `idx` for both inputs. For broadcast arrays like `(2,1)` broadcast to `(2,3)`, `data_size=2` but shader indexed `b[0..5]` → OOB GPU hang. Three approaches were tried:
+
+    **Rejected: Modulo indexing (`idx % data_size`)** — Works for scalar (`data_size=1`, `idx%1=0`) and row broadcast (`(1,3)→(2,3)`: `data_size=3`, `idx%3` gives `0,1,2,0,1,2`). Fails for column broadcast (`(2,1)→(2,3)`: `data_size=2`, `idx%2` gives `0,1,0,1,0,1` but correct mapping is `0,0,0,1,1,1`). The issue: simple modulo assumes the broadcast dimension is last, which isn't true for column broadcasts.
+
+    **Rejected: CPU-side `expand_broadcast` via `copy_gpu_inplace`** — Materializes the broadcast by dispatching a General copy shader with zero-stride input strides. The copy itself completed (verified via debug prints), but the subsequent binary shader dispatch hung. Root cause: enqueuing two shader dispatches (copy + binary) within a single `eval_gpu` call on MoltenVK causes a command-buffer-level GPU conflict. This is a MoltenVK-specific issue — commands enqueued at the same depth in the call stack can deadlock.
+
+    **Chosen: Stride-based ND broadcast indexing in-shader** — Push constants expanded 28→80 bytes (within 128-byte limit) with `ndim`, `out_shape[4]`, `a_strides[4]`, `b_strides[4]`. The shader decomposes the flat output index into ND coordinates via `out_shape`, then dots with per-input strides (stride=0 for broadcast dims). This eliminates any pre-copy, handles all broadcast patterns (scalar, row, column, ND) correctly, and is a single shader dispatch matching the existing architecture. The 80-byte push constant is well under Vulkan's 128-byte minimum guarantee. `compute_broadcast_strides()` in `primitives.cpp` computes zero-stride for dims where `in.shape(i)==1`.
+
+17. **Pipeline cache v3→v4**: binary.comp push constant layout changed (28→80 bytes). Bumped `kPipelineCacheVersion` in `device.cpp`. Additionally, the build system (`setup.py build_ext`) does not automatically detect `.comp` shader changes — manual `glslc` recompilation is required after shader edits. This was a contributing factor to debugging difficulty (stale `.spv` cached from Feb 27 was running instead of the modified shader).
+
 ### Known Remaining Issues
 
 - `unary.comp`: Similar int32 dtype issue may exist for ops like `abs`/`neg` on int32 inputs (not yet tested).
@@ -529,3 +541,24 @@ The 1D logic is solid (`GatherAxis`, `ScatterAxis`), but multi-axis generalizati
 - Create automated numeric equivalence tests validating `float32`, `float16`, `bfloat16` accuracy.
 - Setup CI integration with regression binding to existing test suite.
 - Add `tests/vulkan_equivalence.py`.
+
+---
+
+## External References — ARM AI/ML Emulation Layer
+
+**Repo**: `https://github.com/arm/ai-ml-emulation-layer-for-vulkan`
+
+**What it is**: Vulkan layer implementing `VK_ARM_data_graph` + `VK_ARM_tensors` extensions. Injected
+by the Vulkan Loader — transparent to apps. Not a linkable compute library.
+
+**Relevance to this project**:
+
+| Aspect | Verdict | Notes |
+|---|---|---|
+| Direct shader reuse | ❌ No | Only `copy.comp` + utility glsl in `tensor/shaders/` — no ML ops |
+| `VK_ARM_tensors` extension | ⚠️ Future | Alternate fast path on ARM Mali; not useful today |
+| AOT SPIR-V strategy | ✅ Confirms | ARM uses same AOT approach — validates our architecture |
+| MoltenVK variant shaders | ✅ Noted | `tensor_mvk.glsl` confirms MoltenVK needs platform-specific code |
+| Direct integration | ❌ No | Extension layer, not a compute library to link |
+
+**Conclusion**: No immediate action. Add `VK_ARM_tensors` as future fast-path ticket in Phase 10.

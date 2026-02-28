@@ -42,23 +42,24 @@ layout(set = 0, binding = 2) writeonly buffer OutC    { uint c_raw[]; };
 // uint8_t output used only when output_is_bool == 1
 layout(set = 0, binding = 3) writeonly buffer OutCBool{ uint8_t c_bool[]; };
 
+// Push constants: 20 fields × 4 bytes = 80 bytes (well within 128-byte Vulkan limit)
 layout(push_constant) uniform Params {
-    uint n;
-    uint op;
-    uint a_is_scalar;      // 1 = a has size 1 (scalar broadcast)
-    uint b_is_scalar;      // 1 = b has size 1 (scalar broadcast)
+    uint n;                // total output elements
+    uint op;               // BinaryOp enum
     uint output_is_bool;   // 1 = output dtype is bool (uint8_t buffer)
     uint input_dtype;      // DTYPE_FLOAT / DTYPE_INT / DTYPE_UINT
-    uint input_elem_bytes; // bytes per element: 1 for bool/uint8, 2 for f16/i16, 4 for f32/i32
+    uint input_elem_bytes; // bytes per element: 1 for bool/uint8, 4 for f32/i32
+    uint ndim;             // number of dimensions (0 = scalar/flat)
+    uint out_shape[4];     // output shape (padded with 1s)
+    uint a_strides[4];     // input a strides (0 = broadcast dim)
+    uint b_strides[4];     // input b strides (0 = broadcast dim)
 } params;
 
-// Read element at index `idx` from a uint32[] buffer, handling sub-word element sizes.
-// For 4-byte types (float32/int32): returns a_raw[idx] directly.
-// For 1-byte types (bool/uint8): extracts the correct byte from the packed uint32 word.
+// Read element from uint32[] buffer, handling sub-word types
 uint read_raw_a(uint idx) {
     if (params.input_elem_bytes == 1u) {
         uint word = a_raw[idx >> 2u];
-        uint shift = (idx & 3u) << 3u; // (idx % 4) * 8
+        uint shift = (idx & 3u) << 3u;
         return (word >> shift) & 0xFFu;
     }
     return a_raw[idx];
@@ -72,12 +73,39 @@ uint read_raw_b(uint idx) {
     return b_raw[idx];
 }
 
+// Compute source flat index from output flat index using per-input strides.
+// Decomposes `idx` into ND coordinates using out_shape, then dots with strides.
+// stride=0 for broadcast dimensions produces the correct repeated indexing.
+uint strided_idx_a(uint idx) {
+    if (params.ndim == 0u) return 0u; // scalar
+    uint offset = 0u;
+    uint tmp = idx;
+    for (int d = int(params.ndim) - 1; d >= 0; d--) {
+        uint coord = tmp % params.out_shape[d];
+        tmp /= params.out_shape[d];
+        offset += coord * params.a_strides[d];
+    }
+    return offset;
+}
+
+uint strided_idx_b(uint idx) {
+    if (params.ndim == 0u) return 0u;
+    uint offset = 0u;
+    uint tmp = idx;
+    for (int d = int(params.ndim) - 1; d >= 0; d--) {
+        uint coord = tmp % params.out_shape[d];
+        tmp /= params.out_shape[d];
+        offset += coord * params.b_strides[d];
+    }
+    return offset;
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    uint ai = params.a_is_scalar == 1u ? 0u : idx;
-    uint bi = params.b_is_scalar == 1u ? 0u : idx;
+    uint ai = strided_idx_a(idx);
+    uint bi = strided_idx_b(idx);
 
     uint a_bits = read_raw_a(ai);
     uint b_bits = read_raw_b(bi);

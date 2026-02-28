@@ -2,29 +2,51 @@
 
 ---
 
-## UPDATED ON : 2026-03-02
+## UPDATED ON : 2026-02-28
 
-### fix (2026-03-02) — Binary broadcast bug fix + ARM layer assessment
+### fix (2026-02-28) — Binary broadcast stride-based indexing + pipeline cache v4
 
-1. **Binary broadcast bug fixed in `dispatch_binary`**:
-   - Root cause: non-contiguous broadcast arrays (zero-stride, `data_size < size`) were indexed with
-     flat `idx` in the shader, reading wrong memory positions
-   - Fix: at start of `dispatch_binary`, detect non-row-contiguous inputs with `data_size > 1` and
-     make them contiguous via `contiguous_copy_gpu()`; temporaries kept alive via `encoder.add_temporary()`
-   - Push constant layout unchanged (28 bytes, 7 fields); no pipeline cache bump required
+1. **Binary broadcast hang fixed — stride-based ND indexing in `binary.comp`**:
+   - Root cause: binary shader used flat `idx` for both inputs. Broadcast arrays (e.g. `(2,1)` broadcast
+     to `(2,3)`) have `data_size=2` but shader indexed `b[0..5]` → OOB GPU hang/deadlock.
+   - Multiple approaches tried: modulo (`idx % data_size`) — only worked for scalar/row broadcast, not
+     column; `expand_broadcast` via `copy_gpu_inplace` — copy completed but subsequent binary shader hung
+     (MoltenVK command-buffer-level GPU conflict); stale `.spv` cache contributed to debugging difficulty.
+   - Final fix: **stride-based ND broadcast indexing in the shader**. Push constants expanded from 28→80 bytes
+     (well within 128-byte limit): `ndim`, `out_shape[4]`, `a_strides[4]`, `b_strides[4]`. Shader decomposes
+     flat output index into ND coordinates via `out_shape`, then dots with per-input strides. stride=0 for
+     broadcast dimensions. Handles scalar, row, column, and arbitrary ND broadcast patterns. No pre-copy needed.
+   - `compute_broadcast_strides()` helper added to `primitives.cpp`: computes zero-stride for dims where
+     `in.shape(i)==1`, uses original stride otherwise. Left-pads with 0 for fewer input dims.
 
-2. **ARM AI/ML Emulation Layer assessed**:
-   - Repo: `arm/ai-ml-emulation-layer-for-vulkan` — Vulkan loader extension layer
-   - No reusable ML shaders; only `copy.comp` in `tensor/shaders/`
-   - Validates our AOT SPIR-V strategy; `VK_ARM_tensors` noted as future Mali fast-path
-   - Added assessment to `PLAN.md` under External References
+2. **Pipeline cache bumped v3→v4** (`device.cpp`): binary.comp push constant layout changed (28→80 bytes).
 
-3. **Tests** (before → after):
-   - Broadcast subtraction: ❌ wrong output → ✅ correct
-   - `logsumexp` (uses broadcast internally): ❌ wrong → ✅ correct
-   - Stages 13–18: all unchanged ✅
+3. **BINARY_GPU macro simplified**: removed `NEEDS_EXPAND` / `contiguous_copy_gpu()` pre-copy logic.
+   All broadcast handling is now in-shader. Direct dispatch from eval_gpu to dispatch_binary.
 
-4. **Files changed**: `primitives.cpp`, `PLAN.md`, `TIMELINE.md`, `MEMORY.md`
+4. **Tests** (before → after):
+   - `(2,3)+(2,1)` column broadcast: ❌ GPU hang → ✅ `[[11,12,13],[24,25,26]]`
+   - `(2,3)+(1,3)` row broadcast: ✅ (already worked with modulo, still works)
+   - `(2,3,4)+(2,1,1)` 3D broadcast: ❌ hang → ✅ correct
+   - `logsumexp` (uses broadcast internally): ✅ correct
+   - All 25 existing stage tests (stages 13–18): ✅ zero regressions
+
+5. **Files changed**: `primitives.cpp`, `binary.comp`, `device.cpp`
+
+6. **Decision rationale — why stride-based indexing**:
+   - **Modulo rejected**: `idx % data_size` only works when the broadcast dimension is the last axis.
+     For column broadcast `(2,1)→(2,3)`, modulo gives `0,1,0,1,0,1` but correct is `0,0,0,1,1,1`.
+     The flat-index-to-element mapping differs per broadcast axis position, so a 1D modulo is insufficient.
+   - **expand_broadcast rejected**: dispatching a copy shader + binary shader within a single `eval_gpu`
+     call deadlocked on MoltenVK. The copy completed (confirmed via `fprintf` traces), but the GPU hung
+     on the subsequent binary dispatch. This appears to be a MoltenVK-specific command buffer contention
+     issue when two compute dispatches share the same encoder within a single primitive eval.
+   - **Stride-based chosen**: single shader dispatch, no pre-copy, push constants stay within 128-byte
+     Vulkan limit (80 bytes for 20 fields). Mirrors `copy.comp`'s `strided_offset_src` pattern.
+     `compute_broadcast_strides()` computes zero-stride for broadcast dims, matching MLX's internal
+     stride representation. Handles 0D through 4D broadcasts uniformly.
+   - **Gotcha**: `setup.py build_ext` does NOT recompile `.comp→.spv` shaders automatically.
+     Manual `glslc` is required. Stale `binary.spv` from Feb 27 caused hours of debugging.
 
 ---
 

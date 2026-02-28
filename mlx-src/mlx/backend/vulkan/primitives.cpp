@@ -12,6 +12,7 @@
 #include "mlx/backend/vulkan/utils.h"
 #include "mlx/allocator.h"
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -106,11 +107,25 @@ enum class UnaryOp : uint32_t {
   Conjugate= 28,
 };
 
-// Dispatch a binary elementwise shader
-// op_id: shader-side op constant
+// Compute broadcast strides for an input array relative to the output shape.
+// For each dimension: if input dim == 1, stride = 0 (broadcast); else use original stride.
+// Input may have fewer dimensions than output (left-padded with 1s).
+static void compute_broadcast_strides(
+    const array& in, const Shape& out_shape, uint32_t strides[4]) {
+  int out_ndim = out_shape.size();
+  int in_ndim = in.ndim();
+  for (int i = 0; i < 4; i++) strides[i] = 0;
+  for (int i = 0; i < in_ndim; i++) {
+    int out_i = out_ndim - in_ndim + i;
+    if (out_i >= 0 && out_i < 4) {
+      strides[out_i] = (in.shape(i) == 1) ? 0 : static_cast<uint32_t>(in.strides()[i]);
+    }
+  }
+}
+
 // The binary.comp shader has 4 bindings:
 //   0=InA, 1=InB, 2=OutCFloat, 3=OutCBool
-// When output is bool, binding 3 is the active output; binding 2 is bound but unused.
+// Broadcast is handled in-shader via stride-based ND indexing (no pre-copy needed).
 void dispatch_binary(
     const array& a,
     const array& b,
@@ -130,8 +145,8 @@ void dispatch_binary(
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   // 4 bindings: InA(uint), InB(uint), OutC(uint raw), OutCBool(uint8)
-  // push constant size = 28 bytes (7 x uint32): added input_elem_bytes
-  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 4, 28);
+  // push constant size = 80 bytes (20 x uint32)
+  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 4, 80);
   if (pipeline == VK_NULL_HANDLE) return;
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
@@ -152,42 +167,52 @@ void dispatch_binary(
   }
   writes[0].pBufferInfo = &a_info;
   writes[1].pBufferInfo = &b_info;
-  // Bind output buffer to both c_raw (binding 2) and c_bool (binding 3).
-  // The shader writes only the binding matching output_is_bool.
   writes[2].pBufferInfo = &c_info;
   writes[3].pBufferInfo = &c_info;
   vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
-  // input_dtype: 0=float, 1=int, 2=uint (must match binary.comp DTYPE_* constants)
   auto to_input_dtype = [](Dtype dt) -> uint32_t {
     switch (dt) {
-      case float32: case float16: case bfloat16: return 0; // DTYPE_FLOAT
-      case int8:    case int16:   case int32: case int64:   return 1; // DTYPE_INT
-      default:                                              return 2; // DTYPE_UINT
+      case float32: case float16: case bfloat16: return 0;
+      case int8:    case int16:   case int32: case int64:   return 1;
+      default:                                              return 2;
     }
   };
 
-  // Use input a's dtype for arithmetic path; if bool op, both inputs share type
   Dtype in_dtype = a.dtype();
 
+  // Layout must match binary.comp push constants exactly
   struct PushConst {
     uint32_t n;
     uint32_t op;
-    uint32_t a_scalar;
-    uint32_t b_scalar;
     uint32_t output_is_bool;
     uint32_t input_dtype;
-    uint32_t input_elem_bytes; // bytes per input element (for sub-word types like bool=1)
-  } pc{
-    static_cast<uint32_t>(out.size()),
-    op_id,
-    a.data_size() == 1 ? 1u : 0u,
-    b.data_size() == 1 ? 1u : 0u,
-    output_is_bool ? 1u : 0u,
-    to_input_dtype(in_dtype),
-    static_cast<uint32_t>(in_dtype.size())  // Dtype::size() gives bytes per element
-  };
+    uint32_t input_elem_bytes;
+    uint32_t ndim;
+    uint32_t out_shape[4];
+    uint32_t a_strides[4];
+    uint32_t b_strides[4];
+  } pc{};
 
+  pc.n = static_cast<uint32_t>(out.size());
+  pc.op = op_id;
+  pc.output_is_bool = output_is_bool ? 1u : 0u;
+  pc.input_dtype = to_input_dtype(in_dtype);
+  pc.input_elem_bytes = static_cast<uint32_t>(in_dtype.size());
+
+  // Set up ND dimensions for broadcast indexing
+  int ndim = out.ndim();
+  pc.ndim = static_cast<uint32_t>(ndim > 4 ? 4 : ndim);
+  
+  // Fill out_shape (right-aligned, padded with 1s)
+  for (int i = 0; i < 4; i++) pc.out_shape[i] = 1;
+  for (int i = 0; i < std::min(ndim, 4); i++) {
+    int out_i = (ndim <= 4) ? i : (i + ndim - 4);
+    pc.out_shape[i] = static_cast<uint32_t>(out.shape(out_i));
+  }
+
+  compute_broadcast_strides(a, out.shape(), pc.a_strides);
+  compute_broadcast_strides(b, out.shape(), pc.b_strides);
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -324,11 +349,12 @@ void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
 // Elementwise Binary
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Broadcast arrays are handled by the shader via modulo indexing:
+// idx % a_size / idx % b_size — works for scalar (size=1), broadcast, and full.
 #define BINARY_GPU(cls, op)                                                    \
   void cls::eval_gpu(const std::vector<array>& inputs, array& out) {           \
-    dispatch_binary(                                                            \
-        inputs[0], inputs[1], out,                                             \
-        static_cast<uint32_t>(BinaryOp::op), stream());                       \
+    dispatch_binary(inputs[0], inputs[1], out,                                 \
+        static_cast<uint32_t>(BinaryOp::op), stream());                        \
   }
 
 BINARY_GPU(Add,          Add)

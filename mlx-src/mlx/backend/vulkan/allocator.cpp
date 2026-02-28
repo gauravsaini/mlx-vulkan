@@ -194,7 +194,8 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
   buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   buf_info.size = size;
   buf_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                   VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // needed for shader binding
   buf_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   VmaAllocationCreateInfo alloc_info{};
