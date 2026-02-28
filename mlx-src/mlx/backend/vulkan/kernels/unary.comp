@@ -1,7 +1,7 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-// Unary operation constants
+// Unary operation constants — must match enum class UnaryOp in primitives.cpp
 #define UNARY_ABS       0
 #define UNARY_NEG       1
 #define UNARY_SIGN      2
@@ -12,36 +12,42 @@
 #define UNARY_EXPM1     7
 #define UNARY_LOG       8
 #define UNARY_LOG1P     9
-#define UNARY_LOG2      10
-#define UNARY_SIN       11
-#define UNARY_COS       12
-#define UNARY_TAN       13
-#define UNARY_SINH      14
-#define UNARY_COSH      15
-#define UNARY_TANH      16
-#define UNARY_ARCSIN    17
-#define UNARY_ARCCOS    18
-#define UNARY_ARCTAN    19
-#define UNARY_ARCSINH   20
-#define UNARY_ARCCOSH   21
-#define UNARY_ARCTANH   22
-#define UNARY_CEIL      23
-#define UNARY_FLOOR     24
-#define UNARY_ROUND     25
-#define UNARY_ERF       26
-#define UNARY_ERFINV    27
-#define UNARY_SIGMOID   28
-#define UNARY_RELU      29
-#define UNARY_CONJUGATE 30
+// 10 = Sin (no Log2 in this enum)
+#define UNARY_SIN       10
+#define UNARY_COS       11
+#define UNARY_TAN       12
+#define UNARY_SINH      13
+#define UNARY_COSH      14
+#define UNARY_TANH      15
+#define UNARY_ARCSIN    16
+#define UNARY_ARCCOS    17
+#define UNARY_ARCTAN    18
+#define UNARY_ARCSINH   19
+#define UNARY_ARCCOSH   20
+#define UNARY_ARCTANH   21
+#define UNARY_CEIL      22
+#define UNARY_FLOOR     23
+#define UNARY_ROUND     24
+#define UNARY_ERF       25
+#define UNARY_ERFINV    26
+#define UNARY_SIGMOID   27
+#define UNARY_CONJUGATE 28
+#define UNARY_LOG2      29
+#define UNARY_LOG10     30
+#define UNARY_DEGREES   31
+#define UNARY_RADIANS   32
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
-layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+// Buffers as raw uint32 words; float16 is packed 2-per-word
+layout(set = 0, binding = 0) readonly  buffer InBuf   { uint in_data[]; };
+layout(set = 0, binding = 1) writeonly buffer OutBuf  { uint out_data[]; };
 
 layout(push_constant) uniform Params {
-    uint n;
-    uint op;
+    uint n;                 // total number of elements
+    uint op;                // UnaryOp enum value
+    uint input_elem_bytes;  // bytes per element (2 = float16, 4 = float32/int32)
+    uint out_elem_bytes;    // bytes per output element
 } params;
 
 // Error function approximation (Horner's method)
@@ -82,47 +88,70 @@ float erfinv_approx(float x) {
     return p * x;
 }
 
+float compute_op(float val) {
+    switch (params.op) {
+        case UNARY_ABS:     return abs(val);
+        case UNARY_NEG:     return -val;
+        case UNARY_SIGN:    return sign(val);
+        case UNARY_SQRT:    return sqrt(val);
+        case UNARY_RSQRT:   return inversesqrt(val);
+        case UNARY_SQUARE:  return val * val;
+        case UNARY_EXP:     return exp(val);
+        case UNARY_EXPM1:   return exp(val) - 1.0;
+        case UNARY_LOG:     return log(val);
+        case UNARY_LOG1P:   return log(1.0 + val);
+        case UNARY_SIN:     return sin(val);
+        case UNARY_COS:     return cos(val);
+        case UNARY_TAN:     return tan(val);
+        case UNARY_SINH:    return sinh(val);
+        case UNARY_COSH:    return cosh(val);
+        case UNARY_TANH:    return tanh(val);
+        case UNARY_ARCSIN:  return asin(val);
+        case UNARY_ARCCOS:  return acos(val);
+        case UNARY_ARCTAN:  return atan(val);
+        case UNARY_ARCSINH: return log(val + sqrt(val*val + 1.0));
+        case UNARY_ARCCOSH: return log(val + sqrt(val*val - 1.0));
+        case UNARY_ARCTANH: return 0.5 * log((1.0 + val) / (1.0 - val));
+        case UNARY_CEIL:    return ceil(val);
+        case UNARY_FLOOR:   return floor(val);
+        case UNARY_ROUND:   return round(val);
+        case UNARY_ERF:     return erf_approx(val);
+        case UNARY_ERFINV:  return erfinv_approx(val);
+        case UNARY_SIGMOID: return 1.0 / (1.0 + exp(-val));
+        case UNARY_CONJUGATE: return val;
+        case UNARY_LOG2:    return log2(val);
+        case UNARY_LOG10:   return log(val) / log(10.0);
+        case UNARY_DEGREES: return val * (180.0 / 3.14159265358979323846);
+        case UNARY_RADIANS: return val * (3.14159265358979323846 / 180.0);
+        default: return val;
+    }
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    float val = in_data[idx];
-    float result;
+    if (params.input_elem_bytes == 2u) {
+        // float16 path: two f16 elements packed into one uint32 word
+        // Only even-indexed threads do work (each handles a pair)
+        if ((idx & 1u) == 1u) return;
 
-    switch (params.op) {
-        case UNARY_ABS:     result = abs(val); break;
-        case UNARY_NEG:     result = -val; break;
-        case UNARY_SIGN:    result = sign(val); break;
-        case UNARY_SQRT:    result = sqrt(val); break;
-        case UNARY_RSQRT:   result = inversesqrt(val); break;
-        case UNARY_SQUARE:  result = val * val; break;
-        case UNARY_EXP:     result = exp(val); break;
-        case UNARY_EXPM1:   result = exp(val) - 1.0; break;
-        case UNARY_LOG:     result = log(val); break;
-        case UNARY_LOG1P:   result = log(1.0 + val); break;
-        case UNARY_LOG2:    result = log2(val); break;
-        case UNARY_SIN:     result = sin(val); break;
-        case UNARY_COS:     result = cos(val); break;
-        case UNARY_TAN:     result = tan(val); break;
-        case UNARY_SINH:    result = sinh(val); break;
-        case UNARY_COSH:    result = cosh(val); break;
-        case UNARY_TANH:    result = tanh(val); break;
-        case UNARY_ARCSIN:  result = asin(val); break;
-        case UNARY_ARCCOS:  result = acos(val); break;
-        case UNARY_ARCTAN:  result = atan(val); break;
-        case UNARY_ARCSINH: result = log(val + sqrt(val*val + 1.0)); break;
-        case UNARY_ARCCOSH: result = log(val + sqrt(val*val - 1.0)); break;
-        case UNARY_ARCTANH: result = 0.5 * log((1.0 + val) / (1.0 - val)); break;
-        case UNARY_CEIL:    result = ceil(val); break;
-        case UNARY_FLOOR:   result = floor(val); break;
-        case UNARY_ROUND:   result = round(val); break;
-        case UNARY_ERF:     result = erf_approx(val); break;
-        case UNARY_ERFINV:  result = erfinv_approx(val); break;
-        case UNARY_SIGMOID: result = 1.0 / (1.0 + exp(-val)); break;
-        case UNARY_RELU:    result = max(0.0, val); break;
-        case UNARY_CONJUGATE: result = val; break; // real types: noop
-        default: result = val; break;
+        uint word_idx = idx >> 1u;
+        uint word = in_data[word_idx];
+        vec2 halves = unpackHalf2x16(word);
+
+        halves.x = compute_op(halves.x);
+
+        // Only process second element if it's in bounds
+        if (idx + 1u < params.n) {
+            halves.y = compute_op(halves.y);
+        }
+
+        out_data[word_idx] = packHalf2x16(halves);
+    } else {
+        // float32 path: direct bit reinterpretation
+        float val = uintBitsToFloat(in_data[idx]);
+        float res = compute_op(val);
+        out_data[idx] = floatBitsToUint(res);
     }
-
-    out_data[idx] = result;
 }

@@ -75,6 +75,9 @@ else()
   set(MLX_BUILD_METAL OFF)
 endif()
 
+set(MLX_BUILD_METAL OFF)
+
+
 if(MLX_USE_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
   if(CCACHE_PROGRAM)

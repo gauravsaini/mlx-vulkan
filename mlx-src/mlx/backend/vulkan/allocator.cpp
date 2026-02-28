@@ -52,11 +52,14 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
     return allocator::Buffer{new VulkanBuffer{VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr}};
   }
 
+  // Pad to 4 bytes so that shaders can read/write 32-bit uints safely
+  size_t alloc_size = (size + 3) & ~3;
+
   auto& dev = device(mlx::core::Device{mlx::core::Device::gpu, 0});
 
   VkBufferCreateInfo buf_info{};
   buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  buf_info.size = size;
+  buf_info.size = alloc_size;
   buf_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -188,11 +191,15 @@ size_t VulkanAllocator::size(allocator::Buffer buffer) const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
+  if (size == 0) return nullptr;
+
   auto& dev = device(mlx::core::Device{mlx::core::Device::gpu, 0});
+
+  size_t alloc_size = (size + 3) & ~3;
 
   VkBufferCreateInfo buf_info{};
   buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  buf_info.size = size;
+  buf_info.size = alloc_size;
   buf_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // needed for shader binding

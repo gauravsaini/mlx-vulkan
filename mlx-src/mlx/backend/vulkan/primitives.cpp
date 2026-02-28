@@ -105,6 +105,8 @@ enum class UnaryOp : uint32_t {
   Erfinv   = 26,
   Sigmoid  = 27,
   Conjugate= 28,
+  Log2     = 29,
+  Log10    = 30,
 };
 
 // Compute broadcast strides for an input array relative to the output shape.
@@ -239,11 +241,11 @@ void dispatch_unary(
     const array& in,
     array& out,
     uint32_t op_id,
-    const Stream& s) {
+    Stream stream) {
   out.set_data(allocator::malloc(out.nbytes()));
 
-  auto& encoder = vulkan::get_command_encoder(s);
-  auto& dev = vulkan::device(s.device);
+  auto& encoder = vulkan::get_command_encoder(stream);
+  auto& dev = vulkan::device(stream.device);
   encoder.op_count++;
 
   VkBuffer in_buf  = vulkan::get_buffer(in);
@@ -251,7 +253,7 @@ void dispatch_unary(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("unary", layout, ds_layout, 2, 8);
+  VkPipeline pipeline = dev.get_pipeline("unary", layout, ds_layout, 2, 16);
   if (pipeline == VK_NULL_HANDLE) return;
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
@@ -276,7 +278,13 @@ void dispatch_unary(
   struct PushConst {
     uint32_t n;
     uint32_t op;
-  } pc{static_cast<uint32_t>(out.size()), op_id};
+    uint32_t input_elem_bytes;
+    uint32_t out_elem_bytes;
+  } pc{
+      static_cast<uint32_t>(out.size()),
+      op_id,
+      static_cast<uint32_t>(in.itemsize()),
+      static_cast<uint32_t>(out.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -326,7 +334,7 @@ UNARY_GPU(ErfInv,     Erfinv)
 UNARY_GPU(Exp,        Exp)
 UNARY_GPU(Expm1,      Expm1)
 UNARY_GPU(Floor,      Floor)
-UNARY_GPU(Log,        Log)
+// Log::eval_gpu handled below (supports base-e, base-2, base-10 via state())
 UNARY_GPU(Log1p,      Log1p)
 UNARY_GPU(LogicalNot, Neg)
 UNARY_GPU(Negative,   Neg)
@@ -339,6 +347,16 @@ UNARY_GPU(Sqrt,       Sqrt)
 UNARY_GPU(Square,     Square)
 UNARY_GPU(Tan,        Tan)
 UNARY_GPU(Tanh,       Tanh)
+
+// Log handles base-e, base-2, and base-10 via a single class with a Base field.
+void Log::eval_gpu(const std::vector<array>& inputs, array& out) {
+  auto base = state();
+  uint32_t op;
+  if (base == Log::Base::e)  op = static_cast<uint32_t>(UnaryOp::Log);
+  else if (base == Log::Base::two)  op = static_cast<uint32_t>(UnaryOp::Log2);
+  else                              op = static_cast<uint32_t>(UnaryOp::Log10);
+  dispatch_unary(inputs[0], out, op, stream());
+}
 
 // BitwiseInvert: fall back to CPU (requires XOR with all-ones broadcast)
 void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
