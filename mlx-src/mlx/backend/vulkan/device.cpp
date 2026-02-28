@@ -311,7 +311,7 @@ void Device::create_vma() {
 
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
-static constexpr int kPipelineCacheVersion = 2;
+static constexpr int kPipelineCacheVersion = 3; // bumped: reduce.comp push constant extended to 32 bytes
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");

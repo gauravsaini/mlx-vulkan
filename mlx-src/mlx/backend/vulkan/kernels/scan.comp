@@ -8,10 +8,11 @@
 //   Phase 3: Add chunk prefix (exclusive) to each element in the chunk
 //   Writeback: output inclusive or exclusive result based on params.inclusive
 
-#define SCAN_ADD 0
-#define SCAN_MUL 1
-#define SCAN_MAX 2
-#define SCAN_MIN 3
+#define SCAN_ADD      0
+#define SCAN_MUL      1
+#define SCAN_MAX      2
+#define SCAN_MIN      3
+#define SCAN_LOGADDEXP 4
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -31,9 +32,10 @@ shared float sdata[1024];  // flat storage for all elements of one scan segment
 shared float stotals[256]; // per-thread partial totals for the cross-chunk prefix
 
 float identity_val() {
-    if (params.op == SCAN_MUL) return 1.0;
-    if (params.op == SCAN_MAX) return -3.402823466e+38;
-    if (params.op == SCAN_MIN) return  3.402823466e+38;
+    if (params.op == SCAN_MUL)      return 1.0;
+    if (params.op == SCAN_MAX)      return -3.402823466e+38;
+    if (params.op == SCAN_MIN)      return  3.402823466e+38;
+    if (params.op == SCAN_LOGADDEXP) return -3.402823466e+38; // -inf identity for log-sum-exp
     return 0.0; // SCAN_ADD
 }
 
@@ -41,6 +43,12 @@ float combine(float a, float b) {
     if (params.op == SCAN_MUL) return a * b;
     if (params.op == SCAN_MAX) return max(a, b);
     if (params.op == SCAN_MIN) return min(a, b);
+    if (params.op == SCAN_LOGADDEXP) {
+        // log(exp(a) + exp(b)) = max(a,b) + log1p(exp(-|a-b|))
+        float hi = max(a, b);
+        float lo = min(a, b);
+        return hi + log(1.0 + exp(lo - hi));
+    }
     return a + b; // SCAN_ADD
 }
 

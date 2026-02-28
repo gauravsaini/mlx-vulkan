@@ -2,6 +2,32 @@
 
 ---
 
+## UPDATED ON : 2026-03-01
+
+### fix (2026-03-01) — Reduce any-axis + logcumsumexp GPU support
+
+1. **Reduce any-axis fixed (was axis=0 wrong)**:
+   - Root cause: `reduce.comp` used `in_data[out_idx * reduce_size + j]` — only correct for last-axis reduce
+   - Fix: added `inner` + `outer_stride` to push constant (24→32 bytes)
+   - Shader now uses: `in_idx = (out_idx / inner) * outer_stride + j * inner + (out_idx % inner)`
+   - Handles any single/multi-axis reduction from a row-contiguous input; `inner=1` = last-axis (unchanged behaviour)
+
+2. **logcumsumexp (LogAddExp scan) GPU support added**:
+   - `scan.comp`: added `SCAN_LOGADDEXP` (op=4) with numerically stable combine: `max(a,b) + log(1+exp(min-max))`
+   - `primitives.cpp`: removed throw for `Scan::ReduceType::LogAddExp`, mapped to op=4
+
+3. **Pipeline cache bumped v2 → v3**:
+   - `reduce.comp` push constant layout changed; old binary cache invalid
+   - `kPipelineCacheVersion = 3` in `device.cpp` forces new cache path
+
+4. **Tests (before → after)**:
+   - Stage 10 Reduce: 8/11 → **11/11** ✅ (sum/max/min axis=0 were wrong, now correct)
+   - Stage 15 Scan: 5/5 ✅ (unchanged — logcumsumexp also now works in test_api)
+
+5. **Files changed**: `kernels/reduce.comp`, `kernels/scan.comp`, `primitives.cpp`, `device.cpp`
+
+---
+
 ## UPDATED ON : 2026-02-28
 
 ### feat (2026-02-28) — Gather ND, Scan GPU dispatch, .gitignore

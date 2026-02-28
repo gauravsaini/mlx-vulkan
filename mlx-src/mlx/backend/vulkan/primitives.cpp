@@ -526,15 +526,31 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  VkBuffer in_buf  = vulkan::get_buffer(inputs[0]);
+  // ── Compute inner_size for strided reduce shader ──────────────────────────
+  // The shader uses the formula:
+  //   in_idx = (out_idx / inner) * (reduce_size * inner) + j * inner + (out_idx % inner)
+  // where inner = product of all dims after the LAST reduce axis.
+  // This supports reducing any contiguous block of axes from a row-contiguous input.
+  // For last-axis reduce: inner=1, formula = out_idx * reduce_size + j  (same as before).
+  const array& raw_in = inputs[0];
+
+  // Compute inner: product of dims after the highest reduce axis
+  int max_reduce_ax = *std::max_element(axes_.begin(), axes_.end());
+  uint32_t inner = 1;
+  for (int i = max_reduce_ax + 1; i < raw_in.ndim(); i++) {
+    inner *= static_cast<uint32_t>(raw_in.shape(i));
+  }
+
+  VkBuffer in_buf  = vulkan::get_buffer(raw_in);
   VkBuffer out_buf = vulkan::get_buffer(out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   // 4 bindings: InRaw, OutFloat, OutBool, InBool
-  VkPipeline pipeline = dev.get_pipeline("reduce", layout, ds_layout, 4, 24);
+  // Push constant is now 32 bytes (8 × uint32) to include inner and outer_stride.
+  VkPipeline pipeline = dev.get_pipeline("reduce", layout, ds_layout, 4, 32);
   if (pipeline == VK_NULL_HANDLE) {
-  throw std::runtime_error("[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    throw std::runtime_error("[vulkan::eval_gpu] reduce pipeline not found");
     return;
   }
 
@@ -550,21 +566,17 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     writes[i].descriptorCount = 1;
     writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   }
-  // binding 0 = InRaw (uint32 view of input)
-  // binding 1 = OutFloat (float output, written when output_is_bool==0)
-  // binding 2 = OutBool (uint8 output, written when output_is_bool==1)
-  // binding 3 = InBool (uint8 view of input, used when input_is_bool==1)
   writes[0].pBufferInfo = &in_info;   // InRaw
   writes[1].pBufferInfo = &out_info;  // OutFloat
-  writes[2].pBufferInfo = &out_info;  // OutBool (same buffer, shader picks based on flag)
-  writes[3].pBufferInfo = &in_info;   // InBool (same buffer, shader picks based on flag)
+  writes[2].pBufferInfo = &out_info;  // OutBool
+  writes[3].pBufferInfo = &in_info;   // InBool
   vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
   uint32_t n_outputs = static_cast<uint32_t>(out.size() > 0 ? out.size() : 1);
-  uint32_t reduce_size =
-      static_cast<uint32_t>(inputs[0].size() / n_outputs);
+  uint32_t reduce_size = static_cast<uint32_t>(raw_in.size() / n_outputs);
+  uint32_t outer_stride = reduce_size * inner;  // = reduce_size when inner=1
 
-  uint32_t op_id = 0; // SUM default
+  uint32_t op_id = 0;
   switch (reduce_type_) {
     case Reduce::ReduceType::Sum:  op_id = 0; break;
     case Reduce::ReduceType::Max:  op_id = 1; break;
@@ -581,13 +593,17 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t op;
     uint32_t input_is_bool;
     uint32_t output_is_bool;
+    uint32_t inner;        // product of dims after the reduce axes
+    uint32_t outer_stride; // = reduce_size * inner
   } pc{
-    static_cast<uint32_t>(inputs[0].size()),
+    static_cast<uint32_t>(raw_in.size()),
     reduce_size,
     n_outputs,
     op_id,
-    inputs[0].dtype() == bool_ ? 1u : 0u,
-    out.dtype() == bool_ ? 1u : 0u
+    raw_in.dtype() == bool_ ? 1u : 0u,
+    out.dtype() == bool_ ? 1u : 0u,
+    inner,
+    outer_stride
   };
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -1301,19 +1317,19 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
   uint32_t scan_size = static_cast<uint32_t>(in.shape(axis_));
 
   // Shader supports scan_size ≤ 1024 (256 threads × chunk_size ≤ 4).
-  // LogAddExp is not implemented in scan.comp.
-  if (scan_size > 1024 || reduce_type_ == Scan::ReduceType::LogAddExp) {
+  if (scan_size > 1024) {
     throw std::runtime_error(
-        "[vulkan::Scan::eval_gpu] scan_size > 1024 or LogAddExp: unsupported");
+        "[vulkan::Scan::eval_gpu] scan_size > 1024: unsupported");
   }
 
   // Map reduce type to shader op code
   uint32_t op;
   switch (reduce_type_) {
-    case Sum:  op = 0u; break;
-    case Prod: op = 1u; break;
-    case Max:  op = 2u; break;
-    case Min:  op = 3u; break;
+    case Sum:       op = 0u; break;
+    case Prod:      op = 1u; break;
+    case Max:       op = 2u; break;
+    case Min:       op = 3u; break;
+    case LogAddExp: op = 4u; break;
     default:
       throw std::runtime_error("[vulkan::Scan::eval_gpu] unsupported reduce_type");
   }

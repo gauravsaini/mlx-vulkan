@@ -22,11 +22,13 @@ layout(set = 0, binding = 3) readonly buffer InBoolBuf { uint8_t in_bool[]; };
 
 layout(push_constant) uniform Params {
     uint n;            // total input elements
-    uint reduce_size;  // size of reduction axis
+    uint reduce_size;  // number of elements to reduce per output
     uint n_outputs;    // number of independent reductions
     uint op;           // REDUCE_*
     uint input_is_bool;  // 1 if input dtype is bool (uint8_t)
     uint output_is_bool; // 1 if output dtype is bool (uint8_t)
+    uint inner;        // product of dims after the reduce axes (1 for last-axis reduce)
+    uint outer_stride; // = reduce_size * inner (stride between outer groups)
 } params;
 
 shared float sdata[256];
@@ -54,14 +56,20 @@ void main() {
 
     if (out_idx >= params.n_outputs) return;
 
-    uint in_base = out_idx * params.reduce_size;
+    // Strided access formula: handles any axis reduction for row-contiguous inputs.
+    // For output index out_idx and reduction step i:
+    //   in_idx = (out_idx / inner) * outer_stride + i * inner + (out_idx % inner)
+    // When inner=1 (last-axis reduce): in_idx = out_idx * reduce_size + i (same as before)
+    uint inner_off   = out_idx % params.inner;
+    uint outer_off   = out_idx / params.inner;
+    uint in_base_str = outer_off * params.outer_stride + inner_off;
+
     bool is_bool_reduction = (params.op == REDUCE_AND || params.op == REDUCE_OR);
 
     if (is_bool_reduction) {
-        // Boolean AND / OR reduction — uses uint8 input and uint8 output
-        uint acc = (params.op == REDUCE_AND) ? 1u : 0u;  // 1=true for AND, 0=false for OR
+        uint acc = (params.op == REDUCE_AND) ? 1u : 0u;
         for (uint i = tid; i < params.reduce_size; i += 256) {
-            uint idx = in_base + i;
+            uint idx = in_base_str + i * params.inner;
             uint val = (params.input_is_bool == 1u)
                 ? uint(uint(in_bool[idx]) != 0u ? 1u : 0u)
                 : ((in_raw[idx] != 0u) ? 1u : 0u);
@@ -89,10 +97,9 @@ void main() {
                 out_data[out_idx] = float(sdata_uint[0]);
         }
     } else {
-        // Float SUM / MAX / MIN / PROD reduction
         float acc = identity_f(params.op);
         for (uint i = tid; i < params.reduce_size; i += 256) {
-            uint idx = in_base + i;
+            uint idx = in_base_str + i * params.inner;
             float val;
             if (params.input_is_bool == 1u)
                 val = float(uint(in_bool[idx]));
