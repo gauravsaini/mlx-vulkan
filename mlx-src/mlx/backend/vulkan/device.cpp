@@ -276,6 +276,7 @@ void Device::create_logical_device() {
   features2.pNext = &timeline_feat;
   // Basic float64 for double precision (optional)
   features2.features.shaderFloat64 = VK_FALSE;
+  features2.features.shaderInt64   = VK_TRUE;
 
   VkDeviceCreateInfo dev_info{};
   dev_info.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

@@ -1,7 +1,8 @@
 #version 450
 #extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-// Binary operation constants (must match BinaryOp in primitives.cpp)
 #define BINARY_ADD          0
 #define BINARY_SUB          1
 #define BINARY_MUL          2
@@ -27,57 +28,32 @@
 #define BINARY_LEFT_SHIFT   22
 #define BINARY_RIGHT_SHIFT  23
 
-// Input dtype constants (must match dispatch_binary in primitives.cpp)
-#define DTYPE_FLOAT  0   // float32 (and float16/bf16 after host-side conversion)
-#define DTYPE_INT    1   // int32 (and int8/int16 sign-extended)
-#define DTYPE_UINT   2   // uint32 (and uint8/uint16/bool zero-extended)
+#define DTYPE_FLOAT  0
+#define DTYPE_INT    1
+#define DTYPE_UINT   2
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-// Raw uint32 input (raw bit patterns — interpreted by dtype)
 layout(set = 0, binding = 0) readonly  buffer InA     { uint a_raw[]; };
 layout(set = 0, binding = 1) readonly  buffer InB     { uint b_raw[]; };
-// Raw uint32 output (bit patterns written back — matches host-side dtype layout)
 layout(set = 0, binding = 2) writeonly buffer OutC    { uint c_raw[]; };
-// uint8_t output used only when output_is_bool == 1
-layout(set = 0, binding = 3) writeonly buffer OutCBool{ uint8_t c_bool[]; };
+// Used when requested natively
+layout(set = 0, binding = 3) writeonly buffer OutCBool{ uint8_t c_bool[]; }; 
 
-// Push constants: 20 fields × 4 bytes = 80 bytes (well within 128-byte Vulkan limit)
 layout(push_constant) uniform Params {
-    uint n;                // total output elements
-    uint op;               // BinaryOp enum
-    uint output_is_bool;   // 1 = output dtype is bool (uint8_t buffer)
-    uint input_dtype;      // DTYPE_FLOAT / DTYPE_INT / DTYPE_UINT
-    uint input_elem_bytes; // bytes per element: 1 for bool/uint8, 4 for f32/i32
-    uint ndim;             // number of dimensions (0 = scalar/flat)
-    uint out_shape[4];     // output shape (padded with 1s)
-    uint a_strides[4];     // input a strides (0 = broadcast dim)
-    uint b_strides[4];     // input b strides (0 = broadcast dim)
+    uint n;
+    uint op;
+    uint output_is_bool;
+    uint input_dtype;
+    uint input_elem_bytes;
+    uint ndim;
+    uint out_shape[4];
+    uint a_strides[4];
+    uint b_strides[4];
 } params;
 
-// Read element from uint32[] buffer, handling sub-word types
-uint read_raw_a(uint idx) {
-    if (params.input_elem_bytes == 1u) {
-        uint word = a_raw[idx >> 2u];
-        uint shift = (idx & 3u) << 3u;
-        return (word >> shift) & 0xFFu;
-    }
-    return a_raw[idx];
-}
-uint read_raw_b(uint idx) {
-    if (params.input_elem_bytes == 1u) {
-        uint word = b_raw[idx >> 2u];
-        uint shift = (idx & 3u) << 3u;
-        return (word >> shift) & 0xFFu;
-    }
-    return b_raw[idx];
-}
-
-// Compute source flat index from output flat index using per-input strides.
-// Decomposes `idx` into ND coordinates using out_shape, then dots with strides.
-// stride=0 for broadcast dimensions produces the correct repeated indexing.
 uint strided_idx_a(uint idx) {
-    if (params.ndim == 0u) return 0u; // scalar
+    if (params.ndim == 0u) return 0u;
     uint offset = 0u;
     uint tmp = idx;
     for (int d = int(params.ndim) - 1; d >= 0; d--) {
@@ -100,132 +76,292 @@ uint strided_idx_b(uint idx) {
     return offset;
 }
 
+// ========= Read Helpers =========
+uint read_u32_a(uint idx) { return a_raw[idx]; }
+uint read_u32_b(uint idx) { return b_raw[idx]; }
+
+uint read_u8_a(uint idx) {
+    uint word = a_raw[idx >> 2u];
+    return (word >> ((idx & 3u) * 8u)) & 0xFFu;
+}
+uint read_u8_b(uint idx) {
+    uint word = b_raw[idx >> 2u];
+    return (word >> ((idx & 3u) * 8u)) & 0xFFu;
+}
+
+uint read_u16_a(uint idx) {
+    uint word = a_raw[idx >> 1u];
+    return (word >> ((idx & 1u) * 16u)) & 0xFFFFu;
+}
+uint read_u16_b(uint idx) {
+    uint word = b_raw[idx >> 1u];
+    return (word >> ((idx & 1u) * 16u)) & 0xFFFFu;
+}
+
+int64_t read_i64_a(uint idx) {
+    uint w0 = a_raw[idx * 2u];
+    uint w1 = a_raw[idx * 2u + 1u];
+    uint64_t val = (uint64_t(w1) << 32ul) | uint64_t(w0);
+    return int64_t(val);
+}
+int64_t read_i64_b(uint idx) {
+    uint w0 = b_raw[idx * 2u];
+    uint w1 = b_raw[idx * 2u + 1u];
+    uint64_t val = (uint64_t(w1) << 32ul) | uint64_t(w0);
+    return int64_t(val);
+}
+
+// ========= Computation Helpers =========
+bool cmp_float(float a, float b) {
+    switch (params.op) {
+        case BINARY_EQUAL:       return (a == b);
+        case BINARY_NOT_EQUAL:   return (a != b);
+        case BINARY_LESS:        return (a <  b);
+        case BINARY_LESS_EQ:     return (a <= b);
+        case BINARY_GREATER:     return (a >  b);
+        case BINARY_GREATER_EQ:  return (a >= b);
+        case BINARY_LOGICAL_AND: return (a != 0.0) && (b != 0.0);
+        case BINARY_LOGICAL_OR:  return (a != 0.0) || (b != 0.0);
+        default:                 return false;
+    }
+}
+bool cmp_int(int a, int b) {
+    switch (params.op) {
+        case BINARY_EQUAL:       return (a == b);
+        case BINARY_NOT_EQUAL:   return (a != b);
+        case BINARY_LESS:        return (a <  b);
+        case BINARY_LESS_EQ:     return (a <= b);
+        case BINARY_GREATER:     return (a >  b);
+        case BINARY_GREATER_EQ:  return (a >= b);
+        case BINARY_LOGICAL_AND: return (a != 0) && (b != 0);
+        case BINARY_LOGICAL_OR:  return (a != 0) || (b != 0);
+        default:                 return false;
+    }
+}
+bool cmp_uint(uint a, uint b) {
+    switch (params.op) {
+        case BINARY_EQUAL:       return (a == b);
+        case BINARY_NOT_EQUAL:   return (a != b);
+        case BINARY_LESS:        return (a <  b);
+        case BINARY_LESS_EQ:     return (a <= b);
+        case BINARY_GREATER:     return (a >  b);
+        case BINARY_GREATER_EQ:  return (a >= b);
+        case BINARY_LOGICAL_AND: return (a != 0u) && (b != 0u);
+        case BINARY_LOGICAL_OR:  return (a != 0u) || (b != 0u);
+        default:                 return false;
+    }
+}
+bool cmp_int64(int64_t a, int64_t b) {
+    switch (params.op) {
+        case BINARY_EQUAL:       return (a == b);
+        case BINARY_NOT_EQUAL:   return (a != b);
+        case BINARY_LESS:        return (a <  b);
+        case BINARY_LESS_EQ:     return (a <= b);
+        case BINARY_GREATER:     return (a >  b);
+        case BINARY_GREATER_EQ:  return (a >= b);
+        case BINARY_LOGICAL_AND: return (a != 0l) && (b != 0l);
+        case BINARY_LOGICAL_OR:  return (a != 0l) || (b != 0l);
+        default:                 return false;
+    }
+}
+
+float op_float(float a, float b) {
+    switch (params.op) {
+        case BINARY_ADD:        return a + b;
+        case BINARY_SUB:        return a - b;
+        case BINARY_MUL:        return a * b;
+        case BINARY_DIV:        return a / b;
+        case BINARY_MAX:        return max(a, b);
+        case BINARY_MIN:        return min(a, b);
+        case BINARY_POW:        return pow(a, b);
+        case BINARY_LOGADDEXP: {
+            float m = max(a, b);
+            return m + log(exp(a - m) + exp(b - m));
+        }
+        case BINARY_ARCTAN2:    return atan(a, b);
+        case BINARY_REMAINDER:  return mod(a, b);
+        case BINARY_FLOOR_DIV:  return floor(a / b);
+        default:                return a + b;
+    }
+}
+int op_int(int a, int b) {
+    switch (params.op) {
+        case BINARY_ADD:         return a + b;
+        case BINARY_SUB:         return a - b;
+        case BINARY_MUL:         return a * b;
+        case BINARY_DIV:         return b != 0 ? a / b : 0;
+        case BINARY_MAX:         return max(a, b);
+        case BINARY_MIN:         return min(a, b);
+        case BINARY_POW:         return int(pow(float(a), float(b)));
+        case BINARY_REMAINDER:   return b != 0 ? a % b : 0;
+        case BINARY_FLOOR_DIV:   return b != 0 ? a / b : 0;
+        case BINARY_BITWISE_AND: return a & b;
+        case BINARY_BITWISE_OR:  return a | b;
+        case BINARY_BITWISE_XOR: return a ^ b;
+        case BINARY_LEFT_SHIFT:  return a << b;
+        case BINARY_RIGHT_SHIFT: return a >> b;
+        default:                 return a + b;
+    }
+}
+uint op_uint(uint a, uint b) {
+    switch (params.op) {
+        case BINARY_ADD:         return a + b;
+        case BINARY_SUB:         return a - b;
+        case BINARY_MUL:         return a * b;
+        case BINARY_DIV:         return b != 0u ? a / b : 0u;
+        case BINARY_MAX:         return max(a, b);
+        case BINARY_MIN:         return min(a, b);
+        case BINARY_REMAINDER:   return b != 0u ? a % b : 0u;
+        case BINARY_FLOOR_DIV:   return b != 0u ? a / b : 0u;
+        case BINARY_BITWISE_AND: return a & b;
+        case BINARY_BITWISE_OR:  return a | b;
+        case BINARY_BITWISE_XOR: return a ^ b;
+        case BINARY_LEFT_SHIFT:  return a << b;
+        case BINARY_RIGHT_SHIFT: return a >> b;
+        default:                 return a + b;
+    }
+}
+int64_t op_int64(int64_t a, int64_t b) {
+    switch (params.op) {
+        case BINARY_ADD:         return a + b;
+        case BINARY_SUB:         return a - b;
+        case BINARY_MUL:         return a * b;
+        case BINARY_DIV:         return b != 0l ? a / b : 0l;
+        case BINARY_MAX:         return max(a, b);
+        case BINARY_MIN:         return min(a, b);
+        case BINARY_POW:         return int64_t(round(pow(float(a), float(b))));
+        case BINARY_REMAINDER:   return b != 0l ? a % b : 0l;
+        case BINARY_FLOOR_DIV:   return b != 0l ? a / b : 0l;
+        case BINARY_BITWISE_AND: return a & b;
+        case BINARY_BITWISE_OR:  return a | b;
+        case BINARY_BITWISE_XOR: return a ^ b;
+        case BINARY_LEFT_SHIFT:  return a << b;
+        case BINARY_RIGHT_SHIFT: return a >> b;
+        default:                 return a + b;
+    }
+}
+
+// ========= Main Processing =========
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    uint ai = strided_idx_a(idx);
-    uint bi = strided_idx_b(idx);
+    uint out_elem_bytes = (params.output_is_bool == 1u) ? 1u : params.input_elem_bytes;
 
-    uint a_bits = read_raw_a(ai);
-    uint b_bits = read_raw_b(bi);
+    if (out_elem_bytes == 1u) {
+        // Output is bool/uint8. 1 thread computes 1 element, writes 1 byte directly.
+        uint ai = strided_idx_a(idx);
+        uint bi = strided_idx_b(idx);
+        bool r_bool;
+        uint r_byte;
 
-    // ── Bool/comparison output path ──────────────────────────────────────────
-    if (params.output_is_bool == 1u) {
-        bool result;
+        if (params.input_elem_bytes == 1u) {
+            uint a = read_u8_a(ai);
+            uint b = read_u8_b(bi);
+            if (params.output_is_bool == 1u) {
+                if (params.input_dtype == DTYPE_INT) r_bool = cmp_int(int(a << 24) >> 24, int(b << 24) >> 24);
+                else r_bool = cmp_uint(a, b);
+                r_byte = r_bool ? 1u : 0u;
+            } else {
+                if (params.input_dtype == DTYPE_INT) r_byte = uint(op_int(int(a << 24) >> 24, int(b << 24) >> 24)) & 0xFFu;
+                else r_byte = op_uint(a, b) & 0xFFu;
+            }
+        } else if (params.input_elem_bytes == 2u) {
+            uint a = read_u16_a(ai);
+            uint b = read_u16_b(bi);
+            if (params.output_is_bool == 1u) {
+                if (params.input_dtype == DTYPE_FLOAT) {
+                    float fa = unpackHalf2x16(a).x;
+                    float fb = unpackHalf2x16(b).x;
+                    r_bool = cmp_float(fa, fb);
+                } else if (params.input_dtype == DTYPE_INT) {
+                    r_bool = cmp_int((int(a) << 16) >> 16, (int(b) << 16) >> 16);
+                } else r_bool = cmp_uint(a, b);
+                r_byte = r_bool ? 1u : 0u;
+            } else {
+                // Should not happen for output_bytes=1
+                r_byte = 0u;
+            }
+        } else if (params.input_elem_bytes == 4u) {
+            uint a = read_u32_a(ai);
+            uint b = read_u32_b(bi);
+            if (params.output_is_bool == 1u) {
+                if (params.input_dtype == DTYPE_FLOAT) r_bool = cmp_float(uintBitsToFloat(a), uintBitsToFloat(b));
+                else if (params.input_dtype == DTYPE_INT) r_bool = cmp_int(int(a), int(b));
+                else r_bool = cmp_uint(a, b);
+                r_byte = r_bool ? 1u : 0u;
+            } else {
+                r_byte = 0u;
+            }
+        } else if (params.input_elem_bytes == 8u) {
+            int64_t a = read_i64_a(ai);
+            int64_t b = read_i64_b(bi);
+            if (params.output_is_bool == 1u) {
+                r_bool = cmp_int64(a, b);
+                r_byte = r_bool ? 1u : 0u;
+            } else {
+                r_byte = 0u;
+            }
+        }
+        c_bool[idx] = uint8_t(r_byte);
+
+    } else if (out_elem_bytes == 2u) {
+        if ((idx & 1u) != 0u) return;
+        uint word_idx = idx >> 1u;
+        uint out_word = 0u;
+
+        for (uint b = 0u; b < 2u; b++) {
+            uint curr_idx = idx + b;
+            if (curr_idx >= params.n) break;
+            uint ai = strided_idx_a(curr_idx);
+            uint bi = strided_idx_b(curr_idx);
+            
+            uint ax = read_u16_a(ai);
+            uint bx = read_u16_b(bi);
+            uint out_half;
+
+            if (params.input_dtype == DTYPE_FLOAT) {
+                float fa = unpackHalf2x16(ax).x;
+                float fb = unpackHalf2x16(bx).x;
+                float fr = op_float(fa, fb);
+                out_half = packHalf2x16(vec2(fr, 0.0)) & 0xFFFFu;
+            } else if (params.input_dtype == DTYPE_INT) {
+                out_half = uint(op_int((int(ax) << 16) >> 16, (int(bx) << 16) >> 16)) & 0xFFFFu;
+            } else {
+                out_half = op_uint(ax, bx) & 0xFFFFu;
+            }
+            out_word |= (out_half << (b * 16u));
+        }
+        c_raw[word_idx] = out_word;
+
+    } else if (out_elem_bytes == 4u) {
+        uint ai = strided_idx_a(idx);
+        uint bi = strided_idx_b(idx);
+        uint a = read_u32_a(ai);
+        uint b = read_u32_b(bi);
+        uint out_val;
+
         if (params.input_dtype == DTYPE_FLOAT) {
-            float fa = uintBitsToFloat(a_bits);
-            float fb = uintBitsToFloat(b_bits);
-            switch (params.op) {
-                case BINARY_EQUAL:       result = (fa == fb); break;
-                case BINARY_NOT_EQUAL:   result = (fa != fb); break;
-                case BINARY_LESS:        result = (fa <  fb); break;
-                case BINARY_LESS_EQ:     result = (fa <= fb); break;
-                case BINARY_GREATER:     result = (fa >  fb); break;
-                case BINARY_GREATER_EQ:  result = (fa >= fb); break;
-                case BINARY_LOGICAL_AND: result = (fa != 0.0) && (fb != 0.0); break;
-                case BINARY_LOGICAL_OR:  result = (fa != 0.0) || (fb != 0.0); break;
-                default:                 result = false; break;
-            }
+            float fr = op_float(uintBitsToFloat(a), uintBitsToFloat(b));
+            out_val = floatBitsToUint(fr);
         } else if (params.input_dtype == DTYPE_INT) {
-            int ia = int(a_bits);
-            int ib = int(b_bits);
-            switch (params.op) {
-                case BINARY_EQUAL:       result = (ia == ib); break;
-                case BINARY_NOT_EQUAL:   result = (ia != ib); break;
-                case BINARY_LESS:        result = (ia <  ib); break;
-                case BINARY_LESS_EQ:     result = (ia <= ib); break;
-                case BINARY_GREATER:     result = (ia >  ib); break;
-                case BINARY_GREATER_EQ:  result = (ia >= ib); break;
-                case BINARY_LOGICAL_AND: result = (ia != 0) && (ib != 0); break;
-                case BINARY_LOGICAL_OR:  result = (ia != 0) || (ib != 0); break;
-                default:                 result = false; break;
-            }
-        } else { // DTYPE_UINT / bool
-            switch (params.op) {
-                case BINARY_EQUAL:       result = (a_bits == b_bits); break;
-                case BINARY_NOT_EQUAL:   result = (a_bits != b_bits); break;
-                case BINARY_LESS:        result = (a_bits <  b_bits); break;
-                case BINARY_LESS_EQ:     result = (a_bits <= b_bits); break;
-                case BINARY_GREATER:     result = (a_bits >  b_bits); break;
-                case BINARY_GREATER_EQ:  result = (a_bits >= b_bits); break;
-                case BINARY_LOGICAL_AND: result = (a_bits != 0u) && (b_bits != 0u); break;
-                case BINARY_LOGICAL_OR:  result = (a_bits != 0u) || (b_bits != 0u); break;
-                default:                 result = false; break;
-            }
+            out_val = uint(op_int(int(a), int(b)));
+        } else {
+            out_val = op_uint(a, b);
         }
-        c_bool[idx] = uint8_t(result ? 1 : 0);
+        c_raw[idx] = out_val;
 
-    // ── Float arithmetic path ─────────────────────────────────────────────────
-    } else if (params.input_dtype == DTYPE_FLOAT) {
-        float a = uintBitsToFloat(a_bits);
-        float b = uintBitsToFloat(b_bits);
-        float result;
-        switch (params.op) {
-            case BINARY_ADD:        result = a + b; break;
-            case BINARY_SUB:        result = a - b; break;
-            case BINARY_MUL:        result = a * b; break;
-            case BINARY_DIV:        result = a / b; break;
-            case BINARY_MAX:        result = max(a, b); break;
-            case BINARY_MIN:        result = min(a, b); break;
-            case BINARY_POW:        result = pow(a, b); break;
-            case BINARY_LOGADDEXP: {
-                float m = max(a, b);
-                result = m + log(exp(a - m) + exp(b - m));
-                break;
-            }
-            case BINARY_ARCTAN2:    result = atan(a, b); break;
-            case BINARY_REMAINDER:  result = mod(a, b); break;
-            case BINARY_FLOOR_DIV:  result = floor(a / b); break;
-            default:                result = a + b; break;
-        }
-        c_raw[idx] = floatBitsToUint(result);
-
-    // ── Signed integer arithmetic path ───────────────────────────────────────
-    } else if (params.input_dtype == DTYPE_INT) {
-        int ia = int(a_bits);
-        int ib = int(b_bits);
-        int result;
-        switch (params.op) {
-            case BINARY_ADD:         result = ia + ib; break;
-            case BINARY_SUB:         result = ia - ib; break;
-            case BINARY_MUL:         result = ia * ib; break;
-            case BINARY_DIV:         result = ib != 0 ? ia / ib : 0; break;
-            case BINARY_MAX:         result = max(ia, ib); break;
-            case BINARY_MIN:         result = min(ia, ib); break;
-            case BINARY_POW:         result = int(pow(float(ia), float(ib))); break;
-            case BINARY_REMAINDER:   result = ib != 0 ? ia % ib : 0; break;
-            case BINARY_FLOOR_DIV:   result = ib != 0 ? ia / ib : 0; break;
-            case BINARY_BITWISE_AND: result = ia & ib; break;
-            case BINARY_BITWISE_OR:  result = ia | ib; break;
-            case BINARY_BITWISE_XOR: result = ia ^ ib; break;
-            case BINARY_LEFT_SHIFT:  result = ia << ib; break;
-            case BINARY_RIGHT_SHIFT: result = ia >> ib; break;
-            default:                 result = ia + ib; break;
-        }
-        c_raw[idx] = uint(result);
-
-    // ── Unsigned integer arithmetic path ─────────────────────────────────────
-    } else { // DTYPE_UINT
-        uint ua = a_bits;
-        uint ub = b_bits;
-        uint result;
-        switch (params.op) {
-            case BINARY_ADD:         result = ua + ub; break;
-            case BINARY_SUB:         result = ua - ub; break;
-            case BINARY_MUL:         result = ua * ub; break;
-            case BINARY_DIV:         result = ub != 0u ? ua / ub : 0u; break;
-            case BINARY_MAX:         result = max(ua, ub); break;
-            case BINARY_MIN:         result = min(ua, ub); break;
-            case BINARY_REMAINDER:   result = ub != 0u ? ua % ub : 0u; break;
-            case BINARY_FLOOR_DIV:   result = ub != 0u ? ua / ub : 0u; break;
-            case BINARY_BITWISE_AND: result = ua & ub; break;
-            case BINARY_BITWISE_OR:  result = ua | ub; break;
-            case BINARY_BITWISE_XOR: result = ua ^ ub; break;
-            case BINARY_LEFT_SHIFT:  result = ua << ub; break;
-            case BINARY_RIGHT_SHIFT: result = ua >> ub; break;
-            default:                 result = ua + ub; break;
-        }
-        c_raw[idx] = result;
+    } else if (out_elem_bytes == 8u) {
+        uint ai = strided_idx_a(idx);
+        uint bi = strided_idx_b(idx);
+        int64_t a = read_i64_a(ai);
+        int64_t b = read_i64_b(bi);
+        
+        int64_t res = op_int64(a, b);
+        
+        uint w0 = uint(uint64_t(res) & 0xFFFFFFFFul);
+        uint w1 = uint(uint64_t(res) >> 32ul);
+        c_raw[idx * 2u] = w0;
+        c_raw[idx * 2u + 1u] = w1;
     }
 }
