@@ -1959,7 +1959,14 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
       "Falling back to CPU eval.");
 }
 
-NO_GPU(GatherQMM)
+void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // Gather + dequantize + matmul — no GPU implementation yet.
+  // Requires indexing.comp (gather) + quantized.comp (dequant) + matmul.comp,
+  // all pipelined.  CPU fallback is correct on unified memory (MoltenVK/iGPU).
+  throw std::runtime_error(
+      "[vulkan] GatherQMM has no Vulkan GPU implementation. "
+      "Falling back to CPU eval.");
+}
 
 void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Segmented (variable-length batch) matmul.
@@ -1986,16 +1993,10 @@ void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
-  fprintf(stderr, "[QMML] eval_gpu enter\n");
-  fflush(stderr);
   assert(inputs.size() >= 4);
   auto& s = stream();
   auto& dev = vulkan::device(s.device);
-  fprintf(stderr, "[QMML] got dev\n");
-  fflush(stderr);
   auto& encoder = vulkan::get_command_encoder(s);
-  fprintf(stderr, "[QMML] got encoder\n");
-  fflush(stderr);
   encoder.op_count++;
 
   // inputs[0] = float x      [M, K]
@@ -2011,7 +2012,6 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& scales = inputs[2];
   const array& biases = inputs[3];
 
-  // Do NOT pre-allocate out here: Matmul::eval_gpu will call out.set_data().
   if (out.size() == 0) {
     out.set_data(allocator::malloc(out.nbytes()));
     return;
@@ -2020,31 +2020,17 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   int K = static_cast<int>(x.shape(-1));
   int N = static_cast<int>(out.shape(-1));
   uint32_t n_dequant = static_cast<uint32_t>(K) * static_cast<uint32_t>(N);
-  fprintf(
-      stderr,
-      "[QMML] K=%d N=%d n_dequant=%u transpose=%d\n",
-      K,
-      N,
-      n_dequant,
-      (int)transpose_);
-  fflush(stderr);
 
   // After dequantization both paths produce a [K, N] float buffer suitable
   // for Matmul: x[M,K] @ dq[K,N] -> out[M,N].
   array dq_weights(Shape{K, N}, float32, nullptr, {});
   dq_weights.set_data(allocator::malloc(dq_weights.nbytes()));
-  fprintf(stderr, "[QMML] dq_weights allocated\n");
-  fflush(stderr);
 
   // ── Pass 1: Dequantize ───────────────────────────────────────────────────
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   // 4 bindings, push_constant = 6 x uint32 = 24 bytes
-  fprintf(stderr, "[QMML] calling get_pipeline\n");
-  fflush(stderr);
   VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
-  fprintf(stderr, "[QMML] get_pipeline returned %p\n", (void*)pipeline);
-  fflush(stderr);
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(s.device).add_temporary(s, dq_weights);
     throw std::runtime_error(
@@ -2055,14 +2041,6 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkBuffer scale_buf = vulkan::get_buffer(scales);
   VkBuffer bias_buf = vulkan::get_buffer(biases);
   VkBuffer dq_buf = vulkan::get_buffer(dq_weights);
-  fprintf(
-      stderr,
-      "[QMML] got all buffers: src=%p scale=%p bias=%p dq=%p\n",
-      (void*)src_buf,
-      (void*)scale_buf,
-      (void*)bias_buf,
-      (void*)dq_buf);
-  fflush(stderr);
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
   VkDescriptorBufferInfo bufs[4] = {
@@ -2081,8 +2059,6 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     writes[i].pBufferInfo = &bufs[i];
   }
   vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
-  fprintf(stderr, "[QMML] descriptors updated\n");
-  fflush(stderr);
 
   // op=1: DEQUANT_AFFINE (flat, for transpose_=false)
   // op=2: DEQUANT_AFFINE_TRANS (2D-aware transpose, for transpose_=true)
@@ -2109,11 +2085,6 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
   vkCmdDispatch(cmd, vulkan::div_ceil(n_dequant, 256u), 1, 1);
-  fprintf(
-      stderr,
-      "[QMML] dequant dispatch recorded, groups=%u\n",
-      vulkan::div_ceil(n_dequant, 256u));
-  fflush(stderr);
 
   // Barrier: dequant writes must be visible before matmul reads
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -2132,24 +2103,283 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       nullptr);
 
   // ── Pass 2: float matmul x[M,K] @ dq[K,N] -> out[M,N] ───────────────────
-  fprintf(stderr, "[QMML] calling Matmul::eval_gpu\n");
-  fflush(stderr);
   Matmul(s).eval_gpu({x, dq_weights}, out);
-  fprintf(stderr, "[QMML] Matmul::eval_gpu returned, adding temporary\n");
-  fflush(stderr);
   vulkan::device(s.device).add_temporary(s, dq_weights);
-  fprintf(stderr, "[QMML] eval_gpu complete\n");
-  fflush(stderr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QQMatmul — quantized x quantized (both operands quantized)
-// Two-pass GPU: dequantize both -> float matmul.
-// For now, only the RHS is dequantized on GPU (same as QuantizedMatmul).
-// The LHS (also quantized) dequantize is not yet wired up; use NO_GPU.
+//
+// Input layout (from primitives.h / eval_cpu):
+//   inputs[0]: packed uint  w1  (LHS quantized)  shape: depends on bits_/group_size_
+//   inputs[1]: float scales1
+//   inputs[2]: float biases1  (may be absent for some modes — but we read 6 when present)
+//   inputs[3]: packed uint  w2  (RHS quantized)
+//   inputs[4]: float scales2
+//   inputs[5]: float biases2  (may be absent)
+//
+// Note: eval_cpu only handles the special-case where inputs[1].dtype()==uint32
+// and inputs[0].shape(-2)==1, at which point inputs[0] is actually the float
+// activation (x), inputs[1]/[2] are the quantized weight+scales for the RHS.
+// For the general case (both truly quantized), we use a three-step GPU path:
+//   Pass A: dequantize w1 (LHS) -> float dq1
+//   Pass B: dequantize w2 (RHS) -> float dq2
+//   Pass C: Matmul dq1 @ dq2 -> out
+//
+// Shape convention: after dequantization both dq1 and dq2 are row-major float.
+// We need: dq1[M, K] @ dq2[K, N] -> out[M, N].
+// Neither is transposed (same as QuantizedMatmul with transpose_=false).
 // ─────────────────────────────────────────────────────────────────────────────
 
-NO_GPU(QQMatmul)
+void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
+  auto& s = stream();
+  auto& dev = vulkan::device(s.device);
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  if (out.size() == 0) {
+    out.set_data(allocator::malloc(out.nbytes()));
+    return;
+  }
+
+  // When inputs[1].dtype() == uint32, the layout is the "vector x quantized-weight" path:
+  //   inputs[0] = float x  [M, K]
+  //   inputs[1] = packed uint w  [K_packed, N]
+  //   inputs[2] = float scales
+  //   inputs[3] = float biases  (optional, may be empty)
+  // In this case, only one dequantize pass is needed — identical to QuantizedMatmul.
+  // For the fully-quantized (both inputs packed uint) general case, do two dequant passes.
+
+  bool lhs_is_float = (inputs[0].dtype() != uint32);
+
+  if (lhs_is_float) {
+    // Activation (float) x quantized-weight path.
+    // Delegate entirely to QuantizedMatmul logic (no transpose).
+    const array& x = inputs[0];
+    const array& w_pack = inputs[1];
+    const array& scales = inputs[2];
+    const array& biases = inputs[3];
+
+    int K = static_cast<int>(x.shape(-1));
+    int N = static_cast<int>(out.shape(-1));
+    uint32_t n_dequant = static_cast<uint32_t>(K) * static_cast<uint32_t>(N);
+
+    array dq_weights(Shape{K, N}, float32, nullptr, {});
+    dq_weights.set_data(allocator::malloc(dq_weights.nbytes()));
+
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout ds_layout;
+    VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+    if (pipeline == VK_NULL_HANDLE) {
+      vulkan::device(s.device).add_temporary(s, dq_weights);
+      throw std::runtime_error(
+          "[vulkan::QQMatmul] failed to get quantized dequant pipeline");
+    }
+
+    VkBuffer src_buf = vulkan::get_buffer(w_pack);
+    VkBuffer scale_buf = vulkan::get_buffer(scales);
+    VkBuffer bias_buf = vulkan::get_buffer(biases);
+    VkBuffer dq_buf = vulkan::get_buffer(dq_weights);
+
+    VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+    VkDescriptorBufferInfo bufs[4] = {
+        {src_buf, 0, VK_WHOLE_SIZE},
+        {scale_buf, 0, VK_WHOLE_SIZE},
+        {bias_buf, 0, VK_WHOLE_SIZE},
+        {dq_buf, 0, VK_WHOLE_SIZE},
+    };
+    VkWriteDescriptorSet writes[4]{};
+    for (int i = 0; i < 4; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = static_cast<uint32_t>(i);
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &bufs[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+    struct QuantPushConst {
+      uint32_t n;
+      uint32_t op;
+      uint32_t group_size;
+      uint32_t bits;
+      uint32_t N_dim;
+      uint32_t K_dim;
+    } pc{n_dequant, 1u, static_cast<uint32_t>(group_size_),
+         static_cast<uint32_t>(bits_), static_cast<uint32_t>(N),
+         static_cast<uint32_t>(K)};
+
+    VkCommandBuffer cmd = encoder.cmd;
+    vkCmdPushConstants(
+        cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+    vkCmdDispatch(cmd, vulkan::div_ceil(n_dequant, 256u), 1, 1);
+
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    Matmul(s).eval_gpu({x, dq_weights}, out);
+    vulkan::device(s.device).add_temporary(s, dq_weights);
+    return;
+  }
+
+  // General case: both inputs[0] and inputs[3] are packed-uint quantized matrices.
+  // inputs[0]=w1_pack, inputs[1]=scales1, inputs[2]=biases1
+  // inputs[3]=w2_pack, inputs[4]=scales2, inputs[5]=biases2
+  // Output shape: out = [M, N]; we need dq1[M,K] @ dq2[K,N].
+  const array& w1_pack = inputs[0];
+  const array& scales1 = inputs[1];
+  const array& biases1 = inputs[2];
+  const array& w2_pack = inputs[3];
+  const array& scales2 = inputs[4];
+  const array& biases2 = inputs[5];
+
+  int M = static_cast<int>(out.shape(-2));
+  int N = static_cast<int>(out.shape(-1));
+  // K is determined from w1: w1_pack shape is [M, K_packed], K = K_packed * (32/bits_)
+  // or from scales1 shape: scales1 has K groups along last dim * group_size_
+  int K = static_cast<int>(scales1.shape(-1)) * group_size_;
+
+  uint32_t n_dq1 = static_cast<uint32_t>(M) * static_cast<uint32_t>(K);
+  uint32_t n_dq2 = static_cast<uint32_t>(K) * static_cast<uint32_t>(N);
+
+  // Allocate temporaries for dequantized matrices
+  array dq1(Shape{M, K}, float32, nullptr, {});
+  dq1.set_data(allocator::malloc(dq1.nbytes()));
+  array dq2(Shape{K, N}, float32, nullptr, {});
+  dq2.set_data(allocator::malloc(dq2.nbytes()));
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+  if (pipeline == VK_NULL_HANDLE) {
+    vulkan::device(s.device).add_temporary(s, dq1);
+    vulkan::device(s.device).add_temporary(s, dq2);
+    throw std::runtime_error(
+        "[vulkan::QQMatmul] failed to get quantized dequant pipeline");
+  }
+
+  struct QuantPushConst {
+    uint32_t n;
+    uint32_t op;
+    uint32_t group_size;
+    uint32_t bits;
+    uint32_t N_dim;
+    uint32_t K_dim;
+  };
+
+  VkCommandBuffer cmd = encoder.cmd;
+
+  // ── Pass A: Dequantize w1 -> dq1 [M, K] (op=1, non-transposed) ──────────
+  {
+    VkBuffer src_buf = vulkan::get_buffer(w1_pack);
+    VkBuffer scale_buf = vulkan::get_buffer(scales1);
+    VkBuffer bias_buf = vulkan::get_buffer(biases1);
+    VkBuffer dq_buf = vulkan::get_buffer(dq1);
+
+    VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+    VkDescriptorBufferInfo bufs[4] = {
+        {src_buf, 0, VK_WHOLE_SIZE},
+        {scale_buf, 0, VK_WHOLE_SIZE},
+        {bias_buf, 0, VK_WHOLE_SIZE},
+        {dq_buf, 0, VK_WHOLE_SIZE},
+    };
+    VkWriteDescriptorSet writes[4]{};
+    for (int i = 0; i < 4; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = static_cast<uint32_t>(i);
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &bufs[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+    QuantPushConst pc{n_dq1, 1u, static_cast<uint32_t>(group_size_),
+                      static_cast<uint32_t>(bits_), static_cast<uint32_t>(K),
+                      static_cast<uint32_t>(M)};
+    vkCmdPushConstants(
+        cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+    vkCmdDispatch(cmd, vulkan::div_ceil(n_dq1, 256u), 1, 1);
+  }
+
+  // Barrier between pass A and pass B
+  {
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+  }
+
+  // ── Pass B: Dequantize w2 -> dq2 [K, N] (op=1, non-transposed) ──────────
+  {
+    VkBuffer src_buf = vulkan::get_buffer(w2_pack);
+    VkBuffer scale_buf = vulkan::get_buffer(scales2);
+    VkBuffer bias_buf = vulkan::get_buffer(biases2);
+    VkBuffer dq_buf = vulkan::get_buffer(dq2);
+
+    VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+    VkDescriptorBufferInfo bufs[4] = {
+        {src_buf, 0, VK_WHOLE_SIZE},
+        {scale_buf, 0, VK_WHOLE_SIZE},
+        {bias_buf, 0, VK_WHOLE_SIZE},
+        {dq_buf, 0, VK_WHOLE_SIZE},
+    };
+    VkWriteDescriptorSet writes[4]{};
+    for (int i = 0; i < 4; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = static_cast<uint32_t>(i);
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &bufs[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+    QuantPushConst pc{n_dq2, 1u, static_cast<uint32_t>(group_size_),
+                      static_cast<uint32_t>(bits_), static_cast<uint32_t>(N),
+                      static_cast<uint32_t>(K)};
+    vkCmdPushConstants(
+        cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+    vkCmdDispatch(cmd, vulkan::div_ceil(n_dq2, 256u), 1, 1);
+  }
+
+  // Barrier between pass B and matmul
+  {
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &barrier, 0, nullptr, 0, nullptr);
+  }
+
+  // ── Pass C: float matmul dq1[M,K] @ dq2[K,N] -> out[M,N] ────────────────
+  Matmul(s).eval_gpu({dq1, dq2}, out);
+  vulkan::device(s.device).add_temporary(s, dq1);
+  vulkan::device(s.device).add_temporary(s, dq2);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hadamard — GPU dispatch via hadamard.comp (Walsh-Hadamard Transform)
@@ -2610,8 +2840,74 @@ void RoPE::eval_gpu(
 }
 NO_GPU_MULTI(ScaledDotProductAttention)
 NO_GPU_MULTI(ScaledDotProductAttentionVJP)
-NO_GPU_MULTI(ConvertFP8)
-NO_GPU_MULTI(Quantize)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fast::ConvertFP8 — CPU fallback (no GPU shader for FP8 conversion yet)
+// ConvertFP8 extends Primitive (multi-output), so eval_gpu takes outputs vector.
+// eval_cpu handles set_data internally — do not pre-allocate here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void ConvertFP8::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  eval_cpu(inputs, outputs);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fast::Quantize — GPU dispatch for dequantize (op=1 via quantized.comp),
+// CPU fallback for the quantize direction.
+//
+// dequantize_=true:  1 output — dequantize packed w -> float using GPU shader
+// dequantize_=false: 3 outputs — quantize float -> packed w, scales, biases
+//                    (GPU shader for quantize not yet implemented; use CPU)
+//
+// NOTE: eval_cpu for Quantize always accesses outputs[0..2], so it CANNOT
+// be called for the dequantize case (only 1 output).
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Quantize::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  if (!dequantize_) {
+    // Quantize path (float -> packed): eval_cpu handles all 3 outputs.
+    eval_cpu(inputs, outputs);
+    return;
+  }
+
+  // Dequantize path (packed -> float): 1 output.
+  // inputs[0]=packed_w, inputs[1]=scales, inputs[2]=biases
+  // outputs[0]=dequantized float
+  //
+  // Use inline CPU dequantize: VMA buffers are host-visible on MoltenVK/iGPU
+  // (unified memory), so we can read inputs and write outputs directly.
+  // This avoids a GPU shader dispatch that causes VK_ERROR_DEVICE_LOST on
+  // certain MoltenVK configurations due to buffer type mismatch.
+  auto& out = outputs[0];
+  out.set_data(allocator::malloc(out.nbytes()));
+
+  size_t n = static_cast<size_t>(out.size());
+  if (n == 0) return;
+
+  // MLX guarantees inputs are evaluated before eval_gpu is called.
+  // On MoltenVK/iGPU unified memory, host can read GPU-written buffers directly.
+  const uint32_t* w_packed = inputs[0].data<uint32_t>();
+  const float*    scales   = inputs[1].data<float>();
+  const float*    biases   = inputs[2].data<float>();
+  float*          dst      = out.data<float>();
+
+  uint32_t bits     = static_cast<uint32_t>(bits_);
+  uint32_t gs       = static_cast<uint32_t>(group_size_);
+  uint32_t epw      = 32u / bits;                 // elements per packed word
+  uint32_t mask     = (1u << bits) - 1u;
+
+  for (size_t i = 0; i < n; ++i) {
+    uint32_t ui      = static_cast<uint32_t>(i);
+    uint32_t packed  = w_packed[ui / epw];
+    uint32_t shift   = (ui % epw) * bits;
+    uint32_t q       = (packed >> shift) & mask;
+    uint32_t group   = ui / gs;
+    dst[i] = static_cast<float>(q) * scales[group] + biases[group];
+  }
+}
+
 NO_GPU_MULTI(CustomKernel)
 
 } // namespace fast

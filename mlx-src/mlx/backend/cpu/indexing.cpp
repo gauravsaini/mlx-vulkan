@@ -197,32 +197,26 @@ void dispatch_gather(
 }
 
 void Gather::eval_cpu(const std::vector<array>& inputs, array& out) {
-  fprintf(stderr, "[DEBUG] Gather::eval_cpu started\n");
   out.set_data(allocator::malloc(out.nbytes()));
-  fprintf(stderr, "[DEBUG] Gather::eval_cpu malloc done\n");
 
   auto& src = inputs[0];
   std::vector<array> inds;
   for (auto it = inputs.begin() + 1; it < inputs.end(); ++it) {
     inds.push_back(array::unsafe_weak_copy(*it));
   }
-  
-  fprintf(stderr, "[DEBUG] Gather::eval_cpu: calling get_command_encoder\n");
+
   auto& encoder = cpu::get_command_encoder(stream());
-  
-  fprintf(stderr, "[DEBUG] Gather::eval_cpu: adding inputs to encoder\n");
+
   for (auto& in : inputs) {
     encoder.set_input_array(in);
   }
   encoder.set_output_array(out);
-  
-  fprintf(stderr, "[DEBUG] Gather::eval_cpu: dispatching task\n");
+
   encoder.dispatch([axes_ = axes_,
                     slice_sizes_ = slice_sizes_,
                     src = array::unsafe_weak_copy(src),
                     inds = std::move(inds),
                     out = array::unsafe_weak_copy(out)]() mutable {
-    fprintf(stderr, "[DEBUG] Gather CPU task running\n");
     if (inds.empty()) {
       dispatch_gather<uint8_t>(src, inds, out, axes_, slice_sizes_);
       return;

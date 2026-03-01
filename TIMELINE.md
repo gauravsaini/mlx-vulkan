@@ -1,5 +1,29 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-01 (22:50)
+
+### feat (2026-03-01) — QQMatmul, fast::Quantize dequantize, GatherQMM stubs + debug cleanup
+
+1. **QQMatmul GPU**: Two-pass dequantize (both LHS and RHS) → Matmul; lhs_is_float fast path
+   delegates to QuantizedMatmul logic. Handles both fully-quantized and float×quantized cases.
+2. **fast::Quantize dequantize path**: Inline CPU dequantize on host-visible VMA buffers.
+   Avoids `VK_ERROR_DEVICE_LOST` from shader dispatch when GPU semaphores are pending.
+   Quantize direction (float→packed) unchanged: `eval_cpu` handles all 3 outputs correctly.
+3. **fast::ConvertFP8**: Clean `eval_cpu` CPU fallback (multi-output).
+4. **GatherQMM**: Replaced `NO_GPU` macro with descriptive `runtime_error` stub (consistent with
+   GatherMM/BlockMaskedMM pattern).
+5. **Debug cleanup**: Stripped all `fprintf`/`fflush` from `cpu/quantized.cpp`, `cpu/indexing.cpp`,
+   and `vulkan/primitives.cpp` (left by prior agents).
+
+6. **Tests** (before → after):
+   - Stage 19 QuantizedMatmul: 17/17 → 17/17 ✅ (regression check)
+   - Stage 24 QQMatmul/Quantize: NEW 7/8 (1 SKIP = expected MLX API shape check)
+
+7. **Files changed**: `primitives.cpp`, `cpu/quantized.cpp`, `cpu/indexing.cpp`,
+   `tests/vulkan/test_stage24_qqmatmul.py`
+
+---
+
 ## UPDATED ON : 2026-03-01
 
 ### feat (2026-03-01) — Workgroup size tuning infrastructure (subgroup query)
