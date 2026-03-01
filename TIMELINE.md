@@ -2,6 +2,28 @@
 
 ---
 
+## UPDATED ON : 2026-03-01
+
+### feat (2026-03-01) — GatherMM, BlockMaskedMM, SegmentedMM CPU fallback stubs
+
+1. **GatherMM / BlockMaskedMM / SegmentedMM**:
+   - Replaced `NO_GPU` macros with explicit `eval_gpu()` bodies
+   - Each throws `std::runtime_error` with message containing "has no Vulkan GPU implementation"
+   - On GPU stream: RuntimeError propagates to Python; user must use `mx.stream(mx.cpu)`
+   - On CPU stream: `eval_cpu()` runs correctly via `cpu::CommandEncoder` unified-memory path
+   - GatherMM numerical correctness verified: max_err=0.0 vs manual numpy reference
+   - GatherQMM kept as `NO_GPU` (quantized variant, CUDA also skips it)
+
+2. **Tests** (before → after):
+   - Stage 21: 0/0 (new) → 7/7 PASS
+   - Stages 13-18: unchanged (7/7, 6/6, 5/5, 8/8, 3/3, 3/3)
+
+3. **Files changed**:
+   - `mlx-src/mlx/backend/vulkan/primitives.cpp` — GatherMM, BlockMaskedMM, SegmentedMM eval_gpu stubs
+   - `tests/vulkan/test_stage21_advanced_mm.py` — new 7-test stage
+
+---
+
 ## UPDATED ON : 2026-02-28
 
 ### fix (2026-02-28) — Binary broadcast stride-based indexing + pipeline cache v4
