@@ -24,6 +24,27 @@
 
 ---
 
+## UPDATED ON : 2026-03-01
+
+### feat (2026-03-01) — Stage 20: linalg CPU fallbacks via Vulkan backend
+
+1. **CPU Fallbacks for 7 Linalg Ops**:
+   - Replaced `NO_GPU_MULTI(LUF/QRF/SVD/Eig/Eigh)` and `NO_GPU(Inverse/Cholesky)`
+     in `vulkan/primitives.cpp` with `eval_gpu` bodies that delegate to `eval_cpu`.
+   - Works on MoltenVK unified memory: VMA buffers are CPU-accessible.
+   - Fixed `cpu::CommandEncoder::dispatch()` in `encoder.h` to detect GPU-stream
+     context and execute lambdas synchronously.
+
+2. **Removed `check_cpu_stream` guards in `linalg.cpp`**:
+   - Removed for `qr`, `svd`, `inv_impl`, `cholesky`, `validate_eig`, `validate_lu`.
+   - Guards for `pinv`, `cholesky_inv`, `solve` retained (not yet implemented).
+
+3. **Tests** (before -> after): Stage 20 linalg: 0/4 -> 4/4 PASS
+
+4. **Files**: `vulkan/primitives.cpp`, `cpu/encoder.h`, `linalg.cpp`, `test_stage20_linalg.py`
+
+---
+
 ## UPDATED ON : 2026-02-28
 
 ### fix (2026-02-28) — Binary broadcast stride-based indexing + pipeline cache v4

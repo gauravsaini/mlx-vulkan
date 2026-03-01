@@ -224,7 +224,6 @@ array norm(
 }
 
 std::pair<array, array> qr(const array& a, StreamOrDevice s /* = {} */) {
-  check_cpu_stream(s, "[linalg::qr]");
   check_float(a.dtype(), "[linalg::qr]");
 
   if (a.ndim() < 2) {
@@ -249,7 +248,6 @@ std::pair<array, array> qr(const array& a, StreamOrDevice s /* = {} */) {
 
 std::vector<array>
 svd(const array& a, bool compute_uv, StreamOrDevice s /* = {} */) {
-  check_cpu_stream(s, "[linalg::svd]");
   check_float_or_complex(a.dtype(), "[linalg::svd]");
 
   if (a.ndim() < 2) {
@@ -294,7 +292,6 @@ svd(const array& a, bool compute_uv, StreamOrDevice s /* = {} */) {
 }
 
 array inv_impl(const array& a, bool tri, bool upper, StreamOrDevice s) {
-  check_cpu_stream(s, "[linalg::inv]");
   check_float(a.dtype(), "[linalg::inv]");
 
   if (a.ndim() < 2) {
@@ -331,7 +328,6 @@ array cholesky(
     const array& a,
     bool upper /* = false */,
     StreamOrDevice s /* = {} */) {
-  check_cpu_stream(s, "[linalg::cholesky]");
   check_float(a.dtype(), "[linalg::cholesky]");
   if (a.ndim() < 2) {
     std::ostringstream msg;
@@ -503,7 +499,6 @@ void validate_eig(
     const array& a,
     const StreamOrDevice& stream,
     const std::string& fname) {
-  check_cpu_stream(stream, fname);
   check_float_or_complex(a.dtype(), fname);
 
   if (a.ndim() < 2) {
@@ -570,7 +565,6 @@ void validate_lu(
     const array& a,
     const StreamOrDevice& stream,
     const std::string& fname) {
-  check_cpu_stream(stream, fname);
   check_float(a.dtype(), fname);
 
   if (a.ndim() < 2) {

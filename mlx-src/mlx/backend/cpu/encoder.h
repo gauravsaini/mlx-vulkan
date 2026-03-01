@@ -42,23 +42,28 @@ struct MLX_API CommandEncoder {
 
   template <class F, class... Args>
   void dispatch(F&& f, Args&&... args) {
-    fprintf(stderr, "[DEBUG] cpu::CommandEncoder::dispatch num_ops=%d\n", num_ops_);
-    num_ops_ = (num_ops_ + 1) % DISPATCHES_PER_TASK;
     auto task = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
-    fprintf(stderr, "[DEBUG] cpu::CommandEncoder::dispatch task bound\n");
+
+    // When called from a GPU-stream eval_gpu (unified memory CPU fallback),
+    // execute the task synchronously — the GPU scheduler cannot manage CPU
+    // tasks enqueued to a different stream, and on MoltenVK the data pointer
+    // is already CPU-accessible (no staging needed).
+    if (stream_.device.type == Device::DeviceType::gpu) {
+      task();
+      return;
+    }
+
+    num_ops_ = (num_ops_ + 1) % DISPATCHES_PER_TASK;
     if (num_ops_ == 0) {
       scheduler::notify_new_task(stream_);
       auto task_wrap = [s = stream_, task = std::move(task)]() mutable {
         task();
         scheduler::notify_task_completion(s);
       };
-      fprintf(stderr, "[DEBUG] cpu::CommandEncoder::dispatch enqueueing task_wrap\n");
       scheduler::enqueue(stream_, std::move(task_wrap));
     } else {
-      fprintf(stderr, "[DEBUG] cpu::CommandEncoder::dispatch enqueueing task directly\n");
       scheduler::enqueue(stream_, std::move(task));
     }
-    fprintf(stderr, "[DEBUG] cpu::CommandEncoder::dispatch finished\n");
   }
 
  private:
