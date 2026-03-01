@@ -60,7 +60,10 @@ float erf_approx(float x) {
 
 // Inverse erf using Newton's method
 float erfinv_approx(float x) {
-    // Explicit boundary conditions: erfinv(±1) = ±inf
+    // Explicit boundary conditions to match scipy/numpy/MLX semantics:
+    // erfinv(x) for |x| > 1 = NaN
+    // erfinv(+1) = +inf, erfinv(-1) = -inf
+    if (x > 1.0 || x < -1.0) return uintBitsToFloat(0x7FC00000u);  // NaN
     if (x >= 1.0)  return uintBitsToFloat(0x7F800000u);  // +inf
     if (x <= -1.0) return uintBitsToFloat(0xFF800000u);  // -inf
     float w = -log((1.0 - x) * (1.0 + x));
