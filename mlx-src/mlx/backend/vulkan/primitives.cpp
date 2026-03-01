@@ -107,6 +107,7 @@ enum class UnaryOp : uint32_t {
   Conjugate= 28,
   Log2     = 29,
   Log10    = 30,
+  LogNot   = 33,
 };
 
 // Compute broadcast strides for an input array relative to the output shape.
@@ -336,9 +337,12 @@ UNARY_GPU(Expm1,      Expm1)
 UNARY_GPU(Floor,      Floor)
 // Log::eval_gpu handled below (supports base-e, base-2, base-10 via state())
 UNARY_GPU(Log1p,      Log1p)
-UNARY_GPU(LogicalNot, Neg)
 UNARY_GPU(Negative,   Neg)
 UNARY_GPU(Round,      Round)
+// LogicalNot uses a dedicated LOGNOT opcode (not NEG) to correctly handle bool byte-packing
+void LogicalNot::eval_gpu(const std::vector<array>& inputs, array& out) {
+  dispatch_unary(inputs[0], out, static_cast<uint32_t>(UnaryOp::LogNot), stream());
+}
 UNARY_GPU(Sigmoid,    Sigmoid)
 UNARY_GPU(Sign,       Sign)
 UNARY_GPU(Sin,        Sin)

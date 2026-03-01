@@ -36,6 +36,7 @@
 #define UNARY_LOG10     30
 #define UNARY_DEGREES   31
 #define UNARY_RADIANS   32
+#define UNARY_LOGNOT    33  // logical NOT: 0→1, else→0 (for bool arrays)
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -139,6 +140,7 @@ float compute_op(float val) {
         case UNARY_LOG10:   return log(val) / log(10.0);
         case UNARY_DEGREES: return val * (180.0 / 3.14159265358979323846);
         case UNARY_RADIANS: return val * (3.14159265358979323846 / 180.0);
+        case UNARY_LOGNOT:  return (val == 0.0) ? 1.0 : 0.0;
         default: return val;
     }
 }
@@ -147,7 +149,26 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    if (params.input_elem_bytes == 2u) {
+    if (params.input_elem_bytes == 1u) {
+        // bool/int8 path: 4 elements packed per uint32 word
+        // Only the first thread in each group of 4 does the work
+        if ((idx & 3u) != 0u) return;
+
+        uint word_idx = idx >> 2u;
+        uint word = in_data[word_idx];
+        uint out_word = 0u;
+
+        // Extract bytes 0..3 (little-endian), apply op, pack back
+        for (uint b = 0u; b < 4u; b++) {
+            if (idx + b >= params.n) break;
+            uint byte_val = (word >> (b * 8u)) & 0xFFu;
+            float val = float(byte_val != 0u ? 1 : 0);
+            float res = compute_op(val);
+            uint out_byte = (res != 0.0) ? 1u : 0u;
+            out_word |= (out_byte << (b * 8u));
+        }
+        out_data[word_idx] = out_word;
+    } else if (params.input_elem_bytes == 2u) {
         // float16 path: two f16 elements packed into one uint32 word
         // Only even-indexed threads do work (each handles a pair)
         if ((idx & 1u) == 1u) return;
@@ -165,7 +186,7 @@ void main() {
 
         out_data[word_idx] = packHalf2x16(halves);
     } else {
-        // float32 path: direct bit reinterpretation
+        // float32/int32 path: direct bit reinterpretation
         float val = uintBitsToFloat(in_data[idx]);
         float res = compute_op(val);
         out_data[idx] = floatBitsToUint(res);
