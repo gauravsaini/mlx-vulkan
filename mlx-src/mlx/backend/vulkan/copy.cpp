@@ -64,12 +64,12 @@ static void dispatch_copy_shader(
     meta_buf = staging->buffer;
     
     // Dispose staging buffer intelligently when the execution encodes completely
-    encoder.add_completed_handler([staging]() {
+    vulkan::device(s.device).add_completed_handler(s, [staging]() {
       vulkan::allocator().free_staging(staging);
     });
   }
 
-  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
 
   // Bind src buffer (binding 0), dst buffer (binding 1), meta buffer (binding 2)
   VkDescriptorBufferInfo src_info{src_buf, 0, VK_WHOLE_SIZE};

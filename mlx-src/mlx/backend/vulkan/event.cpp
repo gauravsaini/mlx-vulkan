@@ -27,19 +27,21 @@ Event::Event(Stream stream) : stream_(stream) {
 }
 
 void Event::wait() {
-  if (!valid()) return;
+  if (!valid()) { fprintf(stderr, "[EVENT] wait: not valid\n"); fflush(stderr); return; }
   auto* state = static_cast<VulkanEventState*>(event_.get());
+  fprintf(stderr, "[EVENT] wait: waiting for signal_value=%lu\n", (unsigned long)state->signal_value); fflush(stderr);
   state->vk_event.wait(state->signal_value);
+  fprintf(stderr, "[EVENT] wait: done\n"); fflush(stderr);
 }
 
 void Event::wait(Stream stream) {
   if (!valid()) return;
-  // For cross-stream GPU sync, we drain the source stream first
-  // then the target stream waits on CPU
-  if (stream.device == Device::gpu) {
-    vulkan::device(stream.device).synchronize(stream_);
+  auto* state = static_cast<VulkanEventState*>(event_.get());
+  if (stream.device == Device::cpu) {
+    scheduler::enqueue(stream, [*this]() mutable { wait(); });
+  } else {
+    vulkan::device(stream.device).add_wait_semaphore(stream, state->vk_event.semaphore(), state->signal_value);
   }
-  wait(); // CPU wait
 }
 
 void Event::signal(Stream stream) {
@@ -48,23 +50,26 @@ void Event::signal(Stream stream) {
   state->signal_value = value_;
 
   if (stream.device == Device::gpu) {
-    // Schedule signal after GPU commands in this stream complete
-    vulkan::get_command_encoder(stream).add_completed_handler(
-        [event_ = event_, val = value_]() mutable {
-          auto* s = static_cast<VulkanEventState*>(event_.get());
-          s->vk_event.signal(val);
-        });
+    vulkan::device(stream.device).add_signal_semaphore(stream, state->vk_event.semaphore(), value_);
   } else {
-    state->vk_event.signal(value_);
+    scheduler::enqueue(stream, [event_ = event_, val = value_]() mutable {
+      auto* s = static_cast<VulkanEventState*>(event_.get());
+      s->vk_event.signal(val);
+    });
   }
 }
 
 bool Event::is_signaled() const {
   if (!valid()) return false;
   auto* state = static_cast<VulkanEventState*>(event_.get());
-  // For simplicity, always return true (timeline semaphores need proper query)
-  (void)state;
-  return true;
+  auto& dev = vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
+  uint64_t current_value = 0;
+  VkResult res = vkGetSemaphoreCounterValue(
+      dev.vk_device(), state->vk_event.semaphore(), &current_value);
+  if (res != VK_SUCCESS) {
+    return false;
+  }
+  return current_value >= state->signal_value;
 }
 
 } // namespace mlx::core

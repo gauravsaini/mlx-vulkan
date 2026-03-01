@@ -14,6 +14,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Define VMA implementation in this translation unit
@@ -59,10 +60,10 @@ std::vector<uint32_t> read_spirv(const std::string& path) {
 Device::Device() {
   init_instance();
   select_physical_device();
+  query_subgroup_size();
   create_logical_device();
   create_vma();
   create_pipeline_cache();
-  create_descriptor_pool();
 }
 
 Device::~Device() {
@@ -87,9 +88,10 @@ Device::~Device() {
     
     if (enc.fence != VK_NULL_HANDLE) vkDestroyFence(device_, enc.fence, nullptr);
     if (enc.pool  != VK_NULL_HANDLE) vkDestroyCommandPool(device_, enc.pool, nullptr);
+    if (enc.desc_pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device_, enc.desc_pool, nullptr);
   }
 
-  if (descriptor_pool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
+  
   if (pipeline_cache_  != VK_NULL_HANDLE) vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
   if (vma_allocator_   != VK_NULL_HANDLE) vmaDestroyAllocator(vma_allocator_);
 
@@ -214,6 +216,43 @@ void Device::select_physical_device() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Subgroup size query (called right after physical device selection)
+// ────────────────────────────────────────────────────────────────────────────
+
+void Device::query_subgroup_size() {
+  // Use VkPhysicalDeviceSubgroupProperties (core Vulkan 1.1+) via
+  // vkGetPhysicalDeviceProperties2 to retrieve the hardware subgroup width.
+  // On AMD RDNA this is 64, Intel Arc is 32, Apple M-series via MoltenVK is 32.
+  VkPhysicalDeviceSubgroupProperties subgroup_props{};
+  subgroup_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+
+  VkPhysicalDeviceProperties2 props2{};
+  props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+  props2.pNext = &subgroup_props;
+
+  vkGetPhysicalDeviceProperties2(physical_device_, &props2);
+
+  subgroup_size_ = subgroup_props.subgroupSize;
+  if (subgroup_size_ == 0) {
+    // vkGetPhysicalDeviceProperties2 returned zero — safe fallback
+    subgroup_size_ = 32;
+  }
+
+  // Round 128 up to the nearest multiple of subgroup_size_, cap at 256.
+  // This gives a workgroup size that fills at least 2 subgroups but stays
+  // within typical shared-memory budgets.
+  preferred_workgroup_size_ = std::min(
+      256u,
+      ((128u + subgroup_size_ - 1u) / subgroup_size_) * subgroup_size_);
+
+  fprintf(
+      stderr,
+      "[MLX Vulkan] Subgroup size: %u  |  Preferred workgroup size: %u\n",
+      subgroup_size_,
+      preferred_workgroup_size_);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Logical device + compute queue
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -312,7 +351,7 @@ void Device::create_vma() {
 
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
-static constexpr uint32_t kPipelineCacheVersion = 7; // bumped: unary.comp 4 bindings for float16
+static constexpr uint32_t kPipelineCacheVersion = 9; // bumped: quantized.comp rewritten with uint src + DEQUANT_AFFINE_TRANS op
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");
@@ -364,27 +403,6 @@ void Device::save_pipeline_cache() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Descriptor pool
-// ────────────────────────────────────────────────────────────────────────────
-
-void Device::create_descriptor_pool() {
-  // Pool supports 4096 storage buffer descriptors and 512 sets
-  VkDescriptorPoolSize pool_size{};
-  pool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  pool_size.descriptorCount = 4096;
-
-  VkDescriptorPoolCreateInfo pool_info{};
-  pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-  pool_info.maxSets       = 512;
-  pool_info.poolSizeCount = 1;
-  pool_info.pPoolSizes    = &pool_size;
-
-  vk_check(vkCreateDescriptorPool(device_, &pool_info, nullptr, &descriptor_pool_),
-           "vkCreateDescriptorPool");
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // Command encoder management (per stream)
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -405,6 +423,17 @@ CommandEncoder& Device::get_command_encoder(Stream s) {
   pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   vk_check(vkCreateCommandPool(device_, &pool_info, nullptr, &enc.pool),
            "vkCreateCommandPool");
+
+  VkDescriptorPoolSize dpool_size{};
+  dpool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  dpool_size.descriptorCount = 10000;
+
+  VkDescriptorPoolCreateInfo desc_pool_info{};
+  desc_pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  desc_pool_info.maxSets       = 2000;
+  desc_pool_info.poolSizeCount = 1;
+  desc_pool_info.pPoolSizes    = &dpool_size;
+  vk_check(vkCreateDescriptorPool(device_, &desc_pool_info, nullptr, &enc.desc_pool), "vkCreateDescriptorPool");
 
   // Allocate initial command buffer
   VkCommandBufferAllocateInfo alloc_info{};
@@ -437,44 +466,132 @@ void Device::commit(Stream s) {
   if (it == encoders_.end()) return;
 
   CommandEncoder& enc = it->second;
-  if (!enc.recording || enc.op_count == 0) return;
+  bool has_sems = !enc.wait_semaphores.empty() || !enc.signal_semaphores.empty();
+  fprintf(stderr, "[COMMIT] recording=%d op_count=%d has_sems=%d\n", (int)enc.recording, enc.op_count, (int)has_sems); fflush(stderr);
+  if (!enc.recording || (enc.op_count == 0 && !has_sems)) return;
 
+  fprintf(stderr, "[COMMIT] ending command buffer\n"); fflush(stderr);
   vkEndCommandBuffer(enc.cmd);
 
-  // Wait for previous submission to finish
-  vkWaitForFences(device_, 1, &enc.fence, VK_TRUE, UINT64_MAX);
-  vkResetFences(device_, 1, &enc.fence);
+  std::vector<VkSemaphore> wait_sems;
+  std::vector<uint64_t> wait_vals;
+  std::vector<VkPipelineStageFlags> wait_stages;
+  for (auto& p : enc.wait_semaphores) {
+    wait_sems.push_back(p.first);
+    wait_vals.push_back(p.second);
+    wait_stages.push_back(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+  }
+  std::vector<VkSemaphore> signal_sems;
+  std::vector<uint64_t> signal_vals;
+  for (auto& p : enc.signal_semaphores) {
+    signal_sems.push_back(p.first);
+    signal_vals.push_back(p.second);
+  }
+
+  enc.wait_semaphores.clear();
+  enc.signal_semaphores.clear();
+
+  VkTimelineSemaphoreSubmitInfo timeline_info{};
+  timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  timeline_info.waitSemaphoreValueCount = wait_vals.size();
+  timeline_info.pWaitSemaphoreValues = wait_vals.data();
+  timeline_info.signalSemaphoreValueCount = signal_vals.size();
+  timeline_info.pSignalSemaphoreValues = signal_vals.data();
 
   VkSubmitInfo submit{};
   submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit.pNext              = &timeline_info;
   submit.commandBufferCount = 1;
   submit.pCommandBuffers    = &enc.cmd;
+  submit.waitSemaphoreCount = wait_sems.size();
+  submit.pWaitSemaphores    = wait_sems.data();
+  submit.pWaitDstStageMask  = wait_stages.data();
+  submit.signalSemaphoreCount = signal_sems.size();
+  submit.pSignalSemaphores  = signal_sems.data();
 
+  fprintf(stderr, "[COMMIT] submitting queue\n"); fflush(stderr);
   vk_check(vkQueueSubmit(compute_queue_, 1, &submit, enc.fence),
            "vkQueueSubmit");
 
-  // Run completion handlers async (after fence signals)
-  // Wait immediately then run handlers
-  vkWaitForFences(device_, 1, &enc.fence, VK_TRUE, UINT64_MAX);
-
+  // Run completion handlers async!
   auto handlers = std::move(enc.completion_handlers);
   enc.completion_handlers.clear();
+  auto temporaries = std::move(enc.temporaries);
   enc.temporaries.clear();
   enc.op_count = 0;
 
-  // Reset and begin new command buffer
-  vkResetCommandPool(device_, enc.pool, 0);
+  struct CommitState {
+    VkDevice dev;
+    VkCommandPool old_pool;
+    VkDescriptorPool old_desc_pool;
+    VkFence old_fence;
+    std::vector<std::function<void()>> handlers;
+    std::vector<std::shared_ptr<array::Data>> temporaries;
+  };
+  auto* state = new CommitState{
+      device_, enc.pool, enc.desc_pool, enc.fence, std::move(handlers), std::move(temporaries)};
+
+  std::thread([](CommitState* s) {
+    vkWaitForFences(s->dev, 1, &s->old_fence, VK_TRUE, UINT64_MAX);
+    
+    try {
+      s->temporaries.clear();
+    } catch (const std::exception& e) {
+      fprintf(stderr, "[BACKGROUND] temporaries exception: %s\n", e.what()); fflush(stderr);
+    }
+    
+    for (auto& h : s->handlers) {
+      if (h) {
+        try {
+          h();
+        } catch (const std::exception& e) {
+          fprintf(stderr, "[BACKGROUND] Exception: %s\n", e.what()); fflush(stderr);
+        }
+      }
+    }
+    
+    vkDestroyCommandPool(s->dev, s->old_pool, nullptr);
+    vkDestroyDescriptorPool(s->dev, s->old_desc_pool, nullptr);
+    vkDestroyFence(s->dev, s->old_fence, nullptr);
+
+    delete s;
+  }, state).detach();
+
+  // Create BRAND NEW command pool and fence for the encoder
+  VkCommandPoolCreateInfo pool_info{};
+  pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  pool_info.queueFamilyIndex = compute_queue_family_;
+  vk_check(vkCreateCommandPool(device_, &pool_info, nullptr, &enc.pool), "vkCreateCommandPool");
+
+  VkDescriptorPoolSize dpool_size{};
+  dpool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  dpool_size.descriptorCount = 10000;
+
+  VkDescriptorPoolCreateInfo desc_info{};
+  desc_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  desc_info.maxSets       = 2000;
+  desc_info.poolSizeCount = 1;
+  desc_info.pPoolSizes    = &dpool_size;
+  vk_check(vkCreateDescriptorPool(device_, &desc_info, nullptr, &enc.desc_pool), "vkCreateDescriptorPool");
+
+  VkCommandBufferAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  alloc.commandPool = enc.pool;
+  alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc.commandBufferCount = 1;
+  vk_check(vkAllocateCommandBuffers(device_, &alloc, &enc.cmd), "vkAllocCommandBuffers");
+
+  VkFenceCreateInfo fence_info{};
+  fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  vk_check(vkCreateFence(device_, &fence_info, nullptr, &enc.fence), "vkCreateFence");
+
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(enc.cmd, &begin);
   enc.recording = true;
 
-  // IMPORTANT: Drop lock before executing handlers, as handlers might schedule
-  // new MLX tasks which can recursively call Device/Allocator methods and deadlock!
-  lk.unlock();
-
-  for (auto& h : handlers) h();
 }
 
 void Device::synchronize(Stream s) {
@@ -595,23 +712,22 @@ VkPipeline Device::get_pipeline(
 // Descriptor set allocation
 // ────────────────────────────────────────────────────────────────────────────
 
-VkDescriptorSet Device::alloc_descriptor_set(VkDescriptorSetLayout layout) {
+VkDescriptorSet Device::alloc_descriptor_set(Stream s, VkDescriptorSetLayout layout) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto it = encoders_.find(s.index);
+  if (it == encoders_.end()) {
+    throw std::runtime_error("[Device::alloc_descriptor] Invalid stream encoder");
+  }
+
   VkDescriptorSetAllocateInfo alloc_info{};
   alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  alloc_info.descriptorPool     = descriptor_pool_;
+  alloc_info.descriptorPool     = it->second.desc_pool;
   alloc_info.descriptorSetCount = 1;
   alloc_info.pSetLayouts        = &layout;
 
   VkDescriptorSet ds;
   VkResult res = vkAllocateDescriptorSets(device_, &alloc_info, &ds);
-  if (res == VK_ERROR_OUT_OF_POOL_MEMORY || res == VK_ERROR_FRAGMENTED_POOL) {
-    // Reset pool and retry (lose all existing sets — safe if we commit first)
-    vkResetDescriptorPool(device_, descriptor_pool_, 0);
-    vk_check(vkAllocateDescriptorSets(device_, &alloc_info, &ds),
-             "vkAllocateDescriptorSets (after pool reset)");
-  } else {
-    vk_check(res, "vkAllocateDescriptorSets");
-  }
+  vk_check(res, "vkAllocateDescriptorSets");
   return ds;
 }
 
@@ -626,6 +742,48 @@ Device& device(mlx::core::Device /*d*/) {
 
 CommandEncoder& get_command_encoder(Stream s) {
   return device(s.device).get_command_encoder(s);
+}
+
+void Device::add_temporary(Stream s, const array& arr) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto it = encoders_.find(s.index);
+  if (it != encoders_.end()) {
+    it->second.temporaries.push_back(arr.data_shared_ptr());
+  }
+}
+
+void Device::add_completed_handler(Stream s, std::function<void()> handler) {
+  if (!handler) return;
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto it = encoders_.find(s.index);
+  if (it != encoders_.end()) {
+    it->second.completion_handlers.push_back(std::move(handler));
+  }
+}
+
+void Device::add_wait_semaphore(Stream s, VkSemaphore sem, uint64_t val) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto it = encoders_.find(s.index);
+  if (it != encoders_.end()) {
+    it->second.wait_semaphores.push_back({sem, val});
+  }
+}
+
+void Device::add_signal_semaphore(Stream s, VkSemaphore sem, uint64_t val) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto it = encoders_.find(s.index);
+  if (it != encoders_.end()) {
+    it->second.signal_semaphores.push_back({sem, val});
+  }
+}
+
+bool Device::needs_commit(Stream s) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  auto it = encoders_.find(s.index);
+  if (it != encoders_.end()) {
+    return it->second.op_count > 0 && it->second.op_count % 64 == 0;
+  }
+  return false;
 }
 
 } // namespace mlx::core::vulkan

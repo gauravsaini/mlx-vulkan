@@ -1,43 +1,69 @@
 // Copyright © 2025 Apple Inc.
-// MLX Vulkan Backend - Fence implementation (CPU-GPU sync)
+// MLX Vulkan Backend - Fence implementation (CPU-GPU cross stream)
 
 #include "mlx/fence.h"
 #include "mlx/backend/vulkan/device.h"
 #include "mlx/scheduler.h"
 
-#include <condition_variable>
-#include <mutex>
+#include <stdexcept>
 
 namespace mlx::core {
 
-// For Vulkan, we use a simple CPU-side counter + condition variable for
-// cross-stream sync, plus a GPU-side timeline semaphore for GPU-GPU sync.
-// The simple implementation defers to CPU sync (like no_gpu) with GPU drain.
 struct FenceImpl {
   uint32_t count{0};
-  uint32_t value{0};
-  std::mutex mtx;
-  std::condition_variable cv;
+  VkSemaphore sem{VK_NULL_HANDLE};
+
+  FenceImpl() {
+    VkSemaphoreTypeCreateInfo timeline_info{};
+    timeline_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    timeline_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    timeline_info.initialValue = 0;
+
+    VkSemaphoreCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    createInfo.pNext = &timeline_info;
+
+    if (vkCreateSemaphore(
+            vulkan::device(Device::gpu).vk_device(), &createInfo, nullptr, &sem) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("[Fence] Failed to create timeline semaphore");
+    }
+  }
+
+  ~FenceImpl() {
+    if (sem != VK_NULL_HANDLE) {
+      // Must wait for queue to drain if destroying
+      vkDestroySemaphore(vulkan::device(Device::gpu).vk_device(), sem, nullptr);
+    }
+  }
 };
 
-Fence::Fence(Stream s) {
+Fence::Fence(Stream) {
   auto dtor = [](void* ptr) { delete static_cast<FenceImpl*>(ptr); };
   fence_ = std::shared_ptr<void>(new FenceImpl{}, dtor);
 }
 
 void Fence::wait(Stream stream, const array&) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
+  uint64_t wait_count = f.count;
+
   if (stream.device == Device::gpu) {
-    // Drain GPU stream first, then CPU waits
-    vulkan::device(stream.device).synchronize(stream);
-  }
-  if (stream.device == Device::cpu) {
-    uint32_t wait_count = f.count;
-    scheduler::enqueue(stream, [wait_count, fence_ = fence_]() mutable {
+    // Inject native cross-queue timeline dependency into MLX Vulkan Encoder!
+    vulkan::device(stream.device).add_wait_semaphore(stream, f.sem, wait_count);
+  } else if (stream.device == Device::cpu) {
+    scheduler::enqueue(stream, [fence_ = fence_, wait_count]() mutable {
       auto& f = *static_cast<FenceImpl*>(fence_.get());
-      std::unique_lock<std::mutex> lk(f.mtx);
-      if (f.value >= wait_count) return;
-      f.cv.wait(lk, [&f, wait_count] { return f.value >= wait_count; });
+      VkSemaphoreWaitInfo wait_info{};
+      wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+      wait_info.semaphoreCount = 1;
+      wait_info.pSemaphores = &f.sem;
+      wait_info.pValues = &wait_count;
+
+      if (vkWaitSemaphores(
+              vulkan::device(Device::gpu).vk_device(), &wait_info, UINT64_MAX) !=
+          VK_SUCCESS) {
+        throw std::runtime_error("[Fence::wait] CPU Wait failed");
+      }
     });
   }
 }
@@ -45,23 +71,24 @@ void Fence::wait(Stream stream, const array&) {
 void Fence::update(Stream stream, const array&, bool cross_device) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
   f.count++;
+  uint64_t signal_count = f.count;
+
   if (stream.device == Device::gpu) {
-    uint32_t signal_count = f.count;
-    // Schedule CPU signal after GPU drains
-    vulkan::get_command_encoder(stream).add_completed_handler(
-        [signal_count, fence_ = fence_]() mutable {
-          auto& f = *static_cast<FenceImpl*>(fence_.get());
-          std::unique_lock<std::mutex> lk(f.mtx);
-          f.value = signal_count;
-          f.cv.notify_all();
-        });
+    // Output node is evaluated; encode Timeline Signal upon termination
+    vulkan::device(stream.device).add_signal_semaphore(stream, f.sem, signal_count);
   } else if (stream.device == Device::cpu) {
-    uint32_t signal_count = f.count;
-    scheduler::enqueue(stream, [signal_count, fence_ = fence_]() mutable {
+    scheduler::enqueue(stream, [fence_ = fence_, signal_count]() mutable {
       auto& f = *static_cast<FenceImpl*>(fence_.get());
-      std::unique_lock<std::mutex> lk(f.mtx);
-      f.value = signal_count;
-      f.cv.notify_all();
+      VkSemaphoreSignalInfo signal_info{};
+      signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+      signal_info.semaphore = f.sem;
+      signal_info.value = signal_count;
+
+      if (vkSignalSemaphore(
+              vulkan::device(Device::gpu).vk_device(), &signal_info) !=
+          VK_SUCCESS) {
+        throw std::runtime_error("[Fence::update] CPU Signal failed");
+      }
     });
   }
 }

@@ -1,6 +1,7 @@
 // Copyright © 2025 Apple Inc.
 
 #include "mlx/backend/vulkan/utils.h"
+#include "mlx/backend/vulkan/device.h"
 
 #include <stdexcept>
 #include <string>
@@ -86,6 +87,11 @@ void insert_buffer_barrier(VkCommandBuffer cmd, const array& arr) {
   if (arr.data<void>() == nullptr) return;
   // We use the raw pointer as a placeholder - actual VkBuffer obtained via device
   // This is called from primitives which have access to device
+}
+
+uint32_t preferred_workgroup_size() {
+  return device(mlx::core::Device{mlx::core::Device::gpu, 0})
+      .preferred_workgroup_size();
 }
 
 void vk_check(VkResult result, const char* msg) {

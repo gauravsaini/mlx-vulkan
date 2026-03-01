@@ -123,7 +123,7 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
   // We must defer destruction until the GPU has finished executing all commands
   // that might be referencing this buffer. Apple Metal achieves this implicitly
   // via pooled reference counting; for Vulkan, we push it to the completion handler.
-  encoder.add_completed_handler([buf, dev = &dev]() {
+  vulkan::device(stream.device).add_completed_handler(stream, [buf, dev = &dev]() {
     if (buf->mapped_ptr) {
       vmaUnmapMemory(dev->vma_allocator(), buf->allocation);
     }
@@ -231,7 +231,7 @@ void VulkanAllocator::free_staging(VulkanBuffer* buf) {
   auto& dev = device(stream.device);
   auto& encoder = dev.get_command_encoder(stream);
 
-  encoder.add_completed_handler([buf]() {
+  vulkan::device(stream.device).add_completed_handler(stream, [buf]() {
     auto& d = device(mlx::core::Device{mlx::core::Device::gpu, 0});
     vmaDestroyBuffer(d.vma_allocator(), buf->buffer, buf->allocation);
     delete buf;

@@ -600,7 +600,9 @@ void fft_op(
     four_step_fft(in, out, axis, inverse, real, plan, copies, s, inplace);
     // d.add_temporaries(std::move(copies), s.index);
     for (auto& arr : copies) {
-      d.get_command_encoder(s).add_temporary(arr);
+      if (!arr.is_available() && !arr.is_tracer()) {
+        d.add_temporary(s, arr);
+      }
     }
     return;
   }
@@ -698,7 +700,7 @@ void fft_op(
     VkDescriptorSetLayout ds_layout;
     VkPipeline pipeline = d.get_pipeline(base_name, layout, ds_layout, num_bindings, sizeof(FFTPushConstants));
 
-    VkDescriptorSet ds = d.alloc_descriptor_set(ds_layout);
+    VkDescriptorSet ds = d.alloc_descriptor_set(s, ds_layout);
     
     // Bind base I/O buffers natively at 0 offsets
     VkDescriptorBufferInfo in_info{vulkan::get_buffer(in), 0, VK_WHOLE_SIZE};
@@ -764,7 +766,7 @@ void fft_op(
   }
 
   for(const auto& arr : copies) {
-    encoder.add_temporary(arr);
+    vulkan::device(s.device).add_temporary(s, arr);
   }
 }
 
@@ -811,7 +813,7 @@ void nd_fft_op(
 
   auto& d = vulkan::device(s.device);
   auto& encoder = d.get_command_encoder(s);
-  for(const auto& arr: temp_arrs) encoder.add_temporary(arr);
+  for(const auto& arr: temp_arrs) vulkan::device(s.device).add_temporary(s, arr);
 }
 
 void FFT::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -825,8 +827,6 @@ void FFT::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 }
 
-void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error("[vulkan::Hadamard] GPU dispatch missing - use cpu stream.");
-}
+
 
 } // namespace mlx::core

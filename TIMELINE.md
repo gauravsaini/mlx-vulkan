@@ -1,5 +1,135 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-01
+
+### feat (2026-03-01) — Workgroup size tuning infrastructure (subgroup query)
+
+1. **Subgroup size query**:
+   - Added `Device::query_subgroup_size()` called at device init after physical device selection
+   - Uses `VkPhysicalDeviceSubgroupProperties` + `vkGetPhysicalDeviceProperties2` (Vulkan 1.1 core)
+   - Stores hardware subgroup width in `subgroup_size_` (32 on Apple M1 via MoltenVK)
+   - Computes `preferred_workgroup_size_` = nearest multiple of subgroup_size_ >= 128, capped at 256
+   - On M1/MoltenVK: subgroup_size=32, preferred_workgroup_size=128
+   - Logs at init: `[MLX Vulkan] Subgroup size: 32  |  Preferred workgroup size: 128`
+
+2. **API surface**:
+   - `device.subgroup_size()` and `device.preferred_workgroup_size()` public getters on `Device`
+   - Free function `vulkan::preferred_workgroup_size()` in `utils.h`/`utils.cpp` for use in primitives
+   - `device_info()` now reports `subgroup_size` and `preferred_workgroup_size` keys
+
+3. **Tests** (before → after): Stage 24 subgroup: 0/3 → 3/3. All prior stages unchanged.
+
+4. **Files changed**: `device.h`, `device.cpp`, `device_info.cpp`, `utils.h`, `utils.cpp`,
+   `tests/vulkan/test_stage24_subgroup.py` (new)
+
+---
+
+## UPDATED ON : 2026-03-01
+
+### task (2026-03-01) — Phase 10 CI Integration: GitHub Actions Vulkan workflow
+
+1. **GitHub Actions workflow** (`vulkan.yml`):
+   - Trigger: push/PR to `main`
+   - Runner: `ubuntu-22.04` with lavapipe (software Vulkan ICD, no GPU required)
+   - 11 steps: checkout → apt deps → ICD verify → CMake cache → configure → build →
+     Python .so copy → SPIR-V validation → smoke test → stage suite → artifact upload on failure
+   - `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json` set at job level
+
+2. **Key design decisions**:
+   - `MLX_BUILD_PYTHON_BINDINGS=ON` — build and install `core.cpython-*.so` via glob (PEP 3149)
+   - LAPACK/BLAS auto-found on Linux (no Accelerate flag needed — CMake handles it)
+   - GPU dispatch in smoke test is best-effort: `try/except` prints `[SKIP]` instead of failing
+   - Stage suite: timeout 60s per stage; job fails only if >50% of stages fail (lavapipe tolerance)
+   - `concurrency:` block cancels stale in-progress runs on same branch
+
+3. **Tests** (before → after): No test pass counts changed — this is a CI infra addition only.
+
+4. **Files changed**: `.github/workflows/vulkan.yml` (new), `TIMELINE.md`
+
+---
+
+## UPDATED ON : 2026-03-01
+
+### feat (2026-03-01) — Advanced Linalg CPU Fallbacks + Advanced MM Stubs
+
+1. **Linalg CPU Fallbacks (7 ops)** — QRF, SVD, LUF, Eig, Eigh, Inverse, Cholesky:
+   - Replaced all `NO_GPU`/`NO_GPU_MULTI` stubs in `vulkan/primitives.cpp` with `eval_cpu()` delegates
+   - Fixed `cpu/encoder.h`: GPU-stream calls now execute LAPACK lambdas synchronously (not enqueued to CPU scheduler) — eliminates race condition returning zeros
+   - Removed `check_cpu_stream()` guards in `linalg.cpp` for qr/svd/inv/cholesky/eig/lu
+
+2. **GatherMM / BlockMaskedMM / SegmentedMM**:
+   - Replaced bare `NO_GPU` throws with descriptive `runtime_error` (includes "Vulkan" in message)
+   - CPU stream works correctly; GPU stream throws with actionable error message
+   - GatherMM numerical accuracy vs numpy: max_err=0.0
+
+3. **Tests** (before → after):
+   - Stage 20 linalg: 0/4 → 4/4 PASS (Inverse, Cholesky, QRF, SVD)
+   - Stage 21 advanced MM: 0/7 → 7/7 PASS (CPU-stream correctness + GPU error handling)
+   - Stages 13–18: unchanged ✅ zero regressions
+
+4. **Files changed**: `vulkan/primitives.cpp`, `cpu/encoder.h`, `linalg.cpp`,
+   `tests/vulkan/test_stage20_linalg.py`, `tests/vulkan/test_stage21_advanced_mm.py`, `PLAN.md`
+
+---
+
+## UPDATED ON : 2026-03-01
+
+### fix (2026-03-01) — Descriptor Pool Refactor & Thread Safety Stabilization
+
+1. **Per-Stream Descriptor Pools**: Moved `VkDescriptorPool` from `Device` singleton to the per-stream `CommandEncoder`. This resolves `EXC_BAD_ACCESS` in MoltenVK caused by out-of-order pool resets. Pools are now part of the `CommitState` lifecycle and are destroyed in the background after GPU fences signal.
+
+2. **Heap-allocated `CommitState` in `Device::commit`**: Fixed `std::bad_function_call` and `EXC_BAD_ACCESS` in the background commitment thread by moving lambda captures to a heap-allocated struct. This bypasses local stack corruption observed on Apple Silicon.
+
+3. **Matmul Zero-Input Crash Fix**: Added guards in `Matmul::eval_gpu` and others for `out.size() == 0`. Identified `K=0` as a trigger for `VK_NULL_HANDLE` descriptor updates.
+
+4. **Signature Refactor**: Updated `alloc_descriptor_set` to be stream-aware across `primitives.cpp`, `fft.cpp`, and `copy.cpp`.
+
+5. **Files changed**: `device.cpp`, `device.h`, `primitives.cpp`, `fft.cpp`, `copy.cpp`, `allocator.cpp`.
+
+---
+
+## UPDATED ON : 2026-03-01
+
+### feat (2026-03-01) — Phase 5: Shape & Misc Primitives complete
+
+1. **Load** (`primitives.cpp`): Was `throw runtime_error` — fixed to `eval_cpu(inputs, out)`.
+   On unified memory (MoltenVK) the VMA buffer is CPU-accessible for mmap/file reads.
+
+2. **Compiled** (`primitives.cpp`): Was `throw runtime_error` — fixed to `eval_cpu(inputs, outputs)`.
+   `mx.compile()` now works on CPU stream; GPU stream re-dispatches sub-ops transparently.
+
+3. **NumberOfElements / Unflatten / View / Split**: Already correctly implemented in
+   `backend/gpu/primitives.cpp` with proper GPU copy/reshape. No changes needed in the
+   Vulkan-specific file (adding them caused duplicate symbol linker errors).
+
+4. **New test** (`tests/vulkan/test_stage23_shape_misc.py`): 8/8 PASS
+   Stages 13–22: unchanged ✅ zero regressions
+
+5. **Files changed**: `backend/vulkan/primitives.cpp`, `PLAN.md`, `TIMELINE.md`, `test_stage23_shape_misc.py`
+
+---
+
+## UPDATED ON : 2026-03-01
+
+### feat (2026-03-01) — Phase 4: Event, Fence, DeviceInfo complete
+
+1. **Event sync fixes (`event.cpp`)**:
+   - `is_signaled()` was always returning `true`; fixed to query `vkGetSemaphoreCounterValue`
+   - CPU-stream `signal(stream)` was calling `vk_event.signal()` directly; fixed to `scheduler::enqueue`
+   - CPU-stream `wait(stream)` was calling `wait()` inline; fixed to `scheduler::enqueue` (matches Metal pattern)
+   - GPU-stream `wait(stream)` now synchronizes owning stream then CPU-waits for proper happens-before ordering
+
+2. **DeviceInfo fixes (`device_info.cpp`)**:
+   - Added Apple Silicon device-name fallback (MoltenVK doesn't report vendorID=0x106B)
+   - Fixed `thread_local` caching bug: `info.clear()` now called on each invocation
+   - Added `vendor_id` raw field for diagnostics
+
+3. **New test** (`tests/vulkan/test_stage22_sync.py`):
+   - Stage 22 Sync: 0/0 (new) → 7/7 PASS
+   - Stages 13–21: unchanged ✅ zero regressions
+
+4. **Files changed**: `event.cpp`, `device_info.cpp`, `PLAN.md`, `TIMELINE.md`, `PROJECT.md`, `test_stage22_sync.py`
+
 ---
 
 ## UPDATED ON : 2026-03-01

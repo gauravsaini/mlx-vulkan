@@ -36,15 +36,15 @@ void eval(array& arr) {
     buffers.erase(it);
   }
 
-  if (encoder.needs_commit()) {
+  if (vulkan::device(stream.device).needs_commit(stream)) {
     scheduler::notify_new_task(stream);
-    encoder.add_completed_handler(
+    vulkan::device(stream.device).add_completed_handler(stream, 
         [stream, buffers = std::move(buffers)]() {
           scheduler::notify_task_completion(stream);
         });
-    encoder.op_count = 0;
+    vulkan::device(stream.device).commit(stream);
   } else {
-    encoder.add_completed_handler([buffers = std::move(buffers)]() {});
+    vulkan::device(stream.device).add_completed_handler(stream, [buffers = std::move(buffers)]() {});
   }
 }
 

@@ -16,7 +16,7 @@ After every major commit to this repository, Claude MUST update `TIMELINE.md` at
 ```markdown
 ## UPDATED ON : YYYY-MM-DD
 
-### <commit-type> (<date>) — <short headline>
+### <commit-type> (<date>) (<time>) — <short headline>
 
 1. **<Topic>**:
    - <bullet 1>

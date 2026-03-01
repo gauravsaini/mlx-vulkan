@@ -1,51 +1,99 @@
 #version 450
 
-#define QUANT_AFFINE   0
-#define DEQUANT_AFFINE 1
+// quantized.comp — quantize / dequantize affine
+//
+// Op codes
+#define QUANT_AFFINE         0
+#define DEQUANT_AFFINE       1
+#define DEQUANT_AFFINE_TRANS 2   // dequant + transpose: src is [N, K_packed], dst is [K, N]
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly buffer InBuf    { float in_data[];    };
+// Bindings:
+//   0: src (readonly uint) — packed weights for DEQUANT, float input for QUANT
+//   1: scales (readonly float)
+//   2: biases (readonly float)
+//   3: dst (uint, read-write) — packed output for QUANT, float-as-uint for DEQUANT
+
+layout(set = 0, binding = 0) readonly buffer SrcBuf   { uint  src_data[];   };
 layout(set = 0, binding = 1) readonly buffer ScaleBuf { float scale_data[]; };
 layout(set = 0, binding = 2) readonly buffer BiasBuf  { float bias_data[];  };
-layout(set = 0, binding = 3) buffer          OutBuf   { uint  out_data[];   };
+layout(set = 0, binding = 3) buffer          DstBuf   { uint  dst_data[];   };
 
 layout(push_constant) uniform Params {
-    uint n;
-    uint op;
+    uint n;          // total number of output (dequantized) elements = K * N
+    uint op;         // 0=QUANT_AFFINE, 1=DEQUANT_AFFINE, 2=DEQUANT_AFFINE_TRANS
     uint group_size;
     uint bits;
+    uint N_dim;      // used by DEQUANT_AFFINE_TRANS: N_out dimension
+    uint K_dim;      // used by DEQUANT_AFFINE_TRANS: K_in dimension
 } params;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    uint group = idx / params.group_size;
-    float scale = scale_data[group];
-    float bias  = bias_data[group];
-
     if (params.op == DEQUANT_AFFINE) {
+        // src[idx / elems_per_word] is the packed word containing element idx
+        // Output layout: same flat order as input — [N, K] or [K, N] depending
+        // on how the caller set up the shapes. group_size groups across the
+        // LAST logical dimension, so group = idx / group_size.
         uint elems_per_word = 32u / params.bits;
-        uint packed = out_data[idx / elems_per_word];
+        uint packed = src_data[idx / elems_per_word];
         uint shift  = (idx % elems_per_word) * params.bits;
         uint mask   = (1u << params.bits) - 1u;
         uint q      = (packed >> shift) & mask;
+        uint group  = idx / params.group_size;
+        float scale = scale_data[group];
+        float bias  = bias_data[group];
         float val   = float(q) * scale + bias;
-        out_data[idx] = floatBitsToUint(val);
+        dst_data[idx] = floatBitsToUint(val);
+
+    } else if (params.op == DEQUANT_AFFINE_TRANS) {
+        // src layout: [N_out, K_packed]   (quantize groups along K)
+        // dst layout: [K, N_out]          (transposed, for matmul B = dq_T)
+        //
+        // idx iterates over K*N elements of the OUTPUT (K, N) matrix.
+        // Output element idx -> dst[k, n] where k = idx / N, n = idx % N
+        // Source element (n, k) -> packed at src[n * K_packed + k / epw], bit pos k%epw
+        // Scale for (n, k): scales[n * K_groups + k / group_size]
+        uint N    = params.N_dim;
+        uint K    = params.K_dim;
+        uint epw  = 32u / params.bits;      // elements per packed word
+        uint k    = idx / N;
+        uint n    = idx % N;
+        uint Kpacked = (K + epw - 1u) / epw;
+        uint word_idx = n * Kpacked + k / epw;
+        uint shift    = (k % epw) * params.bits;
+        uint mask     = (1u << params.bits) - 1u;
+        uint packed   = src_data[word_idx];
+        uint q        = (packed >> shift) & mask;
+        uint K_groups = (K + params.group_size - 1u) / params.group_size;
+        uint scale_idx = n * K_groups + k / params.group_size;
+        float scale = scale_data[scale_idx];
+        float bias  = bias_data[scale_idx];
+        float val   = float(q) * scale + bias;
+        // Write to dst[idx] = dst[k * N + n] (row-major [K, N])
+        dst_data[idx] = floatBitsToUint(val);
+
     } else {
-        float val = in_data[idx];
+        // QUANT_AFFINE: quantize float input to packed integer
+        float val     = uintBitsToFloat(src_data[idx]);
+        uint group    = idx / params.group_size;
+        float scale   = scale_data[group];
+        float bias    = bias_data[group];
         float q_float = (val - bias) / max(scale, 1e-8);
-        uint max_val = (1u << params.bits) - 1u;
-        uint q = clamp(uint(round(q_float)), 0u, max_val);
+        uint max_val  = (1u << params.bits) - 1u;
+        uint q        = clamp(uint(round(q_float)), 0u, max_val);
         if (params.bits == 8u) {
-            out_data[idx] = q;
+            dst_data[idx] = q;
         } else {
+            // 4-bit nibble packing (read-modify-write)
             uint word_idx = idx / 8u;
             uint nibble   = idx % 8u;
             uint shift    = nibble * 4u;
-            uint mask     = ~(0xFu << shift);
-            out_data[word_idx] = (out_data[word_idx] & mask) | ((q & 0xFu) << shift);
+            uint wmask    = ~(0xFu << shift);
+            dst_data[word_idx] = (dst_data[word_idx] & wmask) | ((q & 0xFu) << shift);
         }
     }
 }
