@@ -1739,15 +1739,180 @@ void Compiled::eval_gpu(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Matmul variants - not yet implemented
+// Matmul variants — CPU fallback stubs
+//
+// BlockMaskedMM, GatherMM, SegmentedMM: all are UnaryPrimitive (single output).
+// The Vulkan eval.cpp catch block intercepts exceptions containing "has no
+// Vulkan" and routes them to eval_cpu() via unified-memory access (MoltenVK).
+// This means throwing from eval_gpu with that substring enables transparent
+// CPU fallback. Users can also explicitly use mx.stream(mx.cpu).
+//
+// GatherQMM: quantized variant, similarly complex — kept as NO_GPU.
 // ─────────────────────────────────────────────────────────────────────────────
 
-NO_GPU(BlockMaskedMM)
-NO_GPU(GatherMM)
+void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // Block-sparse masked matmul.  The Metal implementation requires dedicated
+  // block-sparse kernels.  CUDA also has no GPU implementation for this op.
+  // eval.cpp will catch this and call eval_cpu() via the unified-memory path.
+  throw std::runtime_error(
+      "[vulkan] BlockMaskedMM has no Vulkan GPU implementation. "
+      "Falling back to CPU eval.");
+}
+
+void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // Sparse gather + matmul (used in MoE routing).
+  // inputs[0]: A (lhs matrices), inputs[1]: B (rhs matrices)
+  // inputs[2]: lhs_indices, inputs[3]: rhs_indices
+  // A GPU implementation would use indexing.comp to gather then dispatch
+  // matmul.comp per gathered pair.  For now, fall back to eval_cpu().
+  throw std::runtime_error(
+      "[vulkan] GatherMM has no Vulkan GPU implementation. "
+      "Falling back to CPU eval.");
+}
+
 NO_GPU(GatherQMM)
-NO_GPU(QuantizedMatmul)
+
+void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // Segmented (variable-length batch) matmul.
+  // CUDA backend also has no GPU implementation for this op.
+  // eval.cpp catches this and calls eval_cpu() via the unified-memory path.
+  throw std::runtime_error(
+      "[vulkan] SegmentedMM has no Vulkan GPU implementation. "
+      "Falling back to CPU eval.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QuantizedMatmul — two-pass GPU: dequantize weights → float matmul
+//
+// quantized.comp push_constant (6 x uint32 = 24 bytes):
+//   {n, op, group_size, bits, N_dim, K_dim}
+//
+// Op 1 (DEQUANT_AFFINE):      src[N,K_packed] -> dst[N,K]  (flat, same order)
+// Op 2 (DEQUANT_AFFINE_TRANS): src[N,K_packed] -> dst[K,N]  (transposed)
+//
+// transpose_=false: weight is [K_packed, N], dequant op=1, dq shape=[K,N]
+//                   matmul: x[M,K] @ dq[K,N] -> out[M,N]
+// transpose_=true:  weight is [N, K_packed], dequant op=2, dq shape=[K,N]
+//                   matmul: x[M,K] @ dq[K,N] -> out[M,N]
+// ─────────────────────────────────────────────────────────────────────────────
+
+void QuantizedMatmul::eval_gpu(
+    const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() >= 4);
+  auto& s   = stream();
+  auto& dev = vulkan::device(s.device);
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  // inputs[0] = float x      [M, K]
+  // inputs[1] = packed uint  w_pack
+  //               transpose_=false: [K_packed, N]
+  //               transpose_=true:  [N, K_packed]
+  // inputs[2] = float scales
+  //               transpose_=false: [K_groups, N]
+  //               transpose_=true:  [N, K_groups]
+  // inputs[3] = float biases (same shape as scales)
+  const array& x      = inputs[0];
+  const array& w_pack = inputs[1];
+  const array& scales = inputs[2];
+  const array& biases = inputs[3];
+
+  // Do NOT pre-allocate out here: Matmul::eval_gpu will call out.set_data().
+  if (out.size() == 0) {
+    out.set_data(allocator::malloc(out.nbytes()));
+    return;
+  }
+
+  int K = static_cast<int>(x.shape(-1));
+  int N = static_cast<int>(out.shape(-1));
+  uint32_t n_dequant = static_cast<uint32_t>(K) * static_cast<uint32_t>(N);
+
+  // After dequantization both paths produce a [K, N] float buffer suitable
+  // for Matmul: x[M,K] @ dq[K,N] -> out[M,N].
+  array dq_weights(Shape{K, N}, float32, nullptr, {});
+  dq_weights.set_data(allocator::malloc(dq_weights.nbytes()));
+
+  // ── Pass 1: Dequantize ───────────────────────────────────────────────────
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  // 4 bindings, push_constant = 6 x uint32 = 24 bytes
+  VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+  if (pipeline == VK_NULL_HANDLE) {
+    encoder.add_temporary(dq_weights);
+    throw std::runtime_error(
+        "[vulkan::QuantizedMatmul] failed to get quantized dequant pipeline");
+  }
+
+  VkBuffer src_buf   = vulkan::get_buffer(w_pack);
+  VkBuffer scale_buf = vulkan::get_buffer(scales);
+  VkBuffer bias_buf  = vulkan::get_buffer(biases);
+  VkBuffer dq_buf    = vulkan::get_buffer(dq_weights);
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(ds_layout);
+  VkDescriptorBufferInfo bufs[4] = {
+    {src_buf,   0, VK_WHOLE_SIZE},
+    {scale_buf, 0, VK_WHOLE_SIZE},
+    {bias_buf,  0, VK_WHOLE_SIZE},
+    {dq_buf,    0, VK_WHOLE_SIZE},
+  };
+  VkWriteDescriptorSet writes[4]{};
+  for (int i = 0; i < 4; i++) {
+    writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet          = ds;
+    writes[i].dstBinding      = static_cast<uint32_t>(i);
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo     = &bufs[i];
+  }
+  vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+  // op=1: DEQUANT_AFFINE (flat, for transpose_=false)
+  // op=2: DEQUANT_AFFINE_TRANS (2D-aware transpose, for transpose_=true)
+  uint32_t dq_op = transpose_ ? 2u : 1u;
+  struct QuantPushConst {
+    uint32_t n;
+    uint32_t op;
+    uint32_t group_size;
+    uint32_t bits;
+    uint32_t N_dim;
+    uint32_t K_dim;
+  } pc{n_dequant, dq_op,
+       static_cast<uint32_t>(group_size_),
+       static_cast<uint32_t>(bits_),
+       static_cast<uint32_t>(N),
+       static_cast<uint32_t>(K)};
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  vkCmdDispatch(cmd, vulkan::div_ceil(n_dequant, 256u), 1, 1);
+
+  // Barrier: dequant writes must be visible before matmul reads
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+  // ── Pass 2: float matmul x[M,K] @ dq[K,N] -> out[M,N] ───────────────────
+  Matmul(s).eval_gpu({x, dq_weights}, out);
+  encoder.add_temporary(dq_weights);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QQMatmul — quantized x quantized (both operands quantized)
+// Two-pass GPU: dequantize both -> float matmul.
+// For now, only the RHS is dequantized on GPU (same as QuantizedMatmul).
+// The LHS (also quantized) dequantize is not yet wired up; use NO_GPU.
+// ─────────────────────────────────────────────────────────────────────────────
+
 NO_GPU(QQMatmul)
-NO_GPU(SegmentedMM)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1755,16 +1920,60 @@ NO_GPU(SegmentedMM)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Linear algebra
+// Linear algebra -- CPU fallbacks (unified memory / MoltenVK)
+//
+// On MoltenVK (Apple Silicon unified memory) the VMA-allocated buffers are
+// CPU-accessible through their mapped pointer, so calling eval_cpu from inside
+// eval_gpu works directly.  The cpu::CommandEncoder::dispatch() path already
+// detects a GPU stream and executes the lambda synchronously (see encoder.h).
+//
+// TODO: On discrete GPUs (AMD/NVIDIA) these ops would need an explicit
+//       staging-buffer round-trip before delegating to eval_cpu.
 // ─────────────────────────────────────────────────────────────────────────────
 
-NO_GPU_MULTI(LUF)
-NO_GPU_MULTI(QRF)
-NO_GPU_MULTI(SVD)
-NO_GPU(Inverse)
-NO_GPU(Cholesky)
-NO_GPU_MULTI(Eig)
-NO_GPU_MULTI(Eigh)
+// -- Multi-output ops ---------------------------------------------------------
+
+void LUF::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  // eval_cpu allocates lu / pivots / row_indices internally.
+  eval_cpu(inputs, outputs);
+}
+
+void QRF::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  // eval_cpu allocates Q and R internally via set_data.
+  eval_cpu(inputs, outputs);
+}
+
+void SVD::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  // eval_cpu allocates U, S, Vt (or just S) internally.
+  eval_cpu(inputs, outputs);
+}
+
+void Eig::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  // eval_cpu allocates eigenvalues / eigenvectors internally.
+  eval_cpu(inputs, outputs);
+}
+
+void Eigh::eval_gpu(
+    const std::vector<array>& inputs, std::vector<array>& outputs) {
+  // eval_cpu allocates eigenvalues and copies input to eigenvectors internally.
+  eval_cpu(inputs, outputs);
+}
+
+// -- Single-output ops --------------------------------------------------------
+
+void Inverse::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // eval_cpu calls copy_cpu which invokes set_copy_output_data -> allocates out.
+  eval_cpu(inputs, out);
+}
+
+void Cholesky::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // eval_cpu calls copy_cpu which invokes set_copy_output_data -> allocates out.
+  eval_cpu(inputs, out);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fast:: namespace - neural net ops
