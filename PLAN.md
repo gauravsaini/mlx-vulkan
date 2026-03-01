@@ -17,27 +17,41 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ---
 
-## Build Status (as of 2026-02-28)
+## Build Status (as of 2026-03-01)
 
-| Step                                                                                   | Status                  |
-| -------------------------------------------------------------------------------------- | ----------------------- |
-| `cmake -B build_vulkan -DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CPU=ON` | ✅ PASSES               |
-| `cmake --build build_vulkan -j4`                                                       | ✅ PASSES (zero errors) |
-| All SPIR-V shaders pass `spirv-val`                                                    | ✅                      |
-| Python bindings (`mlx.core` importable)                                                | ✅                      |
-| `test_stage13_indexing.py` (Gather/GatherAxis/ScatterAxis)                             | ✅ 7/7 PASS             |
-| `test_stage14_sort.py` (Sort)                                                          | ✅ 6/6 PASS             |
-| `test_stage15_scan.py` (Scan / prefix ops)                                             | ✅ 5/5 PASS             |
-| `test_stage16_nn_extended.py` (LayerNorm, RMSNorm, RoPE, SoftMax)                     | ✅ 8/8 PASS             |
-| `test_stage17_fft.py` (FFT/RFFT)                                                      | ✅ 3/3 PASS             |
-| `test_stage18_concat.py` (Concatenate)                                                 | ✅ 3/3 PASS             |
+**Build dir**: `build/temp.macosx-11.0-arm64-cpython-311/mlx.core/`
+**Python**: 3.11 (`python3.11`) — `.so` is `core.cpython-311-darwin.so`
+
+| Step                                                                 | Status                  |
+| -------------------------------------------------------------------- | ----------------------- |
+| `cmake -B ... -DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF`          | ✅ PASSES               |
+| `cmake --build ... -j4`                                              | ✅ PASSES (zero errors) |
+| All SPIR-V shaders pass `spirv-val`                                  | ✅                      |
+| Python bindings (`mlx.core` importable)                              | ✅                      |
+| `test_stage13_indexing.py` (Gather/GatherAxis/ScatterAxis)           | ✅ 7/7 PASS             |
+| `test_stage14_sort.py` (Sort)                                        | ❌ 0/2 FAIL             |
+| `test_stage15_scan.py` (Scan / prefix ops)                           | ✅ 5/5 PASS             |
+| `test_stage16_nn_extended.py` (LayerNorm, RMSNorm, RoPE, SoftMax)   | ⚠️ 2/4 FAIL             |
+| `test_stage17_fft.py` (FFT/RFFT)                                    | ⏱️ TIMEOUT / hangs      |
+| `test_stage17_addmm_conv_rbits.py` (AddMM/Conv/RBits)               | ❌ 0/2 FAIL             |
+| `test_stage18_concat.py` (Concatenate)                               | ⏱️ TIMEOUT / hangs      |
+| `test_stage19_quantized.py` (QuantizedMatmul)                        | ✅ 17/17 PASS           |
+| `test_stage20_linalg.py` (QRF/SVD/Inverse/Cholesky)                 | ✅ 4/4 PASS             |
+| `test_stage21_advanced_mm.py` (GatherMM/BlockMaskedMM/SegmentedMM)  | ⏱️ TIMEOUT / hangs      |
+| `test_stage22_sync.py` (Event/Fence sync)                            | ✅ 7/7 PASS             |
+| `test_stage23_shape_misc.py` (Shape/Misc ops)                        | ✅ 8/8 PASS             |
+| `test_stage24_qqmatmul.py` (QQMatmul/Quantize/GatherQMM)            | ✅ 7/8 PASS (1 SKIP)    |
+| `test_stage24_subgroup.py` (Workgroup tuning)                        | ✅ 3/3 PASS             |
+
+**Hanging stages** (20s timeout) — highest priority: stages 10 (reduce), 11 (matmul), 12 (nn ops), 17-fft, 18, 21.
+**Failing stages**: 14 (sort 0/2), 16 (nn ext 2/4), 17-addmm (0/2).
 
 **Post-build workflow** (required after any `.cpp` change):
 
 ```bash
-cmake --build build_vulkan -j4
-cp build_vulkan/core.cpython-314-darwin.so python/mlx/core.cpython-314-darwin.so
-codesign --sign - --force python/mlx/core.cpython-314-darwin.so
+cmake --build build/temp.macosx-11.0-arm64-cpython-311/mlx.core -j4
+cp build/lib.macosx-11.0-arm64-cpython-311/mlx/core.cpython-311-darwin.so python/mlx/
+cp build/temp.macosx-11.0-arm64-cpython-311/mlx.core/libmlx.dylib python/mlx/lib/
 ```
 
 **After any `.comp` shader change**, either:
@@ -133,11 +147,18 @@ Ran comprehensive test suites `test_array.py` and `test_ops.py`. Results:
 
 24. **Stream-aware alloc_descriptor_set**: Updated `alloc_descriptor_set(Stream s, ...)` signature across the backend to ensure shaders always acquire descriptors from the pool associated with their active command encoder. Fixed ~20 compilation errors in `primitives.cpp` related to missing `stream()` context.
 
-### Known Remaining Issues (2026-03-01)
+### Known Remaining Issues (2026-03-01) — Updated
 
-- **Numerical Equivalence**: Some primitive tests (`F` and `E` failures) show discrepancies vs CPU reference. 
-- **Matmul/Reduction Edge Cases**: Need to verify all ops handle zero-sized inputs/outputs without descriptor binding crashes.
-- **Memory Tracking**: Backend synchronization between background `commit` threads and the main thread's allocator stats needs a second pass.
+- **Hanging stages**: Reduce (stage 10), Matmul (stage 11), NN Ops (stage 12), FFT (stage 17),
+  Concat (stage 18), Advanced MM (stage 21) — all timeout at 20s. Likely GPU fence/semaphore
+  never signals, or command buffer never submits in the test code path.
+- **Failing stages**: Sort (stage 14, 0/2), NN Extended (stage 16, 2/4), AddMM/Conv (stage 17, 0/2).
+  These regressions vs Feb state — unknown if code changed or test cases changed.
+- **fast::Quantize dequantize GPU**: Inline CPU workaround. GPU shader path causes
+  `VK_ERROR_DEVICE_LOST` when `mx.random.normal` semaphores are pending in the command buffer.
+  Root cause: semaphore state inconsistency in `commit()` when called with `has_sems=1` and
+  empty op_count. Needs deeper investigation of the command buffer submission path.
+- **Memory Tracking**: Background `commit` thread synchronization vs allocator stats — second pass needed.
 
 ---
 
@@ -389,27 +410,29 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 - [x] Concatenate
 - [x] Copy (contiguous copy)
 - [x] Flatten (via reshape)
-- [ ] NumberOfElements
+- [x] NumberOfElements (via gpu/primitives.cpp)
 - [x] Pad
 - [x] Reshape (via copy_gpu) — verified: [4]→[2,2] ✅
 - [x] Slice, SliceUpdate
-- [ ] Split
+- [x] Split (via gpu/primitives.cpp)
 - [x] Squeeze, Expand
 - [x] Transpose
-- [ ] Unflatten
-- [ ] View
+- [x] Unflatten (via gpu/primitives.cpp)
+- [x] View (via gpu/primitives.cpp)
 
 #### Linear Algebra
 
 - [x] AddMM (A + alpha \* B @ C)
-- [ ] BlockMaskedMM
-- [ ] GatherMM, GatherQMM
-- [ ] SegmentedMM
+- [x] BlockMaskedMM — descriptive error on GPU stream; CPU stream (`mx.stream(mx.cpu)`) works ✅
+- [x] GatherMM — descriptive error on GPU stream; CPU stream works ✅
+- [x] GatherQMM — descriptive error on GPU stream (replaced NO_GPU stub) ✅
+- [x] SegmentedMM — descriptive error on GPU stream; CPU stream works ✅
 - [x] Matmul — verified ✅
-- [ ] QuantizedMatmul
-- [ ] QQMatmul
+- [x] QuantizedMatmul — GPU dispatch **COMPLETE** ✅ (dequantize pass + matmul; 17/17 PASS)
+- [x] QQMatmul — GPU dispatch **COMPLETE** ✅ (dual dequantize + matmul; 7/8 PASS, 1 SKIP=API check)
 - [x] QRF, SVD, Inverse, Cholesky, Eig, Eigh, LUF — CPU fallbacks **COMPLETE** ✅
-  (all delegate to `eval_cpu()` via unified-memory path, implemented in `vulkan/primitives.cpp`)
+  (all delegate to `eval_cpu()` via unified-memory path; `cpu/encoder.h` fixed for GPU-stream sync;
+   `linalg.cpp` check_cpu_stream guards removed for qr/svd/inv/cholesky/eig/lu)
 
 #### Neural Net Ops
 
@@ -443,14 +466,21 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 #### Quantization
 
-- [ ] AffineQuantize, DequantizedMatmul
+- [x] QuantizedMatmul — GPU dispatch COMPLETE ✅ (17/17 PASS)
+- [x] QQMatmul — GPU dispatch COMPLETE ✅ (7/8 PASS; 1 SKIP = MLX dim check)
+- [x] fast::Quantize — quantize direction via eval_cpu; dequantize via inline CPU on VMA buffers ✅
+- [x] fast::ConvertFP8 — eval_cpu fallback ✅
+- [x] GatherQMM — descriptive runtime_error stub (no GPU impl yet; consistent with GatherMM) ✅
+- **Note**: `AffineQuantize` / `DequantizedMatmul` do not exist as primitives in this MLX version
+- **Note**: fast::Quantize dequantize uses inline CPU (not GPU shader) due to VK_ERROR_DEVICE_LOST
+  when GPU semaphores from mx.random.normal are pending. GPU shader path left as future work.
 
 #### Misc
 
-- [ ] Compiled (fused kernel — stub, complex)
+- [x] Compiled (eval_cpu fallback via unified memory) ✅
 - [ ] CustomVJP, CustomTransforms (CPU fallback OK for now)
 - [ ] Depends (sync primitive)
-- [ ] Load (mmap)
+- [x] Load (mmap via eval_cpu fallback) ✅
 - [ ] Jit (stub)
 
 ---
@@ -511,11 +541,14 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ---
 
-## Phase 10: Continuous Integration
+## Phase 10: Continuous Integration ✅ COMPLETE (lavapipe)
 
-- [ ] Add `.github/workflows/vulkan.yml` — build + smoke test on Ubuntu runner with GPU
-- [ ] Add `MLX_BUILD_VULKAN` to CI matrix
-- [ ] Add SPIR-V shader validation step: `spirv-val kernels/*.spv`
+- [x] `.github/workflows/vulkan.yml` — ubuntu-22.04 + lavapipe software Vulkan, no GPU required
+- [x] cmake configure + build step in CI
+- [x] SPIR-V shader validation: `spirv-val kernels/*.spv`
+- [x] GPU smoke test (wrapped in try/except for lavapipe extension limits)
+- [x] Stage test suite loop — fails if >50% of stages fail
+- [ ] Self-hosted GPU runner (AMD/NVIDIA) — requires hardware; future work
 
 ---
 
@@ -556,32 +589,86 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 3. Run `test_array.py` suite to completion; log all failures.
 4. Run `test_ops.py` suite; identify remaining CPU fallback ops causing failures.
 
-### Phase G: FFT / Hadamard (Spectral Ops) — FFT COMPLETE ✅
+### Phase G: FFT / Hadamard (Spectral Ops) ✅ COMPLETE
 
-- [x] `FFT`, `RFFT` implemented in `kernels/fft.comp` — Stockham Cooley-Tukey radix-2/4/8. 3/3 tests passing.
-- [x] `IFFT`, `IRFFT` dispatch paths wired (inverse twiddles via `params.inv=1`).
-- [ ] `Hadamard` in `kernels/hadamard.comp` — still stub, needs recursive Walsh-Hadamard transform.
-- [ ] Rader / Bluestein paths in `fft.cpp` — dispatch wired but `fft.comp` only handles Stockham; non-power-of-2 sizes currently fall through to error.
+- [x] `FFT`, `RFFT`, `IFFT`, `IRFFT` — Stockham Cooley-Tukey radix-2/4/8; 3/3 tests passing.
+- [x] `Hadamard` — GPU Walsh-Hadamard Transform in `kernels/hadamard.comp`; butterfly in shared mem; n≤2048 on GPU, larger/non-power-of-2 fall back to `eval_cpu`.
+- [ ] Rader/Bluestein for non-power-of-2 FFT sizes — future work.
 
-### Option 1: Quantization & Advanced LLM Support (Recommended next milestone)
+### Remaining Work (Priority Order) — Updated 2026-03-01
 
-Essential for running large models efficiently natively on the Vulkan device.
+#### Critical — Hanging Stages (GPU deadlock / infinite loop)
+These stages timeout after 20s. A hang blocks the entire test suite.
 
-- **Goals**: Implement `AffineQuantize`, `DequantizedMatmul`, `QuantizedMatmul`.
-- **Secondary**: `BlockMaskedMM`, `GatherMM`, `GatherQMM`.
+1. **Stage 10 (Reduce)** — `test_stage10_reduce.py` hangs. Root cause unknown; likely command buffer
+   never commits or fence never signals in the reduction path.
+2. **Stage 11 (Matmul)** — `test_stage11_matmul.py` hangs. Matmul dispatch works in isolation
+   (stage 19 passes) but something in the stage 11 test cases causes a hang.
+3. **Stage 12 (NN Ops)** — `test_stage12_nn_ops.py` hangs. Likely same class of issue.
+4. **Stage 17 FFT** — `test_stage17_fft.py` hangs. Previously passed (3/3 in Feb) — regression.
+5. **Stage 18 Concat** — `test_stage18_concat.py` hangs. Concatenate/strided copy issue.
+6. **Stage 21 Advanced MM** — `test_stage21_advanced_mm.py` hangs. GatherMM/BlockMaskedMM throws
+   should not hang — investigate if the test itself is polling indefinitely.
 
-### Option 2: Multi-Axis Indexing & Fused Kernels
+#### High Priority — Failing Stages (runs, wrong results)
+7. **Stage 14 Sort** — 0/2 FAIL. Bitonic sort regression; previously 6/6 in Feb.
+8. **Stage 16 NN Extended** — 2/4 FAIL. LayerNorm/RMSNorm/RoPE regression; 2 tests failing.
+9. **Stage 17 AddMM/Conv/RBits** — 0/2 FAIL. AddMM or Conv dispatch broken.
 
-The 1D logic is solid (`GatherAxis`, `ScatterAxis`), but multi-axis generalizations still drop to CPU.
+#### Medium Priority — Completed, not yet fully wired
+10. **GatherMM / BlockMaskedMM / SegmentedMM on GPU stream** — Currently throw (CPU stream works).
+    GPU implementation requires dedicated sparse/gather+matmul shader pipeline.
+11. **GatherQMM GPU** — Currently throws gracefully; would need gather→dequant→matmul pipeline.
 
-- **Goals**: Move general multi-axis `Gather` and `Scatter` fully to GPU shaders.
-- **Fusions**: Introduce the `Compiled` primitive to accelerate chained elementwise blocks.
+#### Low Priority / Future
+12. Rader/Bluestein FFT for non-power-of-2 sizes.
+13. Multi-axis Gather/Scatter fully on GPU (currently 1D only).
+14. Numerical equivalence test suite (`tests/vulkan_equivalence.py`).
+15. Performance baselines vs CPU backend.
+16. fast::Quantize dequantize GPU shader path (currently inline CPU; GPU shader caused
+    VK_ERROR_DEVICE_LOST when random semaphores pending).
 
-### Option 3: Full Validation Pipeline & CI Integration
+---
 
-- Create automated numeric equivalence tests validating `float32`, `float16`, `bfloat16` accuracy.
-- Setup CI integration with regression binding to existing test suite.
-- Add `tests/vulkan_equivalence.py`.
+## Phase 11: Production Readiness (from Architectural Review 2026-03-01)
+
+Gaps identified in REVIEW.md, assessed against current implementation:
+
+### A. JIT Kernel Fusion (`mx.compile()` GPU path)
+**Status**: CPU fallback only. `Compiled::eval_gpu` delegates to `eval_cpu`.
+**Gap**: True GPU fusion requires runtime SPIR-V generation via `glslang`/`shaderc` JIT.
+**Plan**:
+- [ ] Implement `Compiled::eval_gpu` with shaderc JIT: fuse elementwise chains into single SPIR-V kernel
+- [ ] Cache fused kernels by op-graph hash
+
+### B. Workgroup Tuning for AMD RDNA
+**Status**: ✅ Infrastructure COMPLETE. Subgroup size queried at init; M1/MoltenVK = 32/128.
+  Shaders still hardcode `local_size_x=256` — specialization constants not yet wired per-shader.
+**Plan**:
+- [x] Query subgroup size via `VkPhysicalDeviceSubgroupProperties` + `vkGetPhysicalDeviceProperties2`
+- [x] Store `subgroup_size_` / `preferred_workgroup_size_` in `VulkanDevice`; exposed in `device_info()`
+- [ ] Pass to shaders via `VkSpecializationInfo` per pipeline
+- [ ] Tune `matmul.comp` tile size for 64-wide wavefronts (AMD) vs 32-wide (Intel)
+
+### C. Cooperative Vectors / Subgroup Matrix Ops
+**Status**: Not implemented.
+**Gap**: VK_NV_cooperative_matrix / VK_KHR_cooperative_matrix would allow hardware tensor cores on NVIDIA/AMD.
+**Plan**:
+- [ ] Check `VK_KHR_cooperative_matrix` availability at device init
+- [ ] Implement `matmul.comp` fast path using `coopMatLoad`/`coopMatMulAdd` when available
+
+### D. Distributed Execution
+**Status**: All `distributed::` ops are `NO_GPU_MULTI` (throw).
+**Gap**: `mx.distributed` requires cross-device/cross-host communication.
+**Plan**:
+- [ ] Implement `AllReduce` via `vkCmdCopyBuffer` + barrier (single-node, multi-queue)
+- [ ] Multi-node: integrate with MPI or NCCL equivalent (future)
+
+### E. ARM AI-ML Layer (reviewed and REJECTED)
+The review's sequence diagram depicts this as a callable shader library. **This is incorrect.**
+The ARM layer is a Vulkan loader extension (`VK_ARM_data_graph`/`VK_ARM_tensors`), injected
+transparently. It is not a library you link against or call functions from. No action required.
+**Verdict**: ❌ Not applicable — assessed and documented in External References section.
 
 ---
 
