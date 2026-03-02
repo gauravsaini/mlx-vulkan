@@ -38,13 +38,15 @@ void eval(array& arr) {
 
   if (vulkan::device(stream.device).needs_commit(stream)) {
     scheduler::notify_new_task(stream);
-    vulkan::device(stream.device).add_completed_handler(stream, 
-        [stream, buffers = std::move(buffers)]() {
-          scheduler::notify_task_completion(stream);
-        });
+    vulkan::device(stream.device)
+        .add_completed_handler(
+            stream, [stream, buffers = std::move(buffers)]() {
+              scheduler::notify_task_completion(stream);
+            });
     vulkan::device(stream.device).commit(stream);
   } else {
-    vulkan::device(stream.device).add_completed_handler(stream, [buffers = std::move(buffers)]() {});
+    vulkan::device(stream.device)
+        .add_completed_handler(stream, [buffers = std::move(buffers)]() {});
   }
 }
 

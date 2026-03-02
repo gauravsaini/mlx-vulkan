@@ -24,15 +24,16 @@ struct FenceImpl {
     createInfo.pNext = &timeline_info;
 
     if (vkCreateSemaphore(
-            vulkan::device(Device::gpu).vk_device(), &createInfo, nullptr, &sem) !=
-        VK_SUCCESS) {
+            vulkan::device(Device::gpu).vk_device(),
+            &createInfo,
+            nullptr,
+            &sem) != VK_SUCCESS) {
       throw std::runtime_error("[Fence] Failed to create timeline semaphore");
     }
   }
 
   ~FenceImpl() {
     if (sem != VK_NULL_HANDLE) {
-      // Must wait for queue to drain if destroying
       vkDestroySemaphore(vulkan::device(Device::gpu).vk_device(), sem, nullptr);
     }
   }
@@ -45,12 +46,19 @@ Fence::Fence(Stream) {
 
 void Fence::wait(Stream stream, const array&) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
-  uint64_t wait_count = f.count;
 
   if (stream.device == Device::gpu) {
-    // Inject native cross-queue timeline dependency into MLX Vulkan Encoder!
-    vulkan::device(stream.device).add_wait_semaphore(stream, f.sem, wait_count);
+    // MoltenVK does not support GPU-side timeline semaphore waits in
+    // vkQueueSubmit. Drain the compute queue directly — this ensures any
+    // previously-submitted work (and its completion handlers that signal the
+    // fence semaphore) has run. We use vkQueueWaitIdle directly rather than
+    // synchronize(stream) because synchronize() commits the current in-flight
+    // command buffer which would corrupt the recording state for subsequent
+    // ops.
+    auto& dev = vulkan::device(stream.device);
+    vkQueueWaitIdle(dev.compute_queue());
   } else if (stream.device == Device::cpu) {
+    uint64_t wait_count = f.count;
     scheduler::enqueue(stream, [fence_ = fence_, wait_count]() mutable {
       auto& f = *static_cast<FenceImpl*>(fence_.get());
       VkSemaphoreWaitInfo wait_info{};
@@ -58,10 +66,10 @@ void Fence::wait(Stream stream, const array&) {
       wait_info.semaphoreCount = 1;
       wait_info.pSemaphores = &f.sem;
       wait_info.pValues = &wait_count;
-
       if (vkWaitSemaphores(
-              vulkan::device(Device::gpu).vk_device(), &wait_info, UINT64_MAX) !=
-          VK_SUCCESS) {
+              vulkan::device(Device::gpu).vk_device(),
+              &wait_info,
+              UINT64_MAX) != VK_SUCCESS) {
         throw std::runtime_error("[Fence::wait] CPU Wait failed");
       }
     });
@@ -74,8 +82,20 @@ void Fence::update(Stream stream, const array&, bool cross_device) {
   uint64_t signal_count = f.count;
 
   if (stream.device == Device::gpu) {
-    // Output node is evaluated; encode Timeline Signal upon termination
-    vulkan::device(stream.device).add_signal_semaphore(stream, f.sem, signal_count);
+    // Signal the timeline semaphore via completion handler after GPU work
+    // finishes. MoltenVK does not support GPU-side timeline semaphore signals
+    // in vkQueueSubmit.
+    vulkan::device(stream.device)
+        .add_completed_handler(
+            stream, [fence_ = fence_, signal_count]() mutable {
+              auto& f = *static_cast<FenceImpl*>(fence_.get());
+              VkSemaphoreSignalInfo signal_info{};
+              signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+              signal_info.semaphore = f.sem;
+              signal_info.value = signal_count;
+              vkSignalSemaphore(
+                  vulkan::device(Device::gpu).vk_device(), &signal_info);
+            });
   } else if (stream.device == Device::cpu) {
     scheduler::enqueue(stream, [fence_ = fence_, signal_count]() mutable {
       auto& f = *static_cast<FenceImpl*>(fence_.get());
@@ -83,7 +103,6 @@ void Fence::update(Stream stream, const array&, bool cross_device) {
       signal_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
       signal_info.semaphore = f.sem;
       signal_info.value = signal_count;
-
       if (vkSignalSemaphore(
               vulkan::device(Device::gpu).vk_device(), &signal_info) !=
           VK_SUCCESS) {

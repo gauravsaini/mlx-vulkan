@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
+#include <vulkan/vulkan.h>
 
 #include <functional>
 #include <memory>
@@ -29,6 +29,7 @@ struct CommandEncoder {
   std::vector<std::pair<VkSemaphore, uint64_t>> signal_semaphores;
   int op_count{0};
   bool recording{false};
+  bool first_commit{true};
 };
 
 // Pipeline cache entry
@@ -67,15 +68,29 @@ class Device {
       uint32_t push_constant_size = 0);
 
   // Memory management
-  VmaAllocator vma_allocator() const { return vma_allocator_; }
-  VkDevice vk_device() const { return device_; }
-  VkPhysicalDevice vk_physical_device() const { return physical_device_; }
-  VkQueue compute_queue() const { return compute_queue_; }
-  uint32_t queue_family() const { return compute_queue_family_; }
+  VmaAllocator vma_allocator() const {
+    return vma_allocator_;
+  }
+  VkDevice vk_device() const {
+    return device_;
+  }
+  VkPhysicalDevice vk_physical_device() const {
+    return physical_device_;
+  }
+  VkQueue compute_queue() const {
+    return compute_queue_;
+  }
+  uint32_t queue_family() const {
+    return compute_queue_family_;
+  }
 
   // Subgroup / workgroup size queries
-  uint32_t subgroup_size() const { return subgroup_size_; }
-  uint32_t preferred_workgroup_size() const { return preferred_workgroup_size_; }
+  uint32_t subgroup_size() const {
+    return subgroup_size_;
+  }
+  uint32_t preferred_workgroup_size() const {
+    return preferred_workgroup_size_;
+  }
 
   // Descriptor set allocation (one-shot, freed after each commit)
   VkDescriptorSet alloc_descriptor_set(Stream s, VkDescriptorSetLayout layout);
@@ -97,6 +112,9 @@ class Device {
 
   VmaAllocator vma_allocator_{VK_NULL_HANDLE};
   VkPipelineCache pipeline_cache_{VK_NULL_HANDLE};
+
+  VkBuffer dummy_buffer_{VK_NULL_HANDLE};
+  VmaAllocation dummy_alloc_{VK_NULL_HANDLE};
 
   // Subgroup / preferred workgroup sizes (queried at device init)
   uint32_t subgroup_size_{32};

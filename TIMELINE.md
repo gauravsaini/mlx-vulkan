@@ -1,5 +1,27 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-02 (session 2)
+
+### cleanup (2026-03-02) — Remove all debug fprintf prints + fix duplicate return statements
+
+1. **Debug print removal**:
+   - `eval.cpp`: removed `[EVAL]`, `[FINALIZE]`, `[SYNCHRONIZE]` fprintf lines
+   - `device.cpp`: removed `[COMMIT] enter`, `[COMMIT] early return`, `[COMMIT] is_first_commit`, fence debug prints
+   - `allocator.cpp`: removed `[GET_BUFFER]` multi-line fprintf block; removed `[DEBUG] raw_ptr` forced-map prints
+   - `copy.cpp`: removed `[COPY] dispatch_copy_shader` and `[COPY] aborting` fprintf lines
+
+2. **Duplicate `return;` fixes** (`primitives.cpp`):
+   - 8 locations had `return; return;` — fixed at ternary, arange, arg_reduce, matmul, softmax, logsumexp, sort, conv pipeline-null checks
+
+3. **Tests** (before → after): no regressions — output is cleaner without debug noise
+   - Stage 7 (gpu_copy): pre-existing 4 failures (copy API mismatch) — unchanged
+   - Stage 14 (sort): pre-existing 3 failures (unsupported size RuntimeError expected) — unchanged
+   - All other stages: same pass counts as before
+
+4. **Files changed**: `eval.cpp`, `device.cpp`, `allocator.cpp`, `copy.cpp`, `primitives.cpp`
+
+---
+
 ## UPDATED ON : 2026-03-02
 
 ### fix (2026-03-02) — >4D Binary Broadcast Limits & CPU Fallbacks

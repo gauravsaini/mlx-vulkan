@@ -378,3 +378,33 @@ print('Numerical equivalence: PASS')
 4. **bfloat16 via uint16 storage** — same approach as `mlx/backend/metal/kernels/bf16.h`. Use `GL_EXT_shader_explicit_arithmetic_types_float16` for fp16; bf16 needs manual pack/unpack.
 
 5. **Specialization constants for kernel variants** — instead of runtime template strings (Metal JIT), use `VkSpecializationInfo` to parameterize kernels by dtype and reduction type at pipeline creation time.
+
+---
+
+## External Resources
+
+### Awesome GPU Engineering
+**URL**: https://github.com/goabiaryan/awesome-gpu-engineering
+
+A curated list of GPU engineering resources. Vulkan coverage is limited — one entry under "GPU Programming Frameworks" and a brief mention of **Kompute** (higher-level Vulkan compute abstraction). No dedicated Vulkan compute tutorials, SPIR-V guides, or ML kernel resources.
+
+**Relevant to this project**:
+
+| Topic | Coverage | Notes |
+|---|---|---|
+| Vulkan compute | ⚠️ Minimal | Single entry, no tutorials |
+| Kompute (Vulkan abstraction) | ✅ Listed | Could be useful reference for descriptor management patterns |
+| CUDA/ROCm kernels | ✅ Extensive | Port patterns applicable to GLSL equivalents |
+| GPU memory management | ✅ General | Concepts transfer to VMA usage |
+
+**Verdict**: Useful as a general GPU engineering reading list. Not Vulkan-specific enough to directly inform this backend implementation. Bookmark for general GPU compute background.
+
+### Other Key External References (already in PLAN.md)
+
+| Resource | Purpose |
+|---|---|
+| [Khronos Vulkan Samples](https://github.com/KhronosGroup/Vulkan-Samples) | SPIR-V loading, Vulkan init boilerplate |
+| [Shaderc](https://github.com/google/shaderc) | AOT SPIR-V compilation |
+| [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | Device memory allocator |
+| [ARM AI-ML Emulation Layer](https://github.com/arm/ai-ml-emulation-layer-for-vulkan) | Assessed; VK extension layer only — not a linkable library |
+| [MLX issue #1751](https://github.com/ml-explore/mlx/issues/1751) | Original community request |

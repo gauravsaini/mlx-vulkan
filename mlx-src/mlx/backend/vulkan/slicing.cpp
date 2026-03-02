@@ -2,16 +2,14 @@
 // MLX Vulkan Backend - GPU slicing operations
 
 #include "mlx/backend/gpu/slicing.h"
-#include "mlx/backend/gpu/copy.h"
-#include "mlx/backend/common/slicing.h"
-#include "mlx/backend/vulkan/device.h"
 #include "mlx/allocator.h"
+#include "mlx/backend/common/slicing.h"
+#include "mlx/backend/gpu/copy.h"
+#include "mlx/backend/vulkan/device.h"
 
 #include <numeric>
 
 namespace mlx::core {
-
-
 
 void concatenate_gpu(
     const std::vector<array>& inputs,
@@ -34,14 +32,18 @@ void concatenate_gpu(
   flags.contiguous = false;
 
   for (int i = 0; i < static_cast<int>(inputs.size()); i++) {
+    // Skip empty inputs — passing a zero-size buffer to copy_gpu_inplace
+    // would bind a null VkBuffer into the descriptor set → DEVICE_LOST.
+    if (inputs[i].size() == 0)
+      continue;
+
     array out_slice(inputs[i].shape(), out.dtype(), nullptr, {});
     size_t data_offset = strides[axis] * sizes[i];
-    out_slice.copy_shared_buffer(out, strides, flags, out_slice.size(), data_offset);
+    out_slice.copy_shared_buffer(
+        out, strides, flags, out_slice.size(), data_offset);
     copy_gpu_inplace(inputs[i], out_slice, CopyType::GeneralGeneral, s);
   }
 }
-
-
 
 array compute_dynamic_offset(
     const array& indices,

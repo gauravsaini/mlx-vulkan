@@ -64,19 +64,43 @@ Device::Device() {
   create_logical_device();
   create_vma();
   create_pipeline_cache();
+
+  // Create a 16-byte dummy storage buffer for pipeline warmup
+  VkBufferCreateInfo buf_info{};
+  buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  buf_info.size = 16;
+  buf_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  VmaAllocationCreateInfo alloc_info{};
+  alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
+  vk_check(
+      vmaCreateBuffer(
+          vma_allocator_,
+          &buf_info,
+          &alloc_info,
+          &dummy_buffer_,
+          &dummy_alloc_,
+          nullptr),
+      "vmaCreateBuffer (dummy)");
 }
 
 Device::~Device() {
   vkDeviceWaitIdle(device_);
+
+  if (dummy_buffer_ != VK_NULL_HANDLE) {
+    vmaDestroyBuffer(vma_allocator_, dummy_buffer_, dummy_alloc_);
+  }
 
   // Save pipeline cache
   save_pipeline_cache();
 
   // Destroy pipelines
   for (auto& [name, entry] : pipeline_map_) {
-    if (entry.pipeline    != VK_NULL_HANDLE) vkDestroyPipeline(device_, entry.pipeline, nullptr);
-    if (entry.layout      != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, entry.layout, nullptr);
-    if (entry.ds_layout   != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device_, entry.ds_layout, nullptr);
+    if (entry.pipeline != VK_NULL_HANDLE)
+      vkDestroyPipeline(device_, entry.pipeline, nullptr);
+    if (entry.layout != VK_NULL_HANDLE)
+      vkDestroyPipelineLayout(device_, entry.layout, nullptr);
+    if (entry.ds_layout != VK_NULL_HANDLE)
+      vkDestroyDescriptorSetLayout(device_, entry.ds_layout, nullptr);
   }
 
   // Destroy encoders
@@ -85,26 +109,33 @@ Device::~Device() {
       handler();
     }
     enc.completion_handlers.clear();
-    
-    if (enc.fence != VK_NULL_HANDLE) vkDestroyFence(device_, enc.fence, nullptr);
-    if (enc.pool  != VK_NULL_HANDLE) vkDestroyCommandPool(device_, enc.pool, nullptr);
-    if (enc.desc_pool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device_, enc.desc_pool, nullptr);
+
+    if (enc.fence != VK_NULL_HANDLE)
+      vkDestroyFence(device_, enc.fence, nullptr);
+    if (enc.pool != VK_NULL_HANDLE)
+      vkDestroyCommandPool(device_, enc.pool, nullptr);
+    if (enc.desc_pool != VK_NULL_HANDLE)
+      vkDestroyDescriptorPool(device_, enc.desc_pool, nullptr);
   }
 
-  
-  if (pipeline_cache_  != VK_NULL_HANDLE) vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
-  if (vma_allocator_   != VK_NULL_HANDLE) vmaDestroyAllocator(vma_allocator_);
+  if (pipeline_cache_ != VK_NULL_HANDLE)
+    vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+  if (vma_allocator_ != VK_NULL_HANDLE)
+    vmaDestroyAllocator(vma_allocator_);
 
 #ifdef MLX_VULKAN_VALIDATION
   if (debug_messenger_ != VK_NULL_HANDLE) {
-    auto fn = (PFN_vkDestroyDebugUtilsMessengerEXT)
-        vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT");
-    if (fn) fn(instance_, debug_messenger_, nullptr);
+    auto fn = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+        instance_, "vkDestroyDebugUtilsMessengerEXT");
+    if (fn)
+      fn(instance_, debug_messenger_, nullptr);
   }
 #endif
 
-  if (device_   != VK_NULL_HANDLE) vkDestroyDevice(device_, nullptr);
-  if (instance_ != VK_NULL_HANDLE) vkDestroyInstance(instance_, nullptr);
+  if (device_ != VK_NULL_HANDLE)
+    vkDestroyDevice(device_, nullptr);
+  if (instance_ != VK_NULL_HANDLE)
+    vkDestroyInstance(instance_, nullptr);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -113,16 +144,16 @@ Device::~Device() {
 
 void Device::init_instance() {
   VkApplicationInfo app_info{};
-  app_info.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  app_info.pApplicationName   = "MLX";
+  app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+  app_info.pApplicationName = "MLX";
   app_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
-  app_info.pEngineName        = "MLX Vulkan Backend";
-  app_info.apiVersion         = VK_API_VERSION_1_2;
+  app_info.pEngineName = "MLX Vulkan Backend";
+  app_info.apiVersion = VK_API_VERSION_1_2;
 
   std::vector<const char*> extensions = {
-    VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+      VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
 #if defined(__APPLE__)
-    "VK_KHR_portability_enumeration",
+      "VK_KHR_portability_enumeration",
 #endif
   };
 
@@ -134,31 +165,33 @@ void Device::init_instance() {
 #endif
 
   VkInstanceCreateInfo inst_info{};
-  inst_info.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  inst_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 #if defined(__APPLE__)
-  inst_info.flags                   |= 0x00000001; // VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
+  inst_info.flags |=
+      0x00000001; // VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
 #endif
-  inst_info.pApplicationInfo        = &app_info;
-  inst_info.enabledLayerCount       = static_cast<uint32_t>(layers.size());
-  inst_info.ppEnabledLayerNames     = layers.data();
-  inst_info.enabledExtensionCount   = static_cast<uint32_t>(extensions.size());
+  inst_info.pApplicationInfo = &app_info;
+  inst_info.enabledLayerCount = static_cast<uint32_t>(layers.size());
+  inst_info.ppEnabledLayerNames = layers.data();
+  inst_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
   inst_info.ppEnabledExtensionNames = extensions.data();
 
-  vk_check(vkCreateInstance(&inst_info, nullptr, &instance_),
-           "vkCreateInstance");
+  vk_check(
+      vkCreateInstance(&inst_info, nullptr, &instance_), "vkCreateInstance");
 
 #ifdef MLX_VULKAN_VALIDATION
   VkDebugUtilsMessengerCreateInfoEXT dbg{};
-  dbg.sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+  dbg.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
   dbg.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-  dbg.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+      VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+  dbg.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
   dbg.pfnUserCallback = debug_callback;
 
-  auto fn = (PFN_vkCreateDebugUtilsMessengerEXT)
-      vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT");
-  if (fn) fn(instance_, &dbg, nullptr, &debug_messenger_);
+  auto fn = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+      instance_, "vkCreateDebugUtilsMessengerEXT");
+  if (fn)
+    fn(instance_, &dbg, nullptr, &debug_messenger_);
 #endif
 }
 
@@ -197,9 +230,12 @@ void Device::select_physical_device() {
     vkGetPhysicalDeviceProperties(dev, &props);
 
     int score = 0;
-    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)   score += 1000;
-    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score += 100;
-    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)    score += 50;
+    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+      score += 1000;
+    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+      score += 100;
+    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)
+      score += 50;
     score += static_cast<int>(props.limits.maxComputeSharedMemorySize / 1024);
 
     if (score > best_score) {
@@ -242,14 +278,7 @@ void Device::query_subgroup_size() {
   // This gives a workgroup size that fills at least 2 subgroups but stays
   // within typical shared-memory budgets.
   preferred_workgroup_size_ = std::min(
-      256u,
-      ((128u + subgroup_size_ - 1u) / subgroup_size_) * subgroup_size_);
-
-  fprintf(
-      stderr,
-      "[MLX Vulkan] Subgroup size: %u  |  Preferred workgroup size: %u\n",
-      subgroup_size_,
-      preferred_workgroup_size_);
+      256u, ((128u + subgroup_size_ - 1u) / subgroup_size_) * subgroup_size_);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -259,9 +288,11 @@ void Device::query_subgroup_size() {
 void Device::create_logical_device() {
   // Find compute queue family
   uint32_t qf_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &qf_count, nullptr);
+  vkGetPhysicalDeviceQueueFamilyProperties(
+      physical_device_, &qf_count, nullptr);
   std::vector<VkQueueFamilyProperties> qf_props(qf_count);
-  vkGetPhysicalDeviceQueueFamilyProperties(physical_device_, &qf_count, qf_props.data());
+  vkGetPhysicalDeviceQueueFamilyProperties(
+      physical_device_, &qf_count, qf_props.data());
 
   compute_queue_family_ = UINT32_MAX;
   for (uint32_t i = 0; i < qf_count; i++) {
@@ -276,25 +307,28 @@ void Device::create_logical_device() {
 
   float priority = 1.0f;
   VkDeviceQueueCreateInfo queue_info{};
-  queue_info.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+  queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
   queue_info.queueFamilyIndex = compute_queue_family_;
-  queue_info.queueCount       = 1;
+  queue_info.queueCount = 1;
   queue_info.pQueuePriorities = &priority;
 
   // Required device extensions
   std::vector<const char*> dev_extensions = {
-    VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+      VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
   };
 
   // Optional: check for external memory host (zero-copy for APUs)
   uint32_t ext_count = 0;
-  vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, nullptr);
+  vkEnumerateDeviceExtensionProperties(
+      physical_device_, nullptr, &ext_count, nullptr);
   std::vector<VkExtensionProperties> avail_exts(ext_count);
-  vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, avail_exts.data());
+  vkEnumerateDeviceExtensionProperties(
+      physical_device_, nullptr, &ext_count, avail_exts.data());
 
   auto has_ext = [&](const char* name) {
     for (auto& e : avail_exts) {
-      if (strcmp(e.extensionName, name) == 0) return true;
+      if (strcmp(e.extensionName, name) == 0)
+        return true;
     }
     return false;
   };
@@ -302,12 +336,15 @@ void Device::create_logical_device() {
   if (has_ext(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME)) {
     dev_extensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     dev_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
-    fprintf(stderr, "[MLX Vulkan] Zero-copy (VK_EXT_external_memory_host) available\n");
+    fprintf(
+        stderr,
+        "[MLX Vulkan] Zero-copy (VK_EXT_external_memory_host) available\n");
   }
 
   // Enable timeline semaphore feature
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline_feat{};
-  timeline_feat.sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+  timeline_feat.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
   timeline_feat.timelineSemaphore = VK_TRUE;
 
   VkPhysicalDeviceFeatures2 features2{};
@@ -315,20 +352,55 @@ void Device::create_logical_device() {
   features2.pNext = &timeline_feat;
   // Basic float64 for double precision (optional)
   features2.features.shaderFloat64 = VK_FALSE;
-  features2.features.shaderInt64   = VK_TRUE;
+  features2.features.shaderInt64 = VK_TRUE;
 
   VkDeviceCreateInfo dev_info{};
-  dev_info.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  dev_info.pNext                   = &features2;
-  dev_info.queueCreateInfoCount    = 1;
-  dev_info.pQueueCreateInfos       = &queue_info;
-  dev_info.enabledExtensionCount   = static_cast<uint32_t>(dev_extensions.size());
+  dev_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  dev_info.pNext = &features2;
+  dev_info.queueCreateInfoCount = 1;
+  dev_info.pQueueCreateInfos = &queue_info;
+  dev_info.enabledExtensionCount = static_cast<uint32_t>(dev_extensions.size());
   dev_info.ppEnabledExtensionNames = dev_extensions.data();
 
-  vk_check(vkCreateDevice(physical_device_, &dev_info, nullptr, &device_),
-           "vkCreateDevice");
+  vk_check(
+      vkCreateDevice(physical_device_, &dev_info, nullptr, &device_),
+      "vkCreateDevice");
 
   vkGetDeviceQueue(device_, compute_queue_family_, 0, &compute_queue_);
+
+  // MoltenVK WORKAROUND: The very first command buffer submitted to a queue on
+  // Apple Silicon may silently abort/drop during async shader translations.
+  // We submit and wait on an empty command buffer immediately to absorb the
+  // fault.
+  VkCommandPoolCreateInfo pool_info{};
+  pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  pool_info.queueFamilyIndex = compute_queue_family_;
+  VkCommandPool pool;
+  vkCreateCommandPool(device_, &pool_info, nullptr, &pool);
+
+  VkCommandBufferAllocateInfo alloc_info{};
+  alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  alloc_info.commandPool = pool;
+  alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc_info.commandBufferCount = 1;
+  VkCommandBuffer cmd;
+  vkAllocateCommandBuffers(device_, &alloc_info, &cmd);
+
+  VkCommandBufferBeginInfo begin{};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cmd, &begin);
+  vkEndCommandBuffer(cmd);
+
+  VkSubmitInfo submit{};
+  submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &cmd;
+  vkQueueSubmit(compute_queue_, 1, &submit, VK_NULL_HANDLE);
+  vkQueueWaitIdle(compute_queue_);
+
+  vkDestroyCommandPool(device_, pool, nullptr);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -338,11 +410,12 @@ void Device::create_logical_device() {
 void Device::create_vma() {
   VmaAllocatorCreateInfo vma_info{};
   vma_info.physicalDevice = physical_device_;
-  vma_info.device         = device_;
-  vma_info.instance       = instance_;
+  vma_info.device = device_;
+  vma_info.instance = instance_;
   vma_info.vulkanApiVersion = VK_API_VERSION_1_2;
 
-  vk_check(vmaCreateAllocator(&vma_info, &vma_allocator_), "vmaCreateAllocator");
+  vk_check(
+      vmaCreateAllocator(&vma_info, &vma_allocator_), "vmaCreateAllocator");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -351,13 +424,16 @@ void Device::create_vma() {
 
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
-static constexpr uint32_t kPipelineCacheVersion = 9; // bumped: quantized.comp rewritten with uint src + DEQUANT_AFFINE_TRANS op
+static constexpr uint32_t kPipelineCacheVersion =
+    9; // bumped: quantized.comp rewritten with uint src + DEQUANT_AFFINE_TRANS
+       // op
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");
-  if (!home) home = "/tmp";
-  return std::string(home) + "/.cache/mlx_vulkan_pipeline_cache_v"
-       + std::to_string(kPipelineCacheVersion) + ".bin";
+  if (!home)
+    home = "/tmp";
+  return std::string(home) + "/.cache/mlx_vulkan_pipeline_cache_v" +
+      std::to_string(kPipelineCacheVersion) + ".bin";
 }
 
 void Device::create_pipeline_cache() {
@@ -372,19 +448,22 @@ void Device::create_pipeline_cache() {
   }
 
   VkPipelineCacheCreateInfo cache_info{};
-  cache_info.sType           = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+  cache_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
   cache_info.initialDataSize = cache_data.size();
-  cache_info.pInitialData    = cache_data.empty() ? nullptr : cache_data.data();
+  cache_info.pInitialData = cache_data.empty() ? nullptr : cache_data.data();
 
-  vk_check(vkCreatePipelineCache(device_, &cache_info, nullptr, &pipeline_cache_),
-           "vkCreatePipelineCache");
+  vk_check(
+      vkCreatePipelineCache(device_, &cache_info, nullptr, &pipeline_cache_),
+      "vkCreatePipelineCache");
 }
 
 void Device::save_pipeline_cache() {
-  if (pipeline_cache_ == VK_NULL_HANDLE) return;
+  if (pipeline_cache_ == VK_NULL_HANDLE)
+    return;
   size_t size = 0;
   vkGetPipelineCacheData(device_, pipeline_cache_, &size, nullptr);
-  if (size == 0) return;
+  if (size == 0)
+    return;
   std::vector<char> data(size);
   vkGetPipelineCacheData(device_, pipeline_cache_, &size, data.data());
 
@@ -399,7 +478,8 @@ void Device::save_pipeline_cache() {
   }
 
   std::ofstream f(path, std::ios::binary);
-  if (f) f.write(data.data(), data.size());
+  if (f)
+    f.write(data.data(), data.size());
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -418,37 +498,43 @@ CommandEncoder& Device::get_command_encoder(Stream s) {
 
   // Command pool
   VkCommandPoolCreateInfo pool_info{};
-  pool_info.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   pool_info.queueFamilyIndex = compute_queue_family_;
-  pool_info.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  vk_check(vkCreateCommandPool(device_, &pool_info, nullptr, &enc.pool),
-           "vkCreateCommandPool");
+  pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  vk_check(
+      vkCreateCommandPool(device_, &pool_info, nullptr, &enc.pool),
+      "vkCreateCommandPool");
 
   VkDescriptorPoolSize dpool_size{};
-  dpool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  dpool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   dpool_size.descriptorCount = 10000;
 
   VkDescriptorPoolCreateInfo desc_pool_info{};
-  desc_pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  desc_pool_info.maxSets       = 2000;
+  desc_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  desc_pool_info.maxSets = 2000;
   desc_pool_info.poolSizeCount = 1;
-  desc_pool_info.pPoolSizes    = &dpool_size;
-  vk_check(vkCreateDescriptorPool(device_, &desc_pool_info, nullptr, &enc.desc_pool), "vkCreateDescriptorPool");
+  desc_pool_info.pPoolSizes = &dpool_size;
+  vk_check(
+      vkCreateDescriptorPool(device_, &desc_pool_info, nullptr, &enc.desc_pool),
+      "vkCreateDescriptorPool");
 
   // Allocate initial command buffer
   VkCommandBufferAllocateInfo alloc_info{};
-  alloc_info.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  alloc_info.commandPool        = enc.pool;
-  alloc_info.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  alloc_info.commandPool = enc.pool;
+  alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc_info.commandBufferCount = 1;
-  vk_check(vkAllocateCommandBuffers(device_, &alloc_info, &enc.cmd),
-           "vkAllocateCommandBuffers");
+  vk_check(
+      vkAllocateCommandBuffers(device_, &alloc_info, &enc.cmd),
+      "vkAllocateCommandBuffers");
 
-  // Fence for CPU-GPU sync
+  // Fence for CPU-GPU sync — must be UNSIGNALED so vkQueueSubmit is valid
+  // and vkWaitForFences actually blocks until GPU completes.
   VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start signaled (nothing pending)
-  vk_check(vkCreateFence(device_, &fence_info, nullptr, &enc.fence),
-           "vkCreateFence");
+  fence_info.flags = 0;
+  vk_check(
+      vkCreateFence(device_, &fence_info, nullptr, &enc.fence),
+      "vkCreateFence");
 
   // Begin recording immediately
   VkCommandBufferBeginInfo begin{};
@@ -463,14 +549,19 @@ CommandEncoder& Device::get_command_encoder(Stream s) {
 void Device::commit(Stream s) {
   std::unique_lock<std::mutex> lk(mutex_);
   auto it = encoders_.find(s.index);
-  if (it == encoders_.end()) return;
+  if (it == encoders_.end())
+    return;
 
   CommandEncoder& enc = it->second;
-  bool has_sems = !enc.wait_semaphores.empty() || !enc.signal_semaphores.empty();
-  fprintf(stderr, "[COMMIT] recording=%d op_count=%d has_sems=%d\n", (int)enc.recording, enc.op_count, (int)has_sems); fflush(stderr);
-  if (!enc.recording || (enc.op_count == 0 && !has_sems)) return;
+  bool has_sems =
+      !enc.wait_semaphores.empty() || !enc.signal_semaphores.empty();
+  bool has_handlers = !enc.completion_handlers.empty();
+  bool has_temps = !enc.temporaries.empty();
 
-  fprintf(stderr, "[COMMIT] ending command buffer\n"); fflush(stderr);
+  if (!enc.recording ||
+      (enc.op_count == 0 && !has_sems && !has_handlers && !has_temps)) {
+    return;
+  }
   vkEndCommandBuffer(enc.cmd);
 
   std::vector<VkSemaphore> wait_sems;
@@ -499,19 +590,18 @@ void Device::commit(Stream s) {
   timeline_info.pSignalSemaphoreValues = signal_vals.data();
 
   VkSubmitInfo submit{};
-  submit.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submit.pNext              = &timeline_info;
+  submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit.pNext = &timeline_info;
   submit.commandBufferCount = 1;
-  submit.pCommandBuffers    = &enc.cmd;
+  submit.pCommandBuffers = &enc.cmd;
   submit.waitSemaphoreCount = wait_sems.size();
-  submit.pWaitSemaphores    = wait_sems.data();
-  submit.pWaitDstStageMask  = wait_stages.data();
+  submit.pWaitSemaphores = wait_sems.data();
+  submit.pWaitDstStageMask = wait_stages.data();
   submit.signalSemaphoreCount = signal_sems.size();
-  submit.pSignalSemaphores  = signal_sems.data();
+  submit.pSignalSemaphores = signal_sems.data();
 
-  fprintf(stderr, "[COMMIT] submitting queue\n"); fflush(stderr);
-  vk_check(vkQueueSubmit(compute_queue_, 1, &submit, enc.fence),
-           "vkQueueSubmit");
+  vk_check(
+      vkQueueSubmit(compute_queue_, 1, &submit, enc.fence), "vkQueueSubmit");
 
   // Run completion handlers async!
   auto handlers = std::move(enc.completion_handlers);
@@ -529,62 +619,54 @@ void Device::commit(Stream s) {
     std::vector<std::shared_ptr<array::Data>> temporaries;
   };
   auto* state = new CommitState{
-      device_, enc.pool, enc.desc_pool, enc.fence, std::move(handlers), std::move(temporaries)};
+      device_,
+      enc.pool,
+      enc.desc_pool,
+      enc.fence,
+      std::move(handlers),
+      std::move(temporaries)};
 
-  std::thread([](CommitState* s) {
-    vkWaitForFences(s->dev, 1, &s->old_fence, VK_TRUE, UINT64_MAX);
-    
-    try {
-      s->temporaries.clear();
-    } catch (const std::exception& e) {
-      fprintf(stderr, "[BACKGROUND] temporaries exception: %s\n", e.what()); fflush(stderr);
-    }
-    
-    for (auto& h : s->handlers) {
-      if (h) {
-        try {
-          h();
-        } catch (const std::exception& e) {
-          fprintf(stderr, "[BACKGROUND] Exception: %s\n", e.what()); fflush(stderr);
-        }
-      }
-    }
-    
-    vkDestroyCommandPool(s->dev, s->old_pool, nullptr);
-    vkDestroyDescriptorPool(s->dev, s->old_desc_pool, nullptr);
-    vkDestroyFence(s->dev, s->old_fence, nullptr);
-
-    delete s;
-  }, state).detach();
+  bool is_first_commit = enc.first_commit;
+  if (enc.first_commit) {
+    enc.first_commit = false;
+  }
 
   // Create BRAND NEW command pool and fence for the encoder
   VkCommandPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
   pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
   pool_info.queueFamilyIndex = compute_queue_family_;
-  vk_check(vkCreateCommandPool(device_, &pool_info, nullptr, &enc.pool), "vkCreateCommandPool");
+  vk_check(
+      vkCreateCommandPool(device_, &pool_info, nullptr, &enc.pool),
+      "vkCreateCommandPool");
 
   VkDescriptorPoolSize dpool_size{};
-  dpool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  dpool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   dpool_size.descriptorCount = 10000;
 
   VkDescriptorPoolCreateInfo desc_info{};
-  desc_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  desc_info.maxSets       = 2000;
+  desc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  desc_info.maxSets = 2000;
   desc_info.poolSizeCount = 1;
-  desc_info.pPoolSizes    = &dpool_size;
-  vk_check(vkCreateDescriptorPool(device_, &desc_info, nullptr, &enc.desc_pool), "vkCreateDescriptorPool");
+  desc_info.pPoolSizes = &dpool_size;
+  vk_check(
+      vkCreateDescriptorPool(device_, &desc_info, nullptr, &enc.desc_pool),
+      "vkCreateDescriptorPool");
 
   VkCommandBufferAllocateInfo alloc{};
   alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   alloc.commandPool = enc.pool;
   alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc.commandBufferCount = 1;
-  vk_check(vkAllocateCommandBuffers(device_, &alloc, &enc.cmd), "vkAllocCommandBuffers");
+  vk_check(
+      vkAllocateCommandBuffers(device_, &alloc, &enc.cmd),
+      "vkAllocCommandBuffers");
 
   VkFenceCreateInfo fence_info{};
   fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  vk_check(vkCreateFence(device_, &fence_info, nullptr, &enc.fence), "vkCreateFence");
+  vk_check(
+      vkCreateFence(device_, &fence_info, nullptr, &enc.fence),
+      "vkCreateFence");
 
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -592,15 +674,68 @@ void Device::commit(Stream s) {
   vkBeginCommandBuffer(enc.cmd, &begin);
   enc.recording = true;
 
+  // UNLOCK MUTEX before waiting/destroying to prevent deadlocks!
+  lk.unlock();
+
+  if (is_first_commit) {
+    // --- MOLTENVK FIRST-COMMIT WARMUP ---
+    // Wait synchronously for the first execution to finish.
+    vkWaitForFences(state->dev, 1, &state->old_fence, VK_TRUE, UINT64_MAX);
+
+    state->temporaries.clear();
+    for (auto& h : state->handlers) {
+      if (h)
+        h();
+    }
+
+    vkDestroyCommandPool(state->dev, state->old_pool, nullptr);
+    vkDestroyDescriptorPool(state->dev, state->old_desc_pool, nullptr);
+    vkDestroyFence(state->dev, state->old_fence, nullptr);
+    delete state;
+  } else {
+    // Ordinary async cleanup
+    std::thread(
+        [](CommitState* s) {
+          vkWaitForFences(s->dev, 1, &s->old_fence, VK_TRUE, UINT64_MAX);
+
+          try {
+            s->temporaries.clear();
+          } catch (const std::exception& e) {
+            fprintf(
+                stderr, "[BACKGROUND] temporaries exception: %s\n", e.what());
+            fflush(stderr);
+          }
+
+          for (auto& h : s->handlers) {
+            if (h) {
+              try {
+                h();
+              } catch (const std::exception& e) {
+                fprintf(stderr, "[BACKGROUND] Exception: %s\n", e.what());
+                fflush(stderr);
+              }
+            }
+          }
+
+          vkDestroyCommandPool(s->dev, s->old_pool, nullptr);
+          vkDestroyDescriptorPool(s->dev, s->old_desc_pool, nullptr);
+          vkDestroyFence(s->dev, s->old_fence, nullptr);
+
+          delete s;
+        },
+        state)
+        .detach();
+  }
 }
 
 void Device::synchronize(Stream s) {
   // Commit any pending work for the stream first
   commit(s);
-  
-  // Physically block the CPU thread until the Vulkan compute queue is fully idle.
-  // This is critical for CPU fallbacks (e.g. Gather::eval_gpu) which need to safely 
-  // read GPU memory that was written by previously submitted command buffers.
+
+  // Physically block the CPU thread until the Vulkan compute queue is fully
+  // idle. This is critical for CPU fallbacks (e.g. Gather::eval_gpu) which need
+  // to safely read GPU memory that was written by previously submitted command
+  // buffers.
   std::lock_guard<std::mutex> lk(mutex_);
   vkQueueWaitIdle(compute_queue_);
 }
@@ -615,12 +750,11 @@ VkPipeline Device::get_pipeline(
     VkDescriptorSetLayout& ds_layout_out,
     uint32_t num_bindings,
     uint32_t push_constant_size) {
-
   std::lock_guard<std::mutex> lk(mutex_);
 
   auto it = pipeline_map_.find(name);
   if (it != pipeline_map_.end()) {
-    layout_out    = it->second.layout;
+    layout_out = it->second.layout;
     ds_layout_out = it->second.ds_layout;
     return it->second.pipeline;
   }
@@ -628,37 +762,40 @@ VkPipeline Device::get_pipeline(
   // Build descriptor set layout (all storage buffers)
   std::vector<VkDescriptorSetLayoutBinding> bindings(num_bindings);
   for (uint32_t i = 0; i < num_bindings; i++) {
-    bindings[i].binding         = i;
-    bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[i].binding = i;
+    bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[i].descriptorCount = 1;
-    bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   }
 
   VkDescriptorSetLayoutCreateInfo ds_info{};
-  ds_info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  ds_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   ds_info.bindingCount = num_bindings;
-  ds_info.pBindings    = bindings.data();
+  ds_info.pBindings = bindings.data();
 
   VkDescriptorSetLayout ds_layout;
-  vk_check(vkCreateDescriptorSetLayout(device_, &ds_info, nullptr, &ds_layout),
-           "vkCreateDescriptorSetLayout");
+  vk_check(
+      vkCreateDescriptorSetLayout(device_, &ds_info, nullptr, &ds_layout),
+      "vkCreateDescriptorSetLayout");
 
   // Build pipeline layout with push constants
   VkPushConstantRange pc_range{};
   pc_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  pc_range.offset     = 0;
-  pc_range.size       = push_constant_size > 0 ? push_constant_size : 128;
+  pc_range.offset = 0;
+  pc_range.size = push_constant_size > 0 ? push_constant_size : 128;
 
   VkPipelineLayoutCreateInfo layout_info{};
-  layout_info.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  layout_info.setLayoutCount         = 1;
-  layout_info.pSetLayouts            = &ds_layout;
+  layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layout_info.setLayoutCount = 1;
+  layout_info.pSetLayouts = &ds_layout;
   layout_info.pushConstantRangeCount = push_constant_size > 0 ? 1 : 0;
-  layout_info.pPushConstantRanges    = push_constant_size > 0 ? &pc_range : nullptr;
+  layout_info.pPushConstantRanges =
+      push_constant_size > 0 ? &pc_range : nullptr;
 
   VkPipelineLayout layout;
-  vk_check(vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout),
-           "vkCreatePipelineLayout");
+  vk_check(
+      vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout),
+      "vkCreatePipelineLayout");
 
   // Load SPIR-V
   std::string spv_path = std::string(VULKAN_KERNELS_PATH) + name + ".spv";
@@ -669,27 +806,29 @@ VkPipeline Device::get_pipeline(
     fprintf(stderr, "[MLX Vulkan] WARNING: %s\n", e.what());
     // Return null pipeline — callers should fall back to CPU
     pipeline_map_[name] = {VK_NULL_HANDLE, layout, ds_layout};
-    layout_out    = layout;
+    layout_out = layout;
     ds_layout_out = ds_layout;
     return VK_NULL_HANDLE;
   }
 
   VkShaderModuleCreateInfo shader_info{};
-  shader_info.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
   shader_info.codeSize = code.size() * sizeof(uint32_t);
-  shader_info.pCode    = code.data();
+  shader_info.pCode = code.data();
 
   VkShaderModule shader_module;
-  vk_check(vkCreateShaderModule(device_, &shader_info, nullptr, &shader_module),
-           "vkCreateShaderModule");
+  vk_check(
+      vkCreateShaderModule(device_, &shader_info, nullptr, &shader_module),
+      "vkCreateShaderModule");
 
   VkComputePipelineCreateInfo pipeline_info{};
-  pipeline_info.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipeline_info.layout = layout;
-  pipeline_info.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  pipeline_info.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+  pipeline_info.stage.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
   pipeline_info.stage.module = shader_module;
-  pipeline_info.stage.pName  = "main";
+  pipeline_info.stage.pName = "main";
 
   VkPipeline pipeline;
   VkResult res = vkCreateComputePipelines(
@@ -698,12 +837,130 @@ VkPipeline Device::get_pipeline(
   vkDestroyShaderModule(device_, shader_module, nullptr);
 
   if (res != VK_SUCCESS) {
-    fprintf(stderr, "[MLX Vulkan] WARNING: failed to create pipeline '%s'\n", name.c_str());
+    fprintf(
+        stderr,
+        "[MLX Vulkan] WARNING: failed to create pipeline '%s'\n",
+        name.c_str());
     pipeline = VK_NULL_HANDLE;
+  } else {
+    // MOLTENVK BUG WORKAROUND: The very first VkCommandBuffer that utilizes a
+    // newly compiled MTLComputePipelineState will be silently dropped by the
+    // Apple Silicon driver. To absorb this fault, we immediately allocate a
+    // transient command buffer, bind the new pipeline, dispatch a single
+    // workgroup, and submit it.
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = compute_queue_family_;
+    VkCommandPool pool;
+    if (vkCreateCommandPool(device_, &pool_info, nullptr, &pool) ==
+        VK_SUCCESS) {
+      VkCommandBufferAllocateInfo alloc_info{};
+      alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+      alloc_info.commandPool = pool;
+      alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      alloc_info.commandBufferCount = 1;
+      VkCommandBuffer cmd;
+      if (vkAllocateCommandBuffers(device_, &alloc_info, &cmd) == VK_SUCCESS) {
+        VkDescriptorPoolSize pool_size{};
+        pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        pool_size.descriptorCount = num_bindings > 0 ? num_bindings : 1;
+        VkDescriptorPoolCreateInfo desc_pool_info{};
+        desc_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        desc_pool_info.poolSizeCount = 1;
+        desc_pool_info.pPoolSizes = &pool_size;
+        desc_pool_info.maxSets = 1;
+        VkDescriptorPool desc_pool;
+        if (vkCreateDescriptorPool(
+                device_, &desc_pool_info, nullptr, &desc_pool) == VK_SUCCESS) {
+          VkDescriptorSetAllocateInfo ds_alloc{};
+          ds_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+          ds_alloc.descriptorPool = desc_pool;
+          ds_alloc.descriptorSetCount = 1;
+          ds_alloc.pSetLayouts = &ds_layout;
+          VkDescriptorSet ds;
+          if (vkAllocateDescriptorSets(device_, &ds_alloc, &ds) == VK_SUCCESS) {
+            std::vector<VkDescriptorBufferInfo> buf_infos(num_bindings);
+            std::vector<VkWriteDescriptorSet> writes(num_bindings);
+            for (uint32_t i = 0; i < num_bindings; i++) {
+              buf_infos[i].buffer = dummy_buffer_;
+              buf_infos[i].offset = 0;
+              buf_infos[i].range = VK_WHOLE_SIZE;
+              writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+              writes[i].dstSet = ds;
+              writes[i].dstBinding = i;
+              writes[i].descriptorCount = 1;
+              writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+              writes[i].pBufferInfo = &buf_infos[i];
+            }
+            if (num_bindings > 0) {
+              vkUpdateDescriptorSets(
+                  device_, num_bindings, writes.data(), 0, nullptr);
+            }
+
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(cmd, &begin);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+
+            if (push_constant_size > 0) {
+              std::vector<uint8_t> zeros(push_constant_size, 0);
+              vkCmdPushConstants(
+                  cmd,
+                  layout,
+                  VK_SHADER_STAGE_COMPUTE_BIT,
+                  0,
+                  push_constant_size,
+                  zeros.data());
+            }
+
+            vkCmdBindDescriptorSets(
+                cmd,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                layout,
+                0,
+                1,
+                &ds,
+                0,
+                nullptr);
+            vkCmdDispatch(cmd, 1, 1, 1);
+
+            VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(
+                cmd,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                1,
+                &barrier,
+                0,
+                nullptr,
+                0,
+                nullptr);
+
+            vkEndCommandBuffer(cmd);
+
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &cmd;
+            vkQueueSubmit(compute_queue_, 1, &submit, VK_NULL_HANDLE);
+            // Wait for it to finish so the pipeline is fully initialized in the
+            // driver
+            vkQueueWaitIdle(compute_queue_);
+          }
+          vkDestroyDescriptorPool(device_, desc_pool, nullptr);
+        }
+      }
+      vkDestroyCommandPool(device_, pool, nullptr);
+    }
   }
 
   pipeline_map_[name] = {pipeline, layout, ds_layout};
-  layout_out    = layout;
+  layout_out = layout;
   ds_layout_out = ds_layout;
   return pipeline;
 }
@@ -712,18 +969,21 @@ VkPipeline Device::get_pipeline(
 // Descriptor set allocation
 // ────────────────────────────────────────────────────────────────────────────
 
-VkDescriptorSet Device::alloc_descriptor_set(Stream s, VkDescriptorSetLayout layout) {
+VkDescriptorSet Device::alloc_descriptor_set(
+    Stream s,
+    VkDescriptorSetLayout layout) {
   std::lock_guard<std::mutex> lk(mutex_);
   auto it = encoders_.find(s.index);
   if (it == encoders_.end()) {
-    throw std::runtime_error("[Device::alloc_descriptor] Invalid stream encoder");
+    throw std::runtime_error(
+        "[Device::alloc_descriptor] Invalid stream encoder");
   }
 
   VkDescriptorSetAllocateInfo alloc_info{};
-  alloc_info.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  alloc_info.descriptorPool     = it->second.desc_pool;
+  alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  alloc_info.descriptorPool = it->second.desc_pool;
   alloc_info.descriptorSetCount = 1;
-  alloc_info.pSetLayouts        = &layout;
+  alloc_info.pSetLayouts = &layout;
 
   VkDescriptorSet ds;
   VkResult res = vkAllocateDescriptorSets(device_, &alloc_info, &ds);
@@ -753,7 +1013,8 @@ void Device::add_temporary(Stream s, const array& arr) {
 }
 
 void Device::add_completed_handler(Stream s, std::function<void()> handler) {
-  if (!handler) return;
+  if (!handler)
+    return;
   std::lock_guard<std::mutex> lk(mutex_);
   auto it = encoders_.find(s.index);
   if (it != encoders_.end()) {

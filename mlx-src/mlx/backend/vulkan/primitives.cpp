@@ -142,6 +142,20 @@ void dispatch_binary(
     array& out,
     uint32_t op_id,
     const Stream& s) {
+  auto [shape, strides] = collapse_contiguous_dims(a, b, out);
+  if (shape.size() > 4) {
+    array a_contig(out.shape(), a.dtype(), nullptr, {});
+    a_contig.set_data(allocator::malloc(a_contig.nbytes()));
+    copy_gpu(a, a_contig, CopyType::General, s);
+
+    array b_contig(out.shape(), b.dtype(), nullptr, {});
+    b_contig.set_data(allocator::malloc(b_contig.nbytes()));
+    copy_gpu(b, b_contig, CopyType::General, s);
+
+    dispatch_binary(a_contig, b_contig, out, op_id, s);
+    return;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
 
   auto& encoder = vulkan::get_command_encoder(s);
@@ -219,20 +233,26 @@ void dispatch_binary(
   pc.input_dtype = to_input_dtype(in_dtype);
   pc.input_elem_bytes = static_cast<uint32_t>(in_dtype.size());
 
+  const auto& out_shape = shape;
+  const auto& a_strides = strides[0];
+  const auto& b_strides = strides[1];
+
   // Set up ND dimensions for broadcast indexing
-  int ndim = out.ndim();
+  int ndim = out_shape.size();
   pc.ndim = static_cast<uint32_t>(ndim > 4 ? 4 : ndim);
 
-  // Fill out_shape (right-aligned, padded with 1s)
-  for (int i = 0; i < 4; i++)
+  // Fill out_shape and strides (right-aligned, padded)
+  for (int i = 0; i < 4; i++) {
     pc.out_shape[i] = 1;
+    pc.a_strides[i] = 0;
+    pc.b_strides[i] = 0;
+  }
   for (int i = 0; i < std::min(ndim, 4); i++) {
     int out_i = (ndim <= 4) ? i : (i + ndim - 4);
-    pc.out_shape[i] = static_cast<uint32_t>(out.shape(out_i));
+    pc.out_shape[i] = static_cast<uint32_t>(out_shape[out_i]);
+    pc.a_strides[i] = static_cast<uint32_t>(a_strides[out_i]);
+    pc.b_strides[i] = static_cast<uint32_t>(b_strides[out_i]);
   }
-
-  compute_broadcast_strides(a, out.shape(), pc.a_strides);
-  compute_broadcast_strides(b, out.shape(), pc.b_strides);
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -399,8 +419,9 @@ void Log::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 // BitwiseInvert: fall back to CPU (requires XOR with all-ones broadcast)
 void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,8 +509,8 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("ternary", layout, ds_layout, 4, 16);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -564,8 +585,8 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("arange", layout, ds_layout, 1, 12);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -619,6 +640,21 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
+  bool is_continuous_axes = true;
+  for (size_t i = 1; i < axes_.size(); i++) {
+    if (axes_[i] != axes_[i - 1] + 1) {
+      is_continuous_axes = false;
+      break;
+    }
+  }
+
+  if (!inputs[0].flags().row_contiguous || !is_continuous_axes ||
+      (inputs[0].dtype() != float32 && inputs[0].dtype() != bool_)) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
 
   auto& encoder = vulkan::get_command_encoder(stream());
@@ -720,13 +756,13 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
       outer_stride};
 
   VkCommandBuffer cmd = encoder.cmd;
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   vkCmdPushConstants(
       cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
   // One workgroup per output element
-  vkCmdDispatch(cmd, n_outputs, 1, 1);
+  vkCmdDispatch(cmd, pc.n_outputs, 1, 1);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -745,6 +781,14 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 
 void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (!inputs[0].flags().row_contiguous ||
+      (inputs[0].dtype() != float32 && inputs[0].dtype() != float16 &&
+       inputs[0].dtype() != bool_)) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
 
   auto& encoder = vulkan::get_command_encoder(stream());
@@ -757,10 +801,10 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline =
-      dev.get_pipeline("arg_reduce", layout, ds_layout, 2, 16);
+      dev.get_pipeline("arg_reduce", layout, ds_layout, 2, 20);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -783,13 +827,32 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   uint32_t n_outputs = static_cast<uint32_t>(out.size() > 0 ? out.size() : 1);
   uint32_t reduce_size = static_cast<uint32_t>(inputs[0].size() / n_outputs);
   uint32_t op_id = (reduce_type_ == ArgReduce::ReduceType::ArgMax) ? 0u : 1u;
+  uint32_t elem_bytes = static_cast<uint32_t>(inputs[0].itemsize());
+
+  // Compute inner: product of dims after the highest reduce axis
+  int max_reduce_ax = axis_;
+  uint32_t inner = 1;
+  for (int i = max_reduce_ax + 1; i < inputs[0].ndim(); i++) {
+    inner *= static_cast<uint32_t>(inputs[0].shape(i));
+  }
+  uint32_t outer_stride = reduce_size * inner;
 
   struct PushConst {
     uint32_t n;
     uint32_t reduce_size;
     uint32_t n_outputs;
     uint32_t op;
-  } pc{static_cast<uint32_t>(inputs[0].size()), reduce_size, n_outputs, op_id};
+    uint32_t input_elem_bytes;
+    uint32_t inner;
+    uint32_t outer_stride;
+  } pc{
+      static_cast<uint32_t>(inputs[0].size()),
+      reduce_size,
+      n_outputs,
+      op_id,
+      elem_bytes,
+      inner,
+      outer_stride};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -821,7 +884,8 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   out.set_data(allocator::malloc(out.nbytes()));
-  if (out.size() == 0) return;
+  if (out.size() == 0)
+    return;
 
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
@@ -848,8 +912,8 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("matmul", layout, ds_layout, 3, 28);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -913,6 +977,9 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
   out.set_data(allocator::malloc(out.nbytes()));
+  // Zero-init output so first-run shader execution does not read stale
+  // allocation data
+  memset(out.data<void>(), 0, out.nbytes());
 
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
@@ -925,8 +992,8 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("softmax", layout, ds_layout, 2, 8);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -997,8 +1064,8 @@ void LogSumExp::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("logsumexp", layout, ds_layout, 2, 12);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -1076,8 +1143,8 @@ void DivMod::eval_gpu(
   VkPipeline pipeline =
       dev.get_pipeline("binary_two", layout, ds_layout, 4, 16);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, outputs);
     return;
   }
 
@@ -1259,8 +1326,9 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
-  throw std::runtime_error(
-      "[vulkan::Gather::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 // GatherAxis: simple axis-indexed gather → GPU dispatch
@@ -1309,8 +1377,9 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 // General Scatter: multi-axis → CPU fallback
 void Scatter::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::Scatter::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 // ScatterAxis: simple axis-indexed scatter → GPU dispatch
@@ -1385,8 +1454,9 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Throw Error if sort dimension > 256 or not last axis
   if (sort_pow2 > 256 || sort_axis != in.ndim() - 1) {
-    throw std::runtime_error(
-        "[vulkan::Sort::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
   }
 
   // Copy input to output (sort is in-place on output)
@@ -1412,8 +1482,8 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipeline pipeline = dev.get_pipeline("sort", layout, ds_layout, 2, 20);
   if (pipeline == VK_NULL_HANDLE) {
     allocator::free(idx_alloc);
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -1464,23 +1534,26 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Free index buffer after GPU finishes
   auto s = stream();
-  vulkan::device(s.device).add_completed_handler(s, 
-      [idx_alloc]() mutable { allocator::free(idx_alloc); });
+  vulkan::device(s.device).add_completed_handler(
+      s, [idx_alloc]() mutable { allocator::free(idx_alloc); });
 }
 
 void ArgSort::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::ArgSort::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 void Partition::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::Partition::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::ArgPartition::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1694,8 +1767,9 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
       can_use_gpu = false;
 
   if (!can_use_gpu) {
-    throw std::runtime_error(
-        "[vulkan::Convolution::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
   }
 
   out.set_data(allocator::malloc(out.nbytes()));
@@ -1706,8 +1780,8 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("conv", layout, ds_layout, 3, 52);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
     return;
   }
 
@@ -1814,8 +1888,9 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("rbits", layout, ds_layout, 2, 12);
   if (pipeline == VK_NULL_HANDLE) {
-    throw std::runtime_error(
-        "[vulkan::RandomBits::eval_gpu] Fallback to eval_cpu is unsupported");
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
   }
 
   uint32_t grid_y = half_size + odd;
@@ -1896,13 +1971,15 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Imag::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 void Real::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1910,8 +1987,9 @@ void Real::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
-  throw std::runtime_error(
-      "[vulkan::eval_gpu] Fallback to eval_cpu is unsupported");
+  vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2111,12 +2189,11 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 // QQMatmul — quantized x quantized (both operands quantized)
 //
 // Input layout (from primitives.h / eval_cpu):
-//   inputs[0]: packed uint  w1  (LHS quantized)  shape: depends on bits_/group_size_
-//   inputs[1]: float scales1
-//   inputs[2]: float biases1  (may be absent for some modes — but we read 6 when present)
-//   inputs[3]: packed uint  w2  (RHS quantized)
-//   inputs[4]: float scales2
-//   inputs[5]: float biases2  (may be absent)
+//   inputs[0]: packed uint  w1  (LHS quantized)  shape: depends on
+//   bits_/group_size_ inputs[1]: float scales1 inputs[2]: float biases1  (may
+//   be absent for some modes — but we read 6 when present) inputs[3]: packed
+//   uint  w2  (RHS quantized) inputs[4]: float scales2 inputs[5]: float biases2
+//   (may be absent)
 //
 // Note: eval_cpu only handles the special-case where inputs[1].dtype()==uint32
 // and inputs[0].shape(-2)==1, at which point inputs[0] is actually the float
@@ -2142,13 +2219,15 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
-  // When inputs[1].dtype() == uint32, the layout is the "vector x quantized-weight" path:
+  // When inputs[1].dtype() == uint32, the layout is the "vector x
+  // quantized-weight" path:
   //   inputs[0] = float x  [M, K]
   //   inputs[1] = packed uint w  [K_packed, N]
   //   inputs[2] = float scales
   //   inputs[3] = float biases  (optional, may be empty)
-  // In this case, only one dequantize pass is needed — identical to QuantizedMatmul.
-  // For the fully-quantized (both inputs packed uint) general case, do two dequant passes.
+  // In this case, only one dequantize pass is needed — identical to
+  // QuantizedMatmul. For the fully-quantized (both inputs packed uint) general
+  // case, do two dequant passes.
 
   bool lhs_is_float = (inputs[0].dtype() != uint32);
 
@@ -2169,7 +2248,8 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
     VkPipelineLayout layout;
     VkDescriptorSetLayout ds_layout;
-    VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+    VkPipeline pipeline =
+        dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
     if (pipeline == VK_NULL_HANDLE) {
       vulkan::device(s.device).add_temporary(s, dq_weights);
       throw std::runtime_error(
@@ -2206,9 +2286,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       uint32_t bits;
       uint32_t N_dim;
       uint32_t K_dim;
-    } pc{n_dequant, 1u, static_cast<uint32_t>(group_size_),
-         static_cast<uint32_t>(bits_), static_cast<uint32_t>(N),
-         static_cast<uint32_t>(K)};
+    } pc{
+        n_dequant,
+        1u,
+        static_cast<uint32_t>(group_size_),
+        static_cast<uint32_t>(bits_),
+        static_cast<uint32_t>(N),
+        static_cast<uint32_t>(K)};
 
     VkCommandBuffer cmd = encoder.cmd;
     vkCmdPushConstants(
@@ -2225,15 +2309,21 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 1, &barrier, 0, nullptr, 0, nullptr);
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
 
     Matmul(s).eval_gpu({x, dq_weights}, out);
     vulkan::device(s.device).add_temporary(s, dq_weights);
     return;
   }
 
-  // General case: both inputs[0] and inputs[3] are packed-uint quantized matrices.
-  // inputs[0]=w1_pack, inputs[1]=scales1, inputs[2]=biases1
+  // General case: both inputs[0] and inputs[3] are packed-uint quantized
+  // matrices. inputs[0]=w1_pack, inputs[1]=scales1, inputs[2]=biases1
   // inputs[3]=w2_pack, inputs[4]=scales2, inputs[5]=biases2
   // Output shape: out = [M, N]; we need dq1[M,K] @ dq2[K,N].
   const array& w1_pack = inputs[0];
@@ -2245,8 +2335,9 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   int M = static_cast<int>(out.shape(-2));
   int N = static_cast<int>(out.shape(-1));
-  // K is determined from w1: w1_pack shape is [M, K_packed], K = K_packed * (32/bits_)
-  // or from scales1 shape: scales1 has K groups along last dim * group_size_
+  // K is determined from w1: w1_pack shape is [M, K_packed], K = K_packed *
+  // (32/bits_) or from scales1 shape: scales1 has K groups along last dim *
+  // group_size_
   int K = static_cast<int>(scales1.shape(-1)) * group_size_;
 
   uint32_t n_dq1 = static_cast<uint32_t>(M) * static_cast<uint32_t>(K);
@@ -2304,9 +2395,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     }
     vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
-    QuantPushConst pc{n_dq1, 1u, static_cast<uint32_t>(group_size_),
-                      static_cast<uint32_t>(bits_), static_cast<uint32_t>(K),
-                      static_cast<uint32_t>(M)};
+    QuantPushConst pc{
+        n_dq1,
+        1u,
+        static_cast<uint32_t>(group_size_),
+        static_cast<uint32_t>(bits_),
+        static_cast<uint32_t>(K),
+        static_cast<uint32_t>(M)};
     vkCmdPushConstants(
         cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -2324,7 +2419,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 1, &barrier, 0, nullptr, 0, nullptr);
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
   }
 
   // ── Pass B: Dequantize w2 -> dq2 [K, N] (op=1, non-transposed) ──────────
@@ -2352,9 +2453,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     }
     vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
-    QuantPushConst pc{n_dq2, 1u, static_cast<uint32_t>(group_size_),
-                      static_cast<uint32_t>(bits_), static_cast<uint32_t>(N),
-                      static_cast<uint32_t>(K)};
+    QuantPushConst pc{
+        n_dq2,
+        1u,
+        static_cast<uint32_t>(group_size_),
+        static_cast<uint32_t>(bits_),
+        static_cast<uint32_t>(N),
+        static_cast<uint32_t>(K)};
     vkCmdPushConstants(
         cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -2372,7 +2477,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 1, &barrier, 0, nullptr, 0, nullptr);
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
   }
 
   // ── Pass C: float matmul dq1[M,K] @ dq2[K,N] -> out[M,N] ────────────────
@@ -2843,12 +2954,13 @@ NO_GPU_MULTI(ScaledDotProductAttentionVJP)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fast::ConvertFP8 — CPU fallback (no GPU shader for FP8 conversion yet)
-// ConvertFP8 extends Primitive (multi-output), so eval_gpu takes outputs vector.
-// eval_cpu handles set_data internally — do not pre-allocate here.
+// ConvertFP8 extends Primitive (multi-output), so eval_gpu takes outputs
+// vector. eval_cpu handles set_data internally — do not pre-allocate here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void ConvertFP8::eval_gpu(
-    const std::vector<array>& inputs, std::vector<array>& outputs) {
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
   eval_cpu(inputs, outputs);
 }
 
@@ -2865,7 +2977,8 @@ void ConvertFP8::eval_gpu(
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Quantize::eval_gpu(
-    const std::vector<array>& inputs, std::vector<array>& outputs) {
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
   if (!dequantize_) {
     // Quantize path (float -> packed): eval_cpu handles all 3 outputs.
     eval_cpu(inputs, outputs);
@@ -2884,26 +2997,28 @@ void Quantize::eval_gpu(
   out.set_data(allocator::malloc(out.nbytes()));
 
   size_t n = static_cast<size_t>(out.size());
-  if (n == 0) return;
+  if (n == 0)
+    return;
 
   // MLX guarantees inputs are evaluated before eval_gpu is called.
-  // On MoltenVK/iGPU unified memory, host can read GPU-written buffers directly.
+  // On MoltenVK/iGPU unified memory, host can read GPU-written buffers
+  // directly.
   const uint32_t* w_packed = inputs[0].data<uint32_t>();
-  const float*    scales   = inputs[1].data<float>();
-  const float*    biases   = inputs[2].data<float>();
-  float*          dst      = out.data<float>();
+  const float* scales = inputs[1].data<float>();
+  const float* biases = inputs[2].data<float>();
+  float* dst = out.data<float>();
 
-  uint32_t bits     = static_cast<uint32_t>(bits_);
-  uint32_t gs       = static_cast<uint32_t>(group_size_);
-  uint32_t epw      = 32u / bits;                 // elements per packed word
-  uint32_t mask     = (1u << bits) - 1u;
+  uint32_t bits = static_cast<uint32_t>(bits_);
+  uint32_t gs = static_cast<uint32_t>(group_size_);
+  uint32_t epw = 32u / bits; // elements per packed word
+  uint32_t mask = (1u << bits) - 1u;
 
   for (size_t i = 0; i < n; ++i) {
-    uint32_t ui      = static_cast<uint32_t>(i);
-    uint32_t packed  = w_packed[ui / epw];
-    uint32_t shift   = (ui % epw) * bits;
-    uint32_t q       = (packed >> shift) & mask;
-    uint32_t group   = ui / gs;
+    uint32_t ui = static_cast<uint32_t>(i);
+    uint32_t packed = w_packed[ui / epw];
+    uint32_t shift = (ui % epw) * bits;
+    uint32_t q = (packed >> shift) & mask;
+    uint32_t group = ui / gs;
     dst[i] = static_cast<float>(q) * scales[group] + biases[group];
   }
 }

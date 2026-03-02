@@ -27,30 +27,43 @@ Event::Event(Stream stream) : stream_(stream) {
 }
 
 void Event::wait() {
-  if (!valid()) { fprintf(stderr, "[EVENT] wait: not valid\n"); fflush(stderr); return; }
+  if (!valid())
+    return;
   auto* state = static_cast<VulkanEventState*>(event_.get());
-  fprintf(stderr, "[EVENT] wait: waiting for signal_value=%lu\n", (unsigned long)state->signal_value); fflush(stderr);
   state->vk_event.wait(state->signal_value);
-  fprintf(stderr, "[EVENT] wait: done\n"); fflush(stderr);
 }
 
 void Event::wait(Stream stream) {
-  if (!valid()) return;
-  auto* state = static_cast<VulkanEventState*>(event_.get());
+  if (!valid())
+    return;
   if (stream.device == Device::cpu) {
     scheduler::enqueue(stream, [*this]() mutable { wait(); });
   } else {
-    vulkan::device(stream.device).add_wait_semaphore(stream, state->vk_event.semaphore(), state->signal_value);
+    // MoltenVK does not support GPU-side timeline semaphore waits in
+    // vkQueueSubmit (results in VK_ERROR_DEVICE_LOST). Use CPU-blocking: drain
+    // the signal stream first so the completion handler has fired, then block
+    // CPU until signaled.
+    vulkan::device(stream.device).synchronize(stream_);
+    wait();
   }
 }
 
 void Event::signal(Stream stream) {
-  if (!valid()) return;
+  if (!valid())
+    return;
   auto* state = static_cast<VulkanEventState*>(event_.get());
   state->signal_value = value_;
 
   if (stream.device == Device::gpu) {
-    vulkan::device(stream.device).add_signal_semaphore(stream, state->vk_event.semaphore(), value_);
+    // Signal the timeline semaphore via completion handler after GPU work
+    // finishes. add_completed_handler fires from the background thread after
+    // vkWaitForFences.
+    vulkan::device(stream.device)
+        .add_completed_handler(
+            stream, [event_ = event_, val = value_]() mutable {
+              auto* s = static_cast<VulkanEventState*>(event_.get());
+              s->vk_event.signal(val);
+            });
   } else {
     scheduler::enqueue(stream, [event_ = event_, val = value_]() mutable {
       auto* s = static_cast<VulkanEventState*>(event_.get());
@@ -60,7 +73,8 @@ void Event::signal(Stream stream) {
 }
 
 bool Event::is_signaled() const {
-  if (!valid()) return false;
+  if (!valid())
+    return false;
   auto* state = static_cast<VulkanEventState*>(event_.get());
   auto& dev = vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
   uint64_t current_value = 0;
@@ -89,7 +103,8 @@ VulkanEvent::VulkanEvent() {
   create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
   create_info.pNext = &type_info;
 
-  VkResult res = vkCreateSemaphore(dev.vk_device(), &create_info, nullptr, &semaphore_);
+  VkResult res =
+      vkCreateSemaphore(dev.vk_device(), &create_info, nullptr, &semaphore_);
   if (res != VK_SUCCESS) {
     throw std::runtime_error("Vulkan: failed to create timeline semaphore");
   }

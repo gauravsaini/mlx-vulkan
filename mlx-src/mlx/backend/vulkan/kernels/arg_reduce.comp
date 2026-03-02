@@ -1,22 +1,40 @@
 #version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
 #define ARG_REDUCE_MAX 0
 #define ARG_REDUCE_MIN 1
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
-layout(set = 0, binding = 1) writeonly buffer OutBuf { uint  out_data[]; };
+layout(set = 0, binding = 0) readonly  buffer InBuf  { uint in_data[];  };
+layout(set = 0, binding = 1) writeonly buffer OutBuf { uint out_data[]; };
 
 layout(push_constant) uniform Params {
     uint n;
     uint reduce_size;
     uint n_outputs;
     uint op;
+    uint input_elem_bytes;
+    uint inner;
+    uint outer_stride;
 } params;
 
 shared float s_vals[256];
 shared uint  s_idxs[256];
+
+float get_val(uint idx) {
+    if (params.input_elem_bytes == 1u) {
+        uint word = in_data[idx >> 2u];
+        uint byte_val = (word >> ((idx & 3u) * 8u)) & 0xFFu;
+        return float(byte_val);
+    } else if (params.input_elem_bytes == 2u) {
+        uint word = in_data[idx >> 1u];
+        vec2 halves = unpackHalf2x16(word);
+        return ((idx & 1u) == 0u) ? halves.x : halves.y;
+    } else {
+        return uintBitsToFloat(in_data[idx]);
+    }
+}
 
 void main() {
     uint out_idx = gl_WorkGroupID.x;
@@ -24,13 +42,16 @@ void main() {
 
     if (out_idx >= params.n_outputs) return;
 
-    uint in_base = out_idx * params.reduce_size;
+    uint inner_off   = out_idx % params.inner;
+    uint outer_off   = out_idx / params.inner;
+    uint in_base_str = outer_off * params.outer_stride + inner_off;
 
     float best_val = params.op == ARG_REDUCE_MAX ? -3.402823466e+38 : 3.402823466e+38;
     uint  best_idx = 0;
 
     for (uint i = tid; i < params.reduce_size; i += 256) {
-        float v = in_data[in_base + i];
+        uint idx = in_base_str + i * params.inner;
+        float v = get_val(idx);
         bool better = (params.op == ARG_REDUCE_MAX) ? (v > best_val) : (v < best_val);
         if (better) {
             best_val = v;
@@ -44,12 +65,23 @@ void main() {
 
     for (uint stride = 128; stride > 0; stride >>= 1) {
         if (tid < stride) {
-            bool better = (params.op == ARG_REDUCE_MAX)
-                ? s_vals[tid + stride] > s_vals[tid]
-                : s_vals[tid + stride] < s_vals[tid];
+            float v1 = s_vals[tid];
+            float v2 = s_vals[tid + stride];
+            uint i1 = s_idxs[tid];
+            uint i2 = s_idxs[tid + stride];
+            
+            bool better = false;
+            if (params.op == ARG_REDUCE_MAX) {
+                if (v2 > v1) better = true;
+                else if (v2 == v1 && i2 < i1) better = true;
+            } else {
+                if (v2 < v1) better = true;
+                else if (v2 == v1 && i2 < i1) better = true;
+            }
+            
             if (better) {
-                s_vals[tid] = s_vals[tid + stride];
-                s_idxs[tid] = s_idxs[tid + stride];
+                s_vals[tid] = v2;
+                s_idxs[tid] = i2;
             }
         }
         barrier();

@@ -66,6 +66,16 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 ## Known Issues / Critical Bugs Fixed
 
+### Fixed (2026-03-02) — >4D Binary Broadcast Limits & CPU Fallbacks
+
+25. **>4D Binary Broadcast Limit Fixed** (`primitives.cpp`):
+    - `binary.comp` push constants only support up to 4 dimensions. Broadcasting or expanding dimensions > 4 resulted in out-of-bounds stride arrays or dimensionality mismatches (like the `test_expand_sums` failure, which produced scalar outputs instead of correct tensors).
+    - Fixed `dispatch_binary` in `primitives.cpp`. It now processes `collapse_contiguous_dims` first. If `shape.size() > 4`, it recursively delegates to fully contiguous bounds using `copy_gpu(CopyType::General)`, seamlessly instantiating `a_contig` and `b_contig` buffers before submitting the primitive to the binary shader under the 4D push constant constraints.
+
+26. **CPU Fallbacks for Unsupported Primitives** (`primitives.cpp`):
+    - Operations like `Scatter`, `Gather`, `Sort`, `Partition`, `Convolution`, etc., were throwing `std::runtime_error("[vulkan::...] Fallback to eval_cpu is unsupported")` when invoked on the GPU, breaking testing for entire execution branches.
+    - Replaced these exceptions across `primitives.cpp` (WIP/partially applied) with synchronized `eval_cpu(inputs, out)` executions. Test graphs that fall back to unsupported GPU primitives can now correctly hand execution back to the CPU execution stream.
+
 ### Fixed (2026-02-26)
 
 1. **eval.cpp — SIGSEGV on eval_gpu() deletion**: `eval_gpu()` call was accidentally deleted by a `sed` command. Restored manually. This was the root cause of segfaults during GPU dispatch.

@@ -2,13 +2,13 @@
 // MLX Vulkan Backend - GPU copy operations
 
 #include "mlx/backend/gpu/copy.h"
+#include "mlx/allocator.h"
 #include "mlx/backend/common/copy.h"
 #include "mlx/backend/common/slicing.h"
 #include "mlx/backend/common/utils.h"
-#include "mlx/backend/vulkan/device.h"
 #include "mlx/backend/vulkan/allocator.h"
+#include "mlx/backend/vulkan/device.h"
 #include "mlx/backend/vulkan/utils.h"
-#include "mlx/allocator.h"
 #include "mlx/primitives.h"
 
 #include <cassert>
@@ -26,7 +26,6 @@ static void dispatch_copy_shader(
     int64_t o_offset,
     CopyType ctype,
     const Stream& s) {
-
   auto& encoder = vulkan::get_command_encoder(s);
   encoder.op_count++;
 
@@ -42,9 +41,11 @@ static void dispatch_copy_shader(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  // copy.comp now has 3 bindings and a 40-byte push constant (added src_dtype/dst_dtype)
+  // copy.comp now has 3 bindings and a 40-byte push constant (added
+  // src_dtype/dst_dtype)
   VkPipeline pipeline = dev.get_pipeline("copy", layout, ds_layout, 3, 40);
-  if (pipeline == VK_NULL_HANDLE) return;
+  if (pipeline == VK_NULL_HANDLE)
+    return;
 
   // Set up meta buffer for multidimensional strides if required
   VkBuffer meta_buf = VK_NULL_HANDLE;
@@ -62,19 +63,21 @@ static void dispatch_copy_shader(
     auto* staging = vulkan::allocator().alloc_staging(meta_bytes);
     std::memcpy(staging->mapped_ptr, meta_data.data(), meta_bytes);
     meta_buf = staging->buffer;
-    
-    // Dispose staging buffer intelligently when the execution encodes completely
-    vulkan::device(s.device).add_completed_handler(s, [staging]() {
-      vulkan::allocator().free_staging(staging);
-    });
+
+    // Dispose staging buffer intelligently when the execution encodes
+    // completely
+    vulkan::device(s.device).add_completed_handler(
+        s, [staging]() { vulkan::allocator().free_staging(staging); });
   }
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
 
-  // Bind src buffer (binding 0), dst buffer (binding 1), meta buffer (binding 2)
+  // Bind src buffer (binding 0), dst buffer (binding 1), meta buffer (binding
+  // 2)
   VkDescriptorBufferInfo src_info{src_buf, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo dst_info{dst_buf, 0, VK_WHOLE_SIZE};
-  VkDescriptorBufferInfo meta_info{meta_buf != VK_NULL_HANDLE ? meta_buf : src_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo meta_info{
+      meta_buf != VK_NULL_HANDLE ? meta_buf : src_buf, 0, VK_WHOLE_SIZE};
 
   VkWriteDescriptorSet writes[3]{};
   writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -98,21 +101,36 @@ static void dispatch_copy_shader(
   // Mirrors mlx/dtype.h Dtype ordering
   auto dtype_to_enum = [](Dtype dt) -> uint32_t {
     switch (dt) {
-      case bool_:    return 0;
-      case uint8:    return 1;
-      case uint16:   return 2;
-      case uint32:   return 3;
-      case uint64:   return 4;
-      case int8:     return 5;
-      case int16:    return 6;
-      case int32:    return 7;
-      case int64:    return 8;
-      case float16:  return 9;
-      case bfloat16: return 10;
-      case float32:  return 11;
-      case float64:  return 12;
-      case complex64: return 13;
-      default:       return 11; // fallback float32
+      case bool_:
+        return 0;
+      case uint8:
+        return 1;
+      case uint16:
+        return 2;
+      case uint32:
+        return 3;
+      case uint64:
+        return 4;
+      case int8:
+        return 5;
+      case int16:
+        return 6;
+      case int32:
+        return 7;
+      case int64:
+        return 8;
+      case float16:
+        return 9;
+      case bfloat16:
+        return 10;
+      case float32:
+        return 11;
+      case float64:
+        return 12;
+      case complex64:
+        return 13;
+      default:
+        return 11; // fallback float32
     }
   };
 
@@ -130,7 +148,8 @@ static void dispatch_copy_shader(
   } pc;
 
   size_t n = 1;
-  for (auto d : data_shape) n *= d;
+  for (auto d : data_shape)
+    n *= d;
 
   pc.n = static_cast<uint32_t>(n);
   pc.copy_type = static_cast<uint32_t>(ctype);
@@ -139,20 +158,23 @@ static void dispatch_copy_shader(
   pc.dst_stride0 = o_strides.empty() ? 1 : static_cast<uint32_t>(o_strides[0]);
   pc.elem_size = vulkan::dtype_size(in.dtype()); // source element size
 
-  // Vulkan buffers do not natively encode the array offset, so we must add it here!
-  // array::offset() is strictly evaluated in bytes, while copy.comp offsets are in elements.
+  // Vulkan buffers do not natively encode the array offset, so we must add it
+  // here! array::offset() is strictly evaluated in bytes, while copy.comp
+  // offsets are in elements.
   uint32_t in_base_elem_offset = in.offset() / in.itemsize();
   uint32_t out_base_elem_offset = out.offset() / out.itemsize();
 
   pc.src_offset = static_cast<uint32_t>(i_offset + in_base_elem_offset);
   pc.dst_offset = static_cast<uint32_t>(o_offset + out_base_elem_offset);
-  
+
   pc.src_dtype = dtype_to_enum(in.dtype());
   pc.dst_dtype = dtype_to_enum(out.dtype());
 
-  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
 
   uint32_t groups = vulkan::div_ceil(n, vulkan::WORKGROUP_SIZE);
   vkCmdDispatch(cmd, groups, 1, 1);
@@ -161,16 +183,22 @@ static void dispatch_copy_shader(
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
   barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd,
+  vkCmdPipelineBarrier(
+      cmd,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0, 1, &barrier, 0, nullptr, 0, nullptr);
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
 }
 
 void copy_gpu(const array& in, array& out, CopyType ctype, const Stream& s) {
-  bool donated = set_copy_output_data(in, out, ctype, [&](size_t n) {
-    return allocator::malloc(n);
-  });
+  bool donated = set_copy_output_data(
+      in, out, ctype, [&](size_t n) { return allocator::malloc(n); });
   if (donated && in.dtype() == out.dtype()) {
     return; // Same type, buffer donated - nothing to copy
   }
@@ -179,10 +207,6 @@ void copy_gpu(const array& in, array& out, CopyType ctype, const Stream& s) {
   }
   copy_gpu_inplace(in, out, ctype, s);
 }
-
-
-
-
 
 void copy_gpu_inplace(
     const array& in,
@@ -196,13 +220,19 @@ void copy_gpu_inplace(
     const Stream& s,
     std::optional<array> dynamic_i_offset,
     std::optional<array> dynamic_o_offset) {
-  if (out.size() == 0) return;
-  dispatch_copy_shader(in, out, data_shape, i_strides, o_strides, i_offset, o_offset, ctype, s);
+  if (out.size() == 0)
+    return;
+  dispatch_copy_shader(
+      in, out, data_shape, i_strides, o_strides, i_offset, o_offset, ctype, s);
 }
 
 void fill_gpu(const array& val, array& out, const Stream& s) {
-  // Fill is a scalar broadcast copy
-  copy_gpu_inplace(val, out, CopyType::Scalar, s);
+  // Scalar broadcast: data_shape must be out.shape() so n = out.size() threads
+  // are dispatched. The 4-arg overload uses in.shape() which is {} for a
+  // scalar, causing only 1 thread to run and leaving remaining elements at
+  // zero.
+  copy_gpu_inplace(
+      val, out, out.shape(), {}, out.strides(), 0, 0, CopyType::Scalar, s);
 }
 
 void reshape_gpu(const array& in, array& out, Stream s) {
@@ -223,6 +253,5 @@ void reshape_gpu(const array& in, array& out, Stream s) {
     shared_buffer_reshape(in, out_strides, out);
   }
 }
-
 
 } // namespace mlx::core

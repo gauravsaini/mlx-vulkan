@@ -56,6 +56,7 @@ void main() {
 
     if (out_idx >= params.n_outputs) return;
 
+
     // Strided access formula: handles any axis reduction for row-contiguous inputs.
     // For output index out_idx and reduction step i:
     //   in_idx = (out_idx / inner) * outer_stride + i * inner + (out_idx % inner)

@@ -14,8 +14,8 @@
 
 #include <cassert>
 #include <cstdio>
-#include <stdexcept>
 #include <sstream>
+#include <stdexcept>
 
 namespace mlx::core {
 
@@ -39,8 +39,7 @@ VulkanAllocator::VulkanAllocator() {
   }
   // Default limit: 95% of device-local memory, capped at 16GB
   memory_limit_ = std::min(
-      static_cast<size_t>(total_device_mem * 0.95),
-      size_t{1ULL << 34});
+      static_cast<size_t>(total_device_mem * 0.95), size_t{1ULL << 34});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +48,8 @@ VulkanAllocator::VulkanAllocator() {
 
 allocator::Buffer VulkanAllocator::malloc(size_t size) {
   if (size == 0) {
-    return allocator::Buffer{new VulkanBuffer{VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr}};
+    return allocator::Buffer{
+        new VulkanBuffer{VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr}};
   }
 
   // Pad to 4 bytes so that shaders can read/write 32-bit uints safely
@@ -61,21 +61,27 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
   buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   buf_info.size = alloc_size;
   buf_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                   VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   buf_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
   // Prefer device-local; for integrated GPUs VMA will pick host-visible
   alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                     VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
+  // Ensure that memory maps are automatically flushed to GPU without manual
+  // vmaFlushAllocation
+  alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
   VkBuffer vk_buffer;
   VmaAllocation allocation;
   VkResult res = vmaCreateBuffer(
-      dev.vma_allocator(), &buf_info, &alloc_info,
-      &vk_buffer, &allocation, nullptr);
+      dev.vma_allocator(),
+      &buf_info,
+      &alloc_info,
+      &vk_buffer,
+      &allocation,
+      nullptr);
 
   if (res != VK_SUCCESS) {
     std::ostringstream msg;
@@ -110,7 +116,8 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
 
 void VulkanAllocator::free(allocator::Buffer buffer) {
   auto* buf = static_cast<VulkanBuffer*>(buffer.ptr());
-  if (!buf) return;
+  if (!buf)
+    return;
   if (buf->size == 0) {
     delete buf;
     return;
@@ -122,19 +129,21 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
 
   // We must defer destruction until the GPU has finished executing all commands
   // that might be referencing this buffer. Apple Metal achieves this implicitly
-  // via pooled reference counting; for Vulkan, we push it to the completion handler.
-  vulkan::device(stream.device).add_completed_handler(stream, [buf, dev = &dev]() {
-    if (buf->mapped_ptr) {
-      vmaUnmapMemory(dev->vma_allocator(), buf->allocation);
-    }
-    vmaDestroyBuffer(dev->vma_allocator(), buf->buffer, buf->allocation);
+  // via pooled reference counting; for Vulkan, we push it to the completion
+  // handler.
+  vulkan::device(stream.device)
+      .add_completed_handler(stream, [buf, dev = &dev]() {
+        if (buf->mapped_ptr) {
+          vmaUnmapMemory(dev->vma_allocator(), buf->allocation);
+        }
+        vmaDestroyBuffer(dev->vma_allocator(), buf->buffer, buf->allocation);
 
-    {
-      std::lock_guard<std::mutex> lk(allocator().mutex_);
-      allocator().active_memory_ -= buf->size;
-    }
-    delete buf;
-  });
+        {
+          std::lock_guard<std::mutex> lk(allocator().mutex_);
+          allocator().active_memory_ -= buf->size;
+        }
+        delete buf;
+      });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,10 +163,7 @@ allocator::Buffer VulkanAllocator::make_buffer(void* ptr, size_t size) {
   // Crucially, when `release` is called on this new wrapper, we will ONLY
   // delete the wrapper (`new_buf`), not the underlying Vulkan memory.
   auto* new_buf = new VulkanBuffer{
-      src_buf->buffer,
-      src_buf->allocation,
-      size,
-      src_buf->mapped_ptr};
+      src_buf->buffer, src_buf->allocation, size, src_buf->mapped_ptr};
 
   return allocator::Buffer{new_buf};
 }
@@ -182,7 +188,8 @@ void VulkanAllocator::release(allocator::Buffer buffer) {
 
 size_t VulkanAllocator::size(allocator::Buffer buffer) const {
   auto* buf = static_cast<VulkanBuffer*>(buffer.ptr());
-  if (!buf) return 0;
+  if (!buf)
+    return 0;
   return buf->size;
 }
 
@@ -191,7 +198,8 @@ size_t VulkanAllocator::size(allocator::Buffer buffer) const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
-  if (size == 0) return nullptr;
+  if (size == 0)
+    return nullptr;
 
   auto& dev = device(mlx::core::Device{mlx::core::Device::gpu, 0});
 
@@ -201,31 +209,37 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
   buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   buf_info.size = alloc_size;
   buf_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // needed for shader binding
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // needed for shader binding
   buf_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
   alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
+      VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
   VkBuffer vk_buffer;
   VmaAllocation allocation;
   VmaAllocationInfo vma_info{};
   VkResult res = vmaCreateBuffer(
-      dev.vma_allocator(), &buf_info, &alloc_info,
-      &vk_buffer, &allocation, &vma_info);
+      dev.vma_allocator(),
+      &buf_info,
+      &alloc_info,
+      &vk_buffer,
+      &allocation,
+      &vma_info);
 
   if (res != VK_SUCCESS) {
-    throw std::runtime_error("[vulkan::alloc_staging] Unable to allocate staging buffer");
+    throw std::runtime_error(
+        "[vulkan::alloc_staging] Unable to allocate staging buffer");
   }
 
   return new VulkanBuffer{vk_buffer, allocation, size, vma_info.pMappedData};
 }
 
 void VulkanAllocator::free_staging(VulkanBuffer* buf) {
-  if (!buf) return;
+  if (!buf)
+    return;
 
   auto stream = Stream{0, mlx::core::Device{mlx::core::Device::gpu, 0}};
   auto& dev = device(stream.device);
@@ -244,14 +258,17 @@ void VulkanAllocator::free_staging(VulkanBuffer* buf) {
 
 VkBuffer VulkanAllocator::vk_buffer(allocator::Buffer buf) const {
   auto* vb = static_cast<VulkanBuffer*>(buf.ptr());
-  if (!vb) return VK_NULL_HANDLE;
+  if (!vb)
+    return VK_NULL_HANDLE;
   return vb->buffer;
 }
 
 // Free function: get VkBuffer from array
 VkBuffer get_buffer(const array& arr) {
-  auto* vk_buf = static_cast<VulkanBuffer*>(const_cast<void*>(arr.buffer().ptr()));
-  if (!vk_buf) return VK_NULL_HANDLE;
+  auto* vk_buf =
+      static_cast<VulkanBuffer*>(const_cast<void*>(arr.buffer().ptr()));
+  if (!vk_buf)
+    return VK_NULL_HANDLE;
   return vk_buf->buffer;
 }
 
@@ -318,7 +335,8 @@ Allocator& allocator() {
 }
 
 void* Buffer::raw_ptr() {
-  if (!ptr_) return nullptr;
+  if (!ptr_)
+    return nullptr;
   auto* vk_buf = static_cast<vulkan::VulkanBuffer*>(ptr_);
 
   // Zero-sized buffers have no backing memory
@@ -330,25 +348,22 @@ void* Buffer::raw_ptr() {
     return vk_buf->mapped_ptr;
   }
 
-  fprintf(stderr, "[DEBUG] raw_ptr: Unmapped memory, attempting forced vmaMapMemory size=%zu\n", vk_buf->size);
   // For device-local without host-visible memory (discrete GPU),
   // we need a staging copy. Map via VMA with a forced mapping.
   auto& dev = vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
   void* mapped = nullptr;
   VkResult res = vmaMapMemory(dev.vma_allocator(), vk_buf->allocation, &mapped);
   if (res == VK_SUCCESS) {
-    fprintf(stderr, "[DEBUG] raw_ptr: Forced map success\n");
     vk_buf->mapped_ptr = mapped;
     return mapped;
   }
-
-  fprintf(stderr, "[DEBUG] raw_ptr: Forced map failed, using staging buffer sync!\n");
 
   // Fallback: allocate staging, copy, and return
   // This is the slow path for discrete GPUs
   auto* staging = vulkan::allocator().alloc_staging(vk_buf->size);
   if (!staging || !staging->mapped_ptr) {
-    if (staging) vulkan::allocator().free_staging(staging);
+    if (staging)
+      vulkan::allocator().free_staging(staging);
     return nullptr;
   }
 
