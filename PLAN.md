@@ -789,11 +789,10 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 #### 5. Fix Official MLX Test Suite (46% → 90%+)
 - Last audit: `test_array.py` 52/69 pass, `test_ops.py` 41/134 pass
 - Key failure categories:
-  - Missing GPU primitives: `AsStrided`, `Scatter` multi-axis, `ArgPartition`
-  - BF16 ops (see #1 above — single biggest category)
-  - `test_deep_graphs` hang (only known GPU deadlock remaining)
+  - Missing GPU primitives / Incorrect Implementations: `test_add`, `test_arange_corner_cases_cast`, `test_arange_overload_dispatch`, `test_array_equal`, `test_bitwise_ops`, `test_clip`, `test_complex_ops`, `test_complex_power`, `test_conjugate`, `test_cos`, `test_divmod`, `test_dynamic_slicing`
+  - `test_diag` induces a Python `Segmentation fault` via Apple's standard library extensions.
 - [ ] Profile failures with `python -m pytest tests/test_ops.py -v 2>&1 | grep FAIL`
-- [ ] Fix each category systematically (unblock BF16 first)
+- [ ] Fix each category systematically (complex float numbers, diagonal matrices)
 
 #### 6. Scan > 1024 Multi-pass GPU
 - Current: scan_size > 1024 falls to CPU
