@@ -1,5 +1,7 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
 
 // Unary operation constants — must match enum class UnaryOp in primitives.cpp
 #define UNARY_ABS       0
@@ -185,6 +187,21 @@ void main() {
         }
 
         out_data[word_idx] = packHalf2x16(halves);
+    } else if (params.input_elem_bytes == 3u) {
+        // bfloat16 path: two bf16 elements packed into one uint32 word
+        if ((idx & 1u) == 1u) return;
+
+        uint word_idx = idx >> 1u;
+        uint word = in_data[word_idx];
+        vec2 halves = unpackBfloat2x16(word);
+
+        halves.x = compute_op(halves.x);
+
+        if (idx + 1u < params.n) {
+            halves.y = compute_op(halves.y);
+        }
+
+        out_data[word_idx] = packBfloat2x16(halves);
     } else {
         // float32/int32 path: direct bit reinterpretation
         float val = uintBitsToFloat(in_data[idx]);

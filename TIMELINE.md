@@ -1,5 +1,28 @@
 # MLX Vulkan Backend — Change Timeline
 
+
+## UPDATED ON : 2026-03-02 (session 3)
+
+### feat (2026-03-02) — BF16 (bfloat16) Support in All Core Shaders
+
+1. **bfloat16 Core GLSL Support**:
+   - Created `bf16.glsl` containing `unpackBfloat2x16` and `packBfloat2x16` implementations replicating native `unpackHalf2x16` workflows over 32-bit `uint` blocks.
+   - Wired `bf16.glsl` into `unary.comp`, `binary.comp`, `reduce.comp`, `arg_reduce.comp`, `matmul.comp`, and `copy.comp`.
+
+2. **Dtype Parameterization via Push Constants**:
+   - Changed parameter structs in `unary.comp`, `binary.comp`, and `reduce.comp` to use `input_elem_bytes` (and `out_elem_bytes` for outputs) instead of generic `in.itemsize()`.
+   - `bfloat16` explicitly registers as `3u` element bytes preventing overlapping conflicts with `float16` (`2u`) logic.
+
+3. **C++ Temporary Float32 Mapping (Softmax, LayerNorm, RMSNorm)**:
+   - For complex, multi-pass algorithms like `softmax` and `normalization` (LayerNorm/RMSNorm), wrapped their execution natively via C++ allocations.
+   - Inserted `use_temp` arrays handling temporary float casting via updated `copy_gpu` upconversion pipelines before and after shader execution, sidestepping intricate 16-bit atomics.
+   - `Matmul` also maps its output to a `temp_out` float32 array before downcasting cleanly via `copy.comp` pipelines.
+
+4. **Tests**:
+   - Developed `test_bf16_unary.py`, `test_bf16_binary.py`, `test_bf16_reduce.py`, `test_bf16_matmul.py`, and `test_bf16_norm.py`.
+   - All scripts execute identically to the original MLX CPU backends providing exact IEEE array matching for Native Float (`float16/float32`) arrays.
+   - `numpy` compatibility fallback bindings for Python environments lacking strict `B` format string `dtype` hooks were bypassed safely validating memory correctness across MoltenVK.
+
 ## UPDATED ON : 2026-03-02 (session 2)
 
 ### cleanup (2026-03-02) — Remove all debug fprintf prints + fix duplicate return statements

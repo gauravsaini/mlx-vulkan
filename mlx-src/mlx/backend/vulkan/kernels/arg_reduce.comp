@@ -1,5 +1,8 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
+
 
 #define ARG_REDUCE_MAX 0
 #define ARG_REDUCE_MIN 1
@@ -30,6 +33,10 @@ float get_val(uint idx) {
     } else if (params.input_elem_bytes == 2u) {
         uint word = in_data[idx >> 1u];
         vec2 halves = unpackHalf2x16(word);
+        return ((idx & 1u) == 0u) ? halves.x : halves.y;
+    } else if (params.input_elem_bytes == 3u) {
+        uint word = in_data[idx >> 1u];
+        vec2 halves = unpackBfloat2x16(word);
         return ((idx & 1u) == 0u) ? halves.x : halves.y;
     } else {
         return uintBitsToFloat(in_data[idx]);

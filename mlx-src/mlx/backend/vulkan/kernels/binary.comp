@@ -2,6 +2,8 @@
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
 
 #define BINARY_ADD          0
 #define BINARY_SUB          1
@@ -266,18 +268,30 @@ void main() {
                 if (params.input_dtype == DTYPE_INT) r_byte = uint(op_int(int(a << 24) >> 24, int(b << 24) >> 24)) & 0xFFu;
                 else r_byte = op_uint(a, b) & 0xFFu;
             }
-        } else if (params.input_elem_bytes == 2u) {
-            uint a = read_u16_a(ai);
-            uint b = read_u16_b(bi);
+        } else if (params.input_elem_bytes == 2u || params.input_elem_bytes == 3u) {
+            uint ai = strided_idx_a(idx);
+            uint bi = strided_idx_b(idx);
+            uint ax = read_u16_a(ai);
+            uint bx = read_u16_b(bi);
             if (params.output_is_bool == 1u) {
                 if (params.input_dtype == DTYPE_FLOAT) {
-                    float fa = unpackHalf2x16(a).x;
-                    float fb = unpackHalf2x16(b).x;
+                    float fa, fb;
+                    if (params.input_elem_bytes == 3u) {
+                        fa = unpackBfloat2x16(ax).x;
+                        fb = unpackBfloat2x16(bx).x;
+                    } else {
+                        fa = unpackHalf2x16(ax).x;
+                        fb = unpackHalf2x16(bx).x;
+                    }
                     r_bool = cmp_float(fa, fb);
+                    r_byte = r_bool ? 1u : 0u;
                 } else if (params.input_dtype == DTYPE_INT) {
-                    r_bool = cmp_int((int(a) << 16) >> 16, (int(b) << 16) >> 16);
-                } else r_bool = cmp_uint(a, b);
-                r_byte = r_bool ? 1u : 0u;
+                    r_bool = cmp_int((int(ax) << 16) >> 16, (int(bx) << 16) >> 16);
+                    r_byte = r_bool ? 1u : 0u;
+                } else { // DTYPE_UINT
+                    r_bool = cmp_uint(ax, bx);
+                    r_byte = r_bool ? 1u : 0u;
+                }
             } else {
                 // Should not happen for output_bytes=1
                 r_byte = 0u;
@@ -305,7 +319,7 @@ void main() {
         }
         c_bool[idx] = uint8_t(r_byte);
 
-    } else if (out_elem_bytes == 2u) {
+    } else if (out_elem_bytes == 2u || out_elem_bytes == 3u) {
         if ((idx & 1u) != 0u) return;
         uint word_idx = idx >> 1u;
         uint out_word = 0u;
@@ -321,10 +335,20 @@ void main() {
             uint out_half;
 
             if (params.input_dtype == DTYPE_FLOAT) {
-                float fa = unpackHalf2x16(ax).x;
-                float fb = unpackHalf2x16(bx).x;
+                float fa, fb;
+                if (params.input_elem_bytes == 3u) {
+                    fa = unpackBfloat2x16(ax).x;
+                    fb = unpackBfloat2x16(bx).x;
+                } else {
+                    fa = unpackHalf2x16(ax).x;
+                    fb = unpackHalf2x16(bx).x;
+                }
                 float fr = op_float(fa, fb);
-                out_half = packHalf2x16(vec2(fr, 0.0)) & 0xFFFFu;
+                if (out_elem_bytes == 3u) {
+                    out_half = packBfloat2x16(vec2(fr, 0.0)) & 0xFFFFu;
+                } else {
+                    out_half = packHalf2x16(vec2(fr, 0.0)) & 0xFFFFu;
+                }
             } else if (params.input_dtype == DTYPE_INT) {
                 out_half = uint(op_int((int(ax) << 16) >> 16, (int(bx) << 16) >> 16)) & 0xFFFFu;
             } else {

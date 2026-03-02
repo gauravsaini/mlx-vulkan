@@ -231,7 +231,8 @@ void dispatch_binary(
   pc.op = op_id;
   pc.output_is_bool = output_is_bool ? 1u : 0u;
   pc.input_dtype = to_input_dtype(in_dtype);
-  pc.input_elem_bytes = static_cast<uint32_t>(in_dtype.size());
+  pc.input_elem_bytes =
+      in_dtype == bfloat16 ? 3u : static_cast<uint32_t>(in_dtype.size());
 
   const auto& out_shape = shape;
   const auto& a_strides = strides[0];
@@ -328,7 +329,7 @@ void dispatch_unary(
   } pc{
       static_cast<uint32_t>(out.size()),
       op_id,
-      static_cast<uint32_t>(in.itemsize()),
+      in.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(in.itemsize()),
       static_cast<uint32_t>(out.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -420,8 +421,8 @@ void Log::eval_gpu(const std::vector<array>& inputs, array& out) {
 // BitwiseInvert: fall back to CPU (requires XOR with all-ones broadcast)
 void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -648,13 +649,21 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     }
   }
 
+  bool is_f16 = (inputs[0].dtype() == float16 || inputs[0].dtype() == bfloat16);
   if (!inputs[0].flags().row_contiguous || !is_continuous_axes ||
-      (inputs[0].dtype() != float32 && inputs[0].dtype() != bool_)) {
+      (inputs[0].dtype() != float32 && !is_f16 &&
+       (inputs[0].dtype() != bool_ || out.dtype() != bool_))) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
   }
 
+  bool use_temp_out = is_f16 && out.dtype() != bool_;
+  std::optional<array> temp_out;
+  if (use_temp_out) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
   out.set_data(allocator::malloc(out.nbytes()));
 
   auto& encoder = vulkan::get_command_encoder(stream());
@@ -679,7 +688,7 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   VkBuffer in_buf = vulkan::get_buffer(raw_in);
-  VkBuffer out_buf = vulkan::get_buffer(out);
+  VkBuffer out_buf = vulkan::get_buffer(use_temp_out ? *temp_out : out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
@@ -741,8 +750,8 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t reduce_size;
     uint32_t n_outputs;
     uint32_t op;
-    uint32_t input_is_bool;
-    uint32_t output_is_bool;
+    uint32_t input_elem_bytes;
+    uint32_t out_elem_bytes;
     uint32_t inner; // product of dims after the reduce axes
     uint32_t outer_stride; // = reduce_size * inner
   } pc{
@@ -750,8 +759,9 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
       reduce_size,
       n_outputs,
       op_id,
-      raw_in.dtype() == bool_ ? 1u : 0u,
-      out.dtype() == bool_ ? 1u : 0u,
+      raw_in.dtype() == bfloat16 ? 3u
+                                 : static_cast<uint32_t>(raw_in.itemsize()),
+      static_cast<uint32_t>((use_temp_out ? *temp_out : out).itemsize()),
       inner,
       outer_stride};
 
@@ -778,12 +788,16 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
       nullptr,
       0,
       nullptr);
+
+  if (use_temp_out) {
+    copy_gpu(*temp_out, out, CopyType::General, stream());
+  }
 }
 
 void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
+  bool is_f16 = (inputs[0].dtype() == float16 || inputs[0].dtype() == bfloat16);
   if (!inputs[0].flags().row_contiguous ||
-      (inputs[0].dtype() != float32 && inputs[0].dtype() != float16 &&
-       inputs[0].dtype() != bool_)) {
+      (inputs[0].dtype() != float32 && !is_f16 && inputs[0].dtype() != bool_)) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
@@ -827,7 +841,9 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   uint32_t n_outputs = static_cast<uint32_t>(out.size() > 0 ? out.size() : 1);
   uint32_t reduce_size = static_cast<uint32_t>(inputs[0].size() / n_outputs);
   uint32_t op_id = (reduce_type_ == ArgReduce::ReduceType::ArgMax) ? 0u : 1u;
-  uint32_t elem_bytes = static_cast<uint32_t>(inputs[0].itemsize());
+  uint32_t elem_bytes = inputs[0].dtype() == bfloat16
+      ? 3u
+      : static_cast<uint32_t>(inputs[0].itemsize());
 
   // Compute inner: product of dims after the highest reduce axis
   int max_reduce_ax = axis_;
@@ -883,6 +899,26 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
+  const array& a = inputs[0];
+  const array& b = inputs[1];
+
+  bool a_ok =
+      a.dtype() == float32 || a.dtype() == float16 || a.dtype() == bfloat16;
+  bool b_ok =
+      b.dtype() == float32 || b.dtype() == float16 || b.dtype() == bfloat16;
+  if (!a_ok || !b_ok) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  bool use_temp_out = out.dtype() != float32;
+  std::optional<array> temp_out;
+  if (use_temp_out) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
   if (out.size() == 0)
     return;
@@ -890,9 +926,6 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
-
-  const array& a = inputs[0];
-  const array& b = inputs[1];
 
   uint32_t M = (a.ndim() >= 2) ? static_cast<uint32_t>(a.shape(-2)) : 1u;
   uint32_t K = static_cast<uint32_t>(a.shape(-1));
@@ -906,11 +939,11 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkBuffer a_buf = vulkan::get_buffer(a);
   VkBuffer b_buf = vulkan::get_buffer(b);
-  VkBuffer c_buf = vulkan::get_buffer(out);
+  VkBuffer c_buf = vulkan::get_buffer(use_temp_out ? *temp_out : out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("matmul", layout, ds_layout, 3, 28);
+  VkPipeline pipeline = dev.get_pipeline("matmul", layout, ds_layout, 3, 36);
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -943,7 +976,18 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t a_batch_stride;
     uint32_t b_batch_stride;
     uint32_t c_batch_stride;
-  } pc{M, N, K, batch, M * K, K * N, M * N};
+    uint32_t a_elem_bytes;
+    uint32_t b_elem_bytes;
+  } pc{
+      M,
+      N,
+      K,
+      batch,
+      M * K,
+      K * N,
+      M * N,
+      a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize()),
+      b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -969,6 +1013,10 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       nullptr,
       0,
       nullptr);
+
+  if (use_temp_out) {
+    copy_gpu(*temp_out, out, CopyType::General, stream());
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -976,17 +1024,32 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
+  bool use_temp = inputs[0].dtype() != float32;
+  std::optional<array> temp_in;
+  std::optional<array> temp_out;
+  if (use_temp) {
+    temp_in = array(inputs[0].shape(), float32, nullptr, {});
+    temp_in->set_data(allocator::malloc(temp_in->nbytes()));
+    copy_gpu(inputs[0], *temp_in, CopyType::General, stream());
+
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+
+  const array& raw_in = use_temp ? *temp_in : inputs[0];
+  const array& raw_out = use_temp ? *temp_out : out;
+
   out.set_data(allocator::malloc(out.nbytes()));
-  // Zero-init output so first-run shader execution does not read stale
-  // allocation data
+  if (use_temp)
+    memset(temp_out->data<void>(), 0, temp_out->nbytes());
   memset(out.data<void>(), 0, out.nbytes());
 
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  VkBuffer in_buf = vulkan::get_buffer(inputs[0]);
-  VkBuffer out_buf = vulkan::get_buffer(out);
+  VkBuffer in_buf = vulkan::get_buffer(raw_in);
+  VkBuffer out_buf = vulkan::get_buffer(raw_out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
@@ -1327,8 +1390,8 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 // GatherAxis: simple axis-indexed gather → GPU dispatch
@@ -1378,8 +1441,8 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
 // General Scatter: multi-axis → CPU fallback
 void Scatter::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 // ScatterAxis: simple axis-indexed scatter → GPU dispatch
@@ -1540,20 +1603,20 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void ArgSort::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 void Partition::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1972,14 +2035,14 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void Imag::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 void Real::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1988,8 +2051,8 @@ void Real::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
   vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  eval_cpu(inputs, out);
+  return;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2690,6 +2753,34 @@ void LayerNorm::eval_gpu(
   auto& out = outputs[0];
   const auto& in = inputs[0];
 
+  bool use_temp = in.dtype() != float32;
+
+  std::optional<array> temp_in;
+  std::optional<array> temp_weight;
+  std::optional<array> temp_bias;
+  std::optional<array> temp_out;
+
+  if (use_temp) {
+    temp_in = array(in.shape(), float32, nullptr, {});
+    temp_in->set_data(allocator::malloc(temp_in->nbytes()));
+    copy_gpu(in, *temp_in, CopyType::General, stream());
+
+    if (inputs.size() > 1 && inputs[1].size() > 0) {
+      temp_weight = array(inputs[1].shape(), float32, nullptr, {});
+      temp_weight->set_data(allocator::malloc(temp_weight->nbytes()));
+      copy_gpu(inputs[1], *temp_weight, CopyType::General, stream());
+    }
+
+    if (inputs.size() > 2 && inputs[2].size() > 0) {
+      temp_bias = array(inputs[2].shape(), float32, nullptr, {});
+      temp_bias->set_data(allocator::malloc(temp_bias->nbytes()));
+      copy_gpu(inputs[2], *temp_bias, CopyType::General, stream());
+    }
+
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+
   uint32_t n_cols = static_cast<uint32_t>(in.shape().back());
   uint32_t n_rows = static_cast<uint32_t>(in.size() / n_cols);
 
@@ -2704,10 +2795,13 @@ void LayerNorm::eval_gpu(
   bool has_weight = inputs.size() > 1 && inputs[1].size() > 0;
   bool has_bias = inputs.size() > 2 && inputs[2].size() > 0;
 
-  VkBuffer in_buf = vulkan::get_buffer(in);
-  VkBuffer weight_buf = has_weight ? vulkan::get_buffer(inputs[1]) : in_buf;
-  VkBuffer bias_buf = has_bias ? vulkan::get_buffer(inputs[2]) : in_buf;
-  VkBuffer out_buf = vulkan::get_buffer(out);
+  VkBuffer in_buf = vulkan::get_buffer(use_temp ? *temp_in : in);
+  VkBuffer weight_buf = has_weight
+      ? vulkan::get_buffer(use_temp ? *temp_weight : inputs[1])
+      : in_buf;
+  VkBuffer bias_buf =
+      has_bias ? vulkan::get_buffer(use_temp ? *temp_bias : inputs[2]) : in_buf;
+  VkBuffer out_buf = vulkan::get_buffer(use_temp ? *temp_out : out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
@@ -2766,6 +2860,10 @@ void LayerNorm::eval_gpu(
       nullptr,
       0,
       nullptr);
+
+  if (use_temp) {
+    copy_gpu(*temp_out, out, CopyType::General, stream());
+  }
 }
 
 NO_GPU_MULTI(LayerNormVJP)
@@ -2782,6 +2880,27 @@ void RMSNorm::eval_gpu(
   auto& out = outputs[0];
   const auto& in = inputs[0];
 
+  bool use_temp = in.dtype() != float32;
+
+  std::optional<array> temp_in;
+  std::optional<array> temp_weight;
+  std::optional<array> temp_out;
+
+  if (use_temp) {
+    temp_in = array(in.shape(), float32, nullptr, {});
+    temp_in->set_data(allocator::malloc(temp_in->nbytes()));
+    copy_gpu(in, *temp_in, CopyType::General, stream());
+
+    if (inputs.size() > 1 && inputs[1].size() > 0) {
+      temp_weight = array(inputs[1].shape(), float32, nullptr, {});
+      temp_weight->set_data(allocator::malloc(temp_weight->nbytes()));
+      copy_gpu(inputs[1], *temp_weight, CopyType::General, stream());
+    }
+
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+
   uint32_t n_cols = static_cast<uint32_t>(in.shape().back());
   uint32_t n_rows = static_cast<uint32_t>(in.size() / n_cols);
 
@@ -2795,9 +2914,11 @@ void RMSNorm::eval_gpu(
 
   bool has_weight = inputs.size() > 1 && inputs[1].size() > 0;
 
-  VkBuffer in_buf = vulkan::get_buffer(in);
-  VkBuffer weight_buf = has_weight ? vulkan::get_buffer(inputs[1]) : in_buf;
-  VkBuffer out_buf = vulkan::get_buffer(out);
+  VkBuffer in_buf = vulkan::get_buffer(use_temp ? *temp_in : in);
+  VkBuffer weight_buf = has_weight
+      ? vulkan::get_buffer(use_temp ? *temp_weight : inputs[1])
+      : in_buf;
+  VkBuffer out_buf = vulkan::get_buffer(use_temp ? *temp_out : out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
@@ -2856,6 +2977,10 @@ void RMSNorm::eval_gpu(
       nullptr,
       0,
       nullptr);
+
+  if (use_temp) {
+    copy_gpu(*temp_out, out, CopyType::General, stream());
+  }
 }
 
 NO_GPU_MULTI(RMSNormVJP)

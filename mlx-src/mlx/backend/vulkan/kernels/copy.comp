@@ -1,5 +1,9 @@
 #version 450
 #extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
+
 
 // Copy type constants
 #define COPY_SCALAR          0
@@ -85,9 +89,16 @@ float read_as_float(uint src_idx) {
         return float(int(src_data[src_idx]));
     } else if (src_dtype == DTYPE_UINT32) {
         return float(src_data[src_idx]);
+    } else if (src_dtype == DTYPE_FLOAT16) {
+        uint word = src_data[src_idx / 2u];
+        uint half_val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackHalf2x16(half_val).x;
+    } else if (src_dtype == DTYPE_BFLOAT16) {
+        uint word = src_data[src_idx / 2u];
+        uint half_val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackBfloat2x16(half_val).x;
     } else {
-        // float16/bfloat16/float32 — treat as float32 for now
-        // (correct only for float32; f16/bf16 will need proper conversion later)
+        // float32 output
         return uintBitsToFloat(src_data[src_idx]);
     }
 }
@@ -104,6 +115,18 @@ void write_float(uint dst_idx, float val) {
         dst_data[dst_idx] = uint(int(val));
     } else if (dst_dtype == DTYPE_UINT32) {
         dst_data[dst_idx] = uint(val);
+    } else if (dst_dtype == DTYPE_FLOAT16 || dst_dtype == DTYPE_BFLOAT16) {
+        uint word_idx = dst_idx / 2u;
+        uint half_val = (dst_dtype == DTYPE_BFLOAT16) 
+            ? (packBfloat2x16(vec2(val, 0.0)) & 0xFFFFu)
+            : (packHalf2x16(vec2(val, 0.0)) & 0xFFFFu);
+        if ((dst_idx & 1u) == 0u) {
+            atomicAnd(dst_data[word_idx], 0xFFFF0000u);
+            atomicOr(dst_data[word_idx], half_val);
+        } else {
+            atomicAnd(dst_data[word_idx], 0x0000FFFFu);
+            atomicOr(dst_data[word_idx], half_val << 16u);
+        }
     } else {
         // float32 output
         dst_data[dst_idx] = floatBitsToUint(val);

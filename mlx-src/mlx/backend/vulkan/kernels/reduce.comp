@@ -1,6 +1,10 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
+
 
 // Reduction operation constants
 #define REDUCE_SUM  0
@@ -25,8 +29,8 @@ layout(push_constant) uniform Params {
     uint reduce_size;  // number of elements to reduce per output
     uint n_outputs;    // number of independent reductions
     uint op;           // REDUCE_*
-    uint input_is_bool;  // 1 if input dtype is bool (uint8_t)
-    uint output_is_bool; // 1 if output dtype is bool (uint8_t)
+    uint input_elem_bytes;
+    uint out_elem_bytes;
     uint inner;        // product of dims after the reduce axes (1 for last-axis reduce)
     uint outer_stride; // = reduce_size * inner (stride between outer groups)
 } params;
@@ -44,8 +48,8 @@ float identity_f(uint op) {
 
 float combine_f(uint op, float a, float b) {
     if (op == REDUCE_SUM)  return a + b;
-    if (op == REDUCE_MAX)  return max(a, b);
-    if (op == REDUCE_MIN)  return min(a, b);
+    if (op == REDUCE_MAX)  return (isnan(a) || isnan(b)) ? (a + b) : max(a, b);
+    if (op == REDUCE_MIN)  return (isnan(a) || isnan(b)) ? (a + b) : min(a, b);
     if (op == REDUCE_PROD) return a * b;
     return a + b;
 }
@@ -71,7 +75,7 @@ void main() {
         uint acc = (params.op == REDUCE_AND) ? 1u : 0u;
         for (uint i = tid; i < params.reduce_size; i += 256) {
             uint idx = in_base_str + i * params.inner;
-            uint val = (params.input_is_bool == 1u)
+            uint val = (params.input_elem_bytes == 1u)
                 ? uint(uint(in_bool[idx]) != 0u ? 1u : 0u)
                 : ((in_raw[idx] != 0u) ? 1u : 0u);
             if (params.op == REDUCE_AND) acc = acc & (val != 0u ? 1u : 0u);
@@ -92,7 +96,7 @@ void main() {
         }
 
         if (tid == 0) {
-            if (params.output_is_bool == 1u)
+            if (params.out_elem_bytes == 1u)
                 out_bool[out_idx] = uint8_t(sdata_uint[0] != 0u ? 1 : 0);
             else
                 out_data[out_idx] = float(sdata_uint[0]);
@@ -102,10 +106,19 @@ void main() {
         for (uint i = tid; i < params.reduce_size; i += 256) {
             uint idx = in_base_str + i * params.inner;
             float val;
-            if (params.input_is_bool == 1u)
-                val = float(uint(in_bool[idx]));
-            else
+            if (params.input_elem_bytes == 1u) {
+                val = uintBitsToFloat(uint(in_bool[idx]));
+            } else if (params.input_elem_bytes == 2u) {
+                uint word = in_raw[idx >> 1u];
+                uint half_val = (idx & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+                val = unpackHalf2x16(half_val).x;
+            } else if (params.input_elem_bytes == 3u) {
+                uint word = in_raw[idx >> 1u];
+                uint half_val = (idx & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+                val = unpackBfloat2x16(half_val).x;
+            } else {
                 val = uintBitsToFloat(in_raw[idx]);
+            }
             acc = combine_f(params.op, acc, val);
         }
 
@@ -120,7 +133,7 @@ void main() {
         }
 
         if (tid == 0) {
-            if (params.output_is_bool == 1u)
+            if (params.out_elem_bytes == 1u)
                 out_bool[out_idx] = uint8_t(sdata[0] != 0.0 ? 1 : 0);
             else
                 out_data[out_idx] = sdata[0];
