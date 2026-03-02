@@ -1,20 +1,42 @@
 #version 450
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
 
-// Two-output binary operations (e.g., divmod)
 #define BINARY_TWO_DIVMOD 0
+
+// DTYPE_* constants (must match copy.comp and mlx/dtype.h Dtype ordering)
+#define DTYPE_BOOL      0
+#define DTYPE_UINT8     1
+#define DTYPE_UINT16    2
+#define DTYPE_UINT32    3
+#define DTYPE_UINT64    4
+#define DTYPE_INT8      5
+#define DTYPE_INT16     6
+#define DTYPE_INT32     7
+#define DTYPE_INT64     8
+#define DTYPE_FLOAT16   9
+#define DTYPE_BFLOAT16  10
+#define DTYPE_FLOAT32   11
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly  buffer InA   { float a_data[];   };
-layout(set = 0, binding = 1) readonly  buffer InB   { float b_data[];   };
-layout(set = 0, binding = 2) writeonly buffer Out0  { float out0_data[]; };
-layout(set = 0, binding = 3) writeonly buffer Out1  { float out1_data[]; };
+layout(set = 0, binding = 0) readonly  buffer InA   { uint  a_raw[];    };
+layout(set = 0, binding = 1) readonly  buffer InB   { uint  b_raw[];    };
+layout(set = 0, binding = 2)           buffer Out0  { uint  out0_raw[]; };
+layout(set = 0, binding = 3)           buffer Out1  { uint  out1_raw[]; };
+
+layout(set = 0, binding = 0) readonly  buffer InA8  { uint8_t a8[];   };
+layout(set = 0, binding = 1) readonly  buffer InB8  { uint8_t b8[];   };
+layout(set = 0, binding = 2)           buffer Out08 { uint8_t out08[]; };
+layout(set = 0, binding = 3)           buffer Out18 { uint8_t out18[]; };
 
 layout(push_constant) uniform Params {
     uint n;
     uint op;
     uint a_is_scalar;
     uint b_is_scalar;
+    uint dtype;
 } params;
 
 void main() {
@@ -23,11 +45,122 @@ void main() {
 
     uint ai = params.a_is_scalar == 1u ? 0u : idx;
     uint bi = params.b_is_scalar == 1u ? 0u : idx;
-    float a = a_data[ai];
-    float b = b_data[bi];
+    uint dt = params.dtype;
 
+    // Read A
+    float a;
+    if (dt == DTYPE_UINT8 || dt == DTYPE_BOOL) {
+        a = float(uint(a8[ai]));
+    } else if (dt == DTYPE_INT8) {
+        uint r = uint(a8[ai]);
+        a = float((r & 0x80u) != 0u ? int(r) - 256 : int(r));
+    } else if (dt == DTYPE_UINT16) {
+        uint word = a_raw[ai / 2u];
+        a = float((ai & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u));
+    } else if (dt == DTYPE_INT16) {
+        uint word = a_raw[ai / 2u];
+        uint v = (ai & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        a = float(int(v << 16u) >> 16);
+    } else if (dt == DTYPE_FLOAT16) {
+        uint word = a_raw[ai / 2u];
+        uint hv = (ai & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        a = unpackHalf2x16(hv).x;
+    } else if (dt == DTYPE_BFLOAT16) {
+        uint word = a_raw[ai / 2u];
+        uint hv = (ai & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        a = unpackBfloat2x16(hv).x;
+    } else if (dt == DTYPE_INT32) {
+        a = float(int(a_raw[ai]));
+    } else if (dt == DTYPE_UINT32) {
+        a = float(a_raw[ai]);
+    } else {
+        a = uintBitsToFloat(a_raw[ai]);
+    }
+
+    // Read B
+    float b;
+    if (dt == DTYPE_UINT8 || dt == DTYPE_BOOL) {
+        b = float(uint(b8[bi]));
+    } else if (dt == DTYPE_INT8) {
+        uint r = uint(b8[bi]);
+        b = float((r & 0x80u) != 0u ? int(r) - 256 : int(r));
+    } else if (dt == DTYPE_UINT16) {
+        uint word = b_raw[bi / 2u];
+        b = float((bi & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u));
+    } else if (dt == DTYPE_INT16) {
+        uint word = b_raw[bi / 2u];
+        uint v = (bi & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        b = float(int(v << 16u) >> 16);
+    } else if (dt == DTYPE_FLOAT16) {
+        uint word = b_raw[bi / 2u];
+        uint hv = (bi & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        b = unpackHalf2x16(hv).x;
+    } else if (dt == DTYPE_BFLOAT16) {
+        uint word = b_raw[bi / 2u];
+        uint hv = (bi & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        b = unpackBfloat2x16(hv).x;
+    } else if (dt == DTYPE_INT32) {
+        b = float(int(b_raw[bi]));
+    } else if (dt == DTYPE_UINT32) {
+        b = float(b_raw[bi]);
+    } else {
+        b = uintBitsToFloat(b_raw[bi]);
+    }
+
+    float q = floor(a / b);
+    float r = a - q * b;
+
+    // Write quotient and remainder
     if (params.op == BINARY_TWO_DIVMOD) {
-        out0_data[idx] = floor(a / b);  // quotient
-        out1_data[idx] = mod(a, b);     // remainder
+        if (dt == DTYPE_UINT8 || dt == DTYPE_BOOL) {
+            out08[idx] = uint8_t(uint(q));
+            out18[idx] = uint8_t(uint(r));
+        } else if (dt == DTYPE_INT8) {
+            int cq = int(q); int cr = int(r);
+            out08[idx] = uint8_t(cq < 0 ? uint(cq + 256) : uint(cq));
+            out18[idx] = uint8_t(cr < 0 ? uint(cr + 256) : uint(cr));
+        } else if (dt == DTYPE_UINT16 || dt == DTYPE_INT16) {
+            uint word0 = idx / 2u;
+            uint vq = (dt == DTYPE_INT16) ? (uint(int(q)) & 0xFFFFu) : (uint(clamp(q,0.,65535.)) & 0xFFFFu);
+            uint vr = (dt == DTYPE_INT16) ? (uint(int(r)) & 0xFFFFu) : (uint(clamp(r,0.,65535.)) & 0xFFFFu);
+            if ((idx & 1u) == 0u) {
+                atomicAnd(out0_raw[word0], 0xFFFF0000u); atomicOr(out0_raw[word0], vq);
+                atomicAnd(out1_raw[word0], 0xFFFF0000u); atomicOr(out1_raw[word0], vr);
+            } else {
+                atomicAnd(out0_raw[word0], 0x0000FFFFu); atomicOr(out0_raw[word0], vq << 16u);
+                atomicAnd(out1_raw[word0], 0x0000FFFFu); atomicOr(out1_raw[word0], vr << 16u);
+            }
+        } else if (dt == DTYPE_FLOAT16) {
+            uint word0 = idx / 2u;
+            uint hq = packHalf2x16(vec2(q, 0.0)) & 0xFFFFu;
+            uint hr = packHalf2x16(vec2(r, 0.0)) & 0xFFFFu;
+            if ((idx & 1u) == 0u) {
+                atomicAnd(out0_raw[word0], 0xFFFF0000u); atomicOr(out0_raw[word0], hq);
+                atomicAnd(out1_raw[word0], 0xFFFF0000u); atomicOr(out1_raw[word0], hr);
+            } else {
+                atomicAnd(out0_raw[word0], 0x0000FFFFu); atomicOr(out0_raw[word0], hq << 16u);
+                atomicAnd(out1_raw[word0], 0x0000FFFFu); atomicOr(out1_raw[word0], hr << 16u);
+            }
+        } else if (dt == DTYPE_BFLOAT16) {
+            uint word0 = idx / 2u;
+            uint hq = packBfloat2x16(vec2(q, 0.0)) & 0xFFFFu;
+            uint hr = packBfloat2x16(vec2(r, 0.0)) & 0xFFFFu;
+            if ((idx & 1u) == 0u) {
+                atomicAnd(out0_raw[word0], 0xFFFF0000u); atomicOr(out0_raw[word0], hq);
+                atomicAnd(out1_raw[word0], 0xFFFF0000u); atomicOr(out1_raw[word0], hr);
+            } else {
+                atomicAnd(out0_raw[word0], 0x0000FFFFu); atomicOr(out0_raw[word0], hq << 16u);
+                atomicAnd(out1_raw[word0], 0x0000FFFFu); atomicOr(out1_raw[word0], hr << 16u);
+            }
+        } else if (dt == DTYPE_INT32) {
+            out0_raw[idx] = uint(int(q));
+            out1_raw[idx] = uint(int(r));
+        } else if (dt == DTYPE_UINT32) {
+            out0_raw[idx] = uint(max(q, 0.0));
+            out1_raw[idx] = uint(max(r, 0.0));
+        } else {
+            out0_raw[idx] = floatBitsToUint(q);
+            out1_raw[idx] = floatBitsToUint(r);
+        }
     }
 }

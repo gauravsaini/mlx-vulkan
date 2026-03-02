@@ -13,11 +13,11 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
 **Current device**: Apple M1 via MoltenVK (macOS development)
-**Last verified**: 2026-03-01
+**Last verified**: 2026-03-03
 
 ---
 
-## Build Status (as of 2026-03-02)
+## Build Status (as of 2026-03-03)
 
 **Build dir**: `build/temp.macosx-15.0-arm64-cpython-311/mlx.core/`
 **Python**: 3.11 (`python3.11`) — `.so` is `core.cpython-311-darwin.so`
@@ -32,7 +32,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 | `test_stage8_unary.py` (Unary GPU ops)                               | ✅ 17/17 PASS           |
 | `test_stage9_binary.py` (Binary GPU ops)                             | ✅ PASS                 |
 | `test_stage10_reduce.py` (Reductions)                                | ✅ PASS                 |
-| `test_stage11_matmul.py` (Matmul)                                    | ✅ PASS                 |
+| `test_stage11_matmul.py` (Matmul)                                    | ❌ 1/2 (batch matmul)   |
 | `test_stage12_nn_ops.py` (Softmax/ArgOps)                            | ✅ PASS                 |
 | `test_stage13_indexing.py` (Gather/GatherAxis/ScatterAxis)           | ✅ 7/7 PASS             |
 | `test_stage14_sort.py` (Sort)                                        | ✅ 6/6 PASS             |
@@ -67,7 +67,49 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 ---
 
+## Known Issues / Remaining Failures (2026-03-03)
+
+### Official test_ops.py — Still Failing (~11/36 tested)
+
+- `test_array_equal` — `equal_nan=True` not implemented on GPU
+- `test_bitwise_ops` — left_shift/right_shift for uint16/int16/uint64/int64 not in binary.comp
+- `test_complex_ops` — complex64 dtype unsupported on GPU (expected limitation)
+- `test_cos` / `test_sin` — precision near zero on GPU vs CPU (denormal handling)
+- `test_divmod` — still failing for some dtype combinations (partial fix applied)
+- `test_dynamic_slicing` — dynamic offset computation stub returns 0
+- `test_hadamard` — CPU fallback gives ~1.0 off vs reference
+- `test_inner` — shape mismatch in inner product computation
+- `test_sort` — multi-axis sort wrong for int32 and float32
+
+### Stage Tests — One Failure
+
+- `test_stage11_matmul.py` — batch matmul `(4,16,32)@(4,32,16)` fails
+
+---
+
 ## Known Issues / Critical Bugs Fixed
+
+### Fixed (2026-03-03) — Dtype Coverage in copy/arange/binary/divmod shaders
+
+27. **copy.comp missing uint16/int16/int64/uint64** (`kernels/copy.comp`):
+    - Added DTYPE_UINT16, INT16 cases to `read_as_float()` (16-bit packed reads) and `write_float()` (atomic 16-bit writes).
+    - Added DTYPE_INT64, UINT64 two-word reads and writes for 64-bit types.
+
+28. **arange.comp integer dtype + inf-step NaN guard** (`kernels/arange.comp`):
+    - Added `out_dtype` push constant; push size 12 → 16.
+    - Integer types (int32/uint32/int64/uint64) now convert start+step to integer first (matches CPU).
+    - Float path now guards `isinf(step)` to prevent `0 * inf = NaN`.
+
+29. **binary.comp MoltenVK float(int64) workaround** (`kernels/binary.comp`):
+    - `float(int64_t)` returns 0 on MoltenVK; workaround: `float(int(int64_t))`.
+
+30. **binary_two.comp full dtype rewrite for divmod** (`kernels/binary_two.comp`):
+    - Rewrote from float[] buffers to uint[] with DTYPE_* dispatch for all dtypes.
+    - Added `dtype` push constant; push size 16 → 20.
+
+31. **Pipeline cache version bumped 10 → 12** (`device.cpp`):
+    - v11: arange push const size change
+    - v12: binary_two push const size change
 
 ### Fixed (2026-03-02) — >4D Binary Broadcast Limits & CPU Fallbacks
 
@@ -745,7 +787,7 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 
 ### 🔴 CRITICAL BLOCKERS (production impossible without these)
 
-#### 1. BF16 Support in All Shaders
+#### 1. BF16 Support in All Shaders ✅ COMPLETE
 - MLX uses `mx.bfloat16` as default dtype for LLM/model weights
 - Current: ALL BF16 ops silently fail / produce garbage (no shader BF16 path)
 - Fix: Add `bf16.glsl` helper (pack/unpack as uint16), wire into `unary.comp`, `binary.comp`, `reduce.comp`, `matmul.comp`, `softmax.comp`, `normalization.comp`, `copy.comp`
@@ -757,6 +799,7 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 - [x] `softmax.comp` — BF16 input/output (via C++ wrappers)
 - [x] `matmul.comp` — BF16 operands (accumulate in f32)
 - [x] `normalization.comp` — BF16 layer_norm/rms_norm (via C++ wrappers)
+- [x] **Softmax BF16 copy back fix** (2026-03-03): Fixed bug where `Softmax::eval_gpu` temp buffer wasn't copied back to output, causing BF16 softmax to return zeros. Added `copy_gpu(*temp_out, out, CopyType::General, stream())` after barrier.
 
 #### 2. Multi-axis Gather on GPU
 - Transformers use `mx.take(x, idx)` with non-trivial index shapes (2D/3D)
@@ -792,7 +835,15 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
   - Missing GPU primitives / Incorrect Implementations: `test_add`, `test_arange_corner_cases_cast`, `test_arange_overload_dispatch`, `test_array_equal`, `test_bitwise_ops`, `test_clip`, `test_complex_ops`, `test_complex_power`, `test_conjugate`, `test_cos`, `test_divmod`, `test_dynamic_slicing`
   - `test_diag` induces a Python `Segmentation fault` via Apple's standard library extensions.
 - [ ] Profile failures with `python -m pytest tests/test_ops.py -v 2>&1 | grep FAIL`
-- [ ] Fix each category systematically (complex float numbers, diagonal matrices)
+- [ ] `test_add` (Missing arithmetic pipeline/corner case precision issue)
+- [ ] `test_arange_corner_cases_cast`, `test_arange_overload_dispatch` (Data type casting failures)
+- [ ] `test_array_equal` (Shape equality broadcasting failures)
+- [ ] `test_bitwise_ops` (Unimplemented/failing integer binary operations)
+- [ ] `test_clip`
+- [ ] `test_complex_ops`, `test_complex_power`, `test_conjugate` (Complex numbering evaluation)
+- [ ] `test_cos` (Missing trigonometric precision)
+- [ ] `test_divmod`
+- [ ] `test_dynamic_slicing`
 
 #### 6. Scan > 1024 Multi-pass GPU
 - Current: scan_size > 1024 falls to CPU

@@ -1,0 +1,11 @@
+   1 test_add
+   1 test_arange_corner_cases_cast
+   1 test_arange_overload_dispatch
+   1 test_array_equal
+   1 test_bitwise_grad
+   1 test_bitwise_ops
+   1 test_clip
+   1 test_complex_ops
+   1 test_complex_power
+   1 test_conjugate
+   1 test_cos

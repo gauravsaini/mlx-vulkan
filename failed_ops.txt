@@ -1,0 +1,12 @@
+test_add
+test_arange_corner_cases_cast
+test_arange_overload_dispatch
+test_array_equal
+test_bitwise_ops
+test_clip
+test_complex_ops
+test_complex_power
+test_conjugate
+test_cos
+test_divmod
+test_dynamic_slicing

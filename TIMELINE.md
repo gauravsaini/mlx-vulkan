@@ -1,6 +1,47 @@
 # MLX Vulkan Backend — Change Timeline
 
 
+## UPDATED ON : 2026-03-03 (session 2)
+
+### fix (2026-03-03) — Dtype coverage in copy/arange/binary/divmod shaders
+
+1. **Stage 7 API fix** (`tests/vulkan/test_stage7_gpu_copy.py`):
+   - `mx.array(a, stream=gpu)` is invalid API → replaced with `a.astype(a.dtype, stream=gpu)`.
+   - Stage 7: 4 failures → PASS (5/5).
+
+2. **copy.comp — uint16/int16/int64/uint64 read+write** (`kernels/copy.comp`):
+   - `read_as_float()` and `write_float()` were missing DTYPE_UINT16, INT16, INT64, UINT64 cases.
+   - Added proper 16-bit packed atomic reads/writes and 64-bit two-word reads/writes.
+   - Fixes: `astype(int32 → uint16)`, int64 copy, uint64 copy.
+
+3. **arange.comp — integer dtype + isinf guard** (`kernels/arange.comp`):
+   - Added `out_dtype` push constant (4th field; push size 12 → 16 bytes).
+   - For int32/uint32/int64/uint64: converts `start` and `step` to integer FIRST (matches CPU cumulative semantics).
+   - For float: guards `isinf(step) ? start : start + idx*step` to prevent `0 * inf = NaN`.
+   - Fixes: `arange(5, dtype=int32)` returning float bits; `arange(0,3,0.2,int32)` mismatch; inf-step crash.
+
+4. **binary.comp — float(int64_t) MoltenVK workaround** (`kernels/binary.comp`):
+   - `float(int64_t)` always returns 0.0 on MoltenVK. Replaced with `float(int(int64_t))`.
+   - Fixes: `int64 + float` giving wrong results.
+
+5. **binary_two.comp — full dtype rewrite for divmod** (`kernels/binary_two.comp`):
+   - Complete rewrite from `float a_data[]` buffers to `uint raw[]` with DTYPE_* dispatch.
+   - Added `dtype` push constant (5th field; push size 16 → 20 bytes).
+   - Handles uint8, int8, uint16, int16, float16, bfloat16, int32, uint32, float32 in read+write.
+   - Fixes: `divmod` on non-float32 types was treating all inputs as float bits.
+
+6. **device.cpp — pipeline cache version** (`device.cpp`):
+   - Bumped `kPipelineCacheVersion` 10 → 12 (two push-constant size changes: arange + binary_two).
+
+7. **Tests** (before → after):
+   - Stage 7: FAIL → PASS
+   - test_ops.py subset (36 tests): ~22/36 → ~25/36
+
+8. **Files changed**: `tests/vulkan/test_stage7_gpu_copy.py`, `kernels/copy.comp`, `kernels/arange.comp`,
+   `kernels/binary.comp`, `kernels/binary_two.comp`, `primitives.cpp`, `device.cpp`
+
+---
+
 ## UPDATED ON : 2026-03-03
 
 ### fix (2026-03-03) — Softmax BF16 temp buffer copy back

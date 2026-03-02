@@ -1,11 +1,9 @@
 import mlx.core as mx
-import numpy as np
 
 def run_test():
     a = mx.array([1, 2, 3], dtype=mx.int32)
-    s = mx.sum(a)
+    p = mx.prod(a)
     print("arr:", a)
-    print("sum:", s, "dtype:", s.dtype)
-    print("np:", np.array(s))
+    print("prod:", p, "dtype:", p.dtype)
 
 run_test()

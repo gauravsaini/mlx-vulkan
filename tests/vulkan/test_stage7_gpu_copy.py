@@ -24,7 +24,7 @@ def run():
     # Test 1: Simple scalar copy
     try:
         a = mx.array(42.0)
-        b = mx.array(a, stream=gpu)
+        b = a.astype(a.dtype, stream=gpu)
         mx.eval(b)
         assert abs(b.item() - 42.0) < 1e-6, f"Got {b.item()}"
         print("  ✅ scalar copy to GPU")
@@ -35,7 +35,7 @@ def run():
     try:
         data = [1.0, 2.0, 3.0, 4.0, 5.0]
         a = mx.array(data)
-        b = mx.array(a, stream=gpu)
+        b = a.astype(a.dtype, stream=gpu)
         mx.eval(b)
         assert b.tolist() == data, f"Got {b.tolist()}"
         print("  ✅ 1D array copy")
@@ -46,7 +46,7 @@ def run():
     try:
         data = [[1.0, 2.0], [3.0, 4.0]]
         a = mx.array(data)
-        b = mx.array(a, stream=gpu)
+        b = a.astype(a.dtype, stream=gpu)
         mx.eval(b)
         assert b.shape == (2, 2)
         flat = [x for row in b.tolist() for x in row]
@@ -58,7 +58,7 @@ def run():
     # Test 4: Float16 copy
     try:
         a = mx.array([1.0, 2.0, 3.0], dtype=mx.float16)
-        b = mx.array(a, stream=gpu)
+        b = a.astype(mx.float16, stream=gpu)
         mx.eval(b)
         assert b.dtype == mx.float16
         print("  ✅ float16 copy")

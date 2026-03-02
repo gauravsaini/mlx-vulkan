@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.11.14, pytest-9.0.2, pluggy-1.6.0 -- /opt/homebrew/opt/python@3.11/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /Users/ektasaini/Desktop/mlx-vulkan/mlx-src
+configfile: pyproject.toml
+collecting ... collected 134 items / 65 deselected / 69 selected
+run-last-failure: rerun previous 69 failures
+
+python/tests/test_ops.py::TestOps::test_add FAILED                       [  1%]
+python/tests/test_ops.py::TestOps::test_arange_corner_cases_cast FAILED  [  2%]
+python/tests/test_ops.py::TestOps::test_arange_overload_dispatch FAILED  [  4%]
+python/tests/test_ops.py::TestOps::test_argmin_argmax PASSED             [  5%]
+python/tests/test_ops.py::TestOps::test_argpartition PASSED              [  7%]
+python/tests/test_ops.py::TestOps::test_array_equal FAILED               [  8%]
+python/tests/test_ops.py::TestOps::test_bitwise_ops FAILED               [ 10%]
+python/tests/test_ops.py::TestOps::test_clip FAILED                      [ 11%]
+python/tests/test_ops.py::TestOps::test_complex_ops 
+python/tests/test_ops.py::TestOps::test_complex_ops FAILED               [ 13%]
+python/tests/test_ops.py::TestOps::test_complex_power FAILED             [ 14%]
+python/tests/test_ops.py::TestOps::test_conjugate FAILED                 [ 15%]
+python/tests/test_ops.py::TestOps::test_cos FAILED                       [ 17%]
+python/tests/test_ops.py::TestOps::test_divmod FAILED                    [ 18%]
+python/tests/test_ops.py::TestOps::test_dynamic_slicing FAILED           [ 20%]
+python/tests/test_ops.py::TestOps::test_eye 

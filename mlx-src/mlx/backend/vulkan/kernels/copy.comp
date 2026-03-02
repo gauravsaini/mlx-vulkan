@@ -89,6 +89,14 @@ float read_as_float(uint src_idx) {
         return float(int(src_data[src_idx]));
     } else if (src_dtype == DTYPE_UINT32) {
         return float(src_data[src_idx]);
+    } else if (src_dtype == DTYPE_UINT16) {
+        uint word = src_data[src_idx / 2u];
+        uint val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return float(val);
+    } else if (src_dtype == DTYPE_INT16) {
+        uint word = src_data[src_idx / 2u];
+        uint raw = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return float(int(raw << 16u) >> 16);
     } else if (src_dtype == DTYPE_FLOAT16) {
         uint word = src_data[src_idx / 2u];
         uint half_val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
@@ -97,8 +105,16 @@ float read_as_float(uint src_idx) {
         uint word = src_data[src_idx / 2u];
         uint half_val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
         return unpackBfloat2x16(half_val).x;
+    } else if (src_dtype == DTYPE_UINT64) {
+        uint lo = src_data[src_idx * 2u];
+        uint hi = src_data[src_idx * 2u + 1u];
+        return float(lo) + float(hi) * 4294967296.0;
+    } else if (src_dtype == DTYPE_INT64) {
+        uint lo = src_data[src_idx * 2u];
+        int hi = int(src_data[src_idx * 2u + 1u]);
+        return float(lo) + float(hi) * 4294967296.0;
     } else {
-        // float32 output
+        // float32 default
         return uintBitsToFloat(src_data[src_idx]);
     }
 }
@@ -115,9 +131,30 @@ void write_float(uint dst_idx, float val) {
         dst_data[dst_idx] = uint(int(val));
     } else if (dst_dtype == DTYPE_UINT32) {
         dst_data[dst_idx] = uint(val);
+    } else if (dst_dtype == DTYPE_UINT16) {
+        uint word_idx = dst_idx / 2u;
+        uint int_val = uint(clamp(val, 0.0, 65535.0)) & 0xFFFFu;
+        if ((dst_idx & 1u) == 0u) {
+            atomicAnd(dst_data[word_idx], 0xFFFF0000u);
+            atomicOr(dst_data[word_idx], int_val);
+        } else {
+            atomicAnd(dst_data[word_idx], 0x0000FFFFu);
+            atomicOr(dst_data[word_idx], int_val << 16u);
+        }
+    } else if (dst_dtype == DTYPE_INT16) {
+        uint word_idx = dst_idx / 2u;
+        int clamped = int(clamp(val, -32768.0, 32767.0));
+        uint int_val = uint(clamped) & 0xFFFFu;
+        if ((dst_idx & 1u) == 0u) {
+            atomicAnd(dst_data[word_idx], 0xFFFF0000u);
+            atomicOr(dst_data[word_idx], int_val);
+        } else {
+            atomicAnd(dst_data[word_idx], 0x0000FFFFu);
+            atomicOr(dst_data[word_idx], int_val << 16u);
+        }
     } else if (dst_dtype == DTYPE_FLOAT16 || dst_dtype == DTYPE_BFLOAT16) {
         uint word_idx = dst_idx / 2u;
-        uint half_val = (dst_dtype == DTYPE_BFLOAT16) 
+        uint half_val = (dst_dtype == DTYPE_BFLOAT16)
             ? (packBfloat2x16(vec2(val, 0.0)) & 0xFFFFu)
             : (packHalf2x16(vec2(val, 0.0)) & 0xFFFFu);
         if ((dst_idx & 1u) == 0u) {
@@ -127,8 +164,16 @@ void write_float(uint dst_idx, float val) {
             atomicAnd(dst_data[word_idx], 0x0000FFFFu);
             atomicOr(dst_data[word_idx], half_val << 16u);
         }
+    } else if (dst_dtype == DTYPE_INT64) {
+        int ival = int(val);
+        dst_data[dst_idx * 2u] = uint(ival);
+        dst_data[dst_idx * 2u + 1u] = (ival < 0) ? 0xFFFFFFFFu : 0u;
+    } else if (dst_dtype == DTYPE_UINT64) {
+        uint uval = uint(max(val, 0.0));
+        dst_data[dst_idx * 2u] = uval;
+        dst_data[dst_idx * 2u + 1u] = 0u;
     } else {
-        // float32 output
+        // float32 default
         dst_data[dst_idx] = floatBitsToUint(val);
     }
 }

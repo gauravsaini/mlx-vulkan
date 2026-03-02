@@ -47,7 +47,9 @@ layout(push_constant) uniform Params {
     uint op;
     uint output_is_bool;
     uint input_dtype;
-    uint input_elem_bytes;
+    uint a_elem_bytes;
+    uint b_elem_bytes;
+    uint out_elem_bytes;
     uint ndim;
     uint out_shape[4];
     uint a_strides[4];
@@ -248,7 +250,7 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    uint out_elem_bytes = (params.output_is_bool == 1u) ? 1u : params.input_elem_bytes;
+    uint out_elem_bytes = params.out_elem_bytes;
 
     if (out_elem_bytes == 1u) {
         // Output is bool/uint8. 1 thread computes 1 element, writes 1 byte directly.
@@ -257,66 +259,76 @@ void main() {
         bool r_bool;
         uint r_byte;
 
-        if (params.input_elem_bytes == 1u) {
-            uint a = read_u8_a(ai);
-            uint b = read_u8_b(bi);
-            if (params.output_is_bool == 1u) {
-                if (params.input_dtype == DTYPE_INT) r_bool = cmp_int(int(a << 24) >> 24, int(b << 24) >> 24);
-                else r_bool = cmp_uint(a, b);
-                r_byte = r_bool ? 1u : 0u;
-            } else {
-                if (params.input_dtype == DTYPE_INT) r_byte = uint(op_int(int(a << 24) >> 24, int(b << 24) >> 24)) & 0xFFu;
-                else r_byte = op_uint(a, b) & 0xFFu;
-            }
-        } else if (params.input_elem_bytes == 2u || params.input_elem_bytes == 3u) {
-            uint ai = strided_idx_a(idx);
-            uint bi = strided_idx_b(idx);
+        // Read A
+        uint a_32; int64_t a_64; float fa;
+        if (params.a_elem_bytes == 1u) {
+            a_32 = read_u8_a(ai);
+            fa = float(int(a_32 << 24) >> 24);
+        } else if (params.a_elem_bytes == 2u || params.a_elem_bytes == 3u) {
             uint ax = read_u16_a(ai);
-            uint bx = read_u16_b(bi);
-            if (params.output_is_bool == 1u) {
-                if (params.input_dtype == DTYPE_FLOAT) {
-                    float fa, fb;
-                    if (params.input_elem_bytes == 3u) {
-                        fa = unpackBfloat2x16(ax).x;
-                        fb = unpackBfloat2x16(bx).x;
-                    } else {
-                        fa = unpackHalf2x16(ax).x;
-                        fb = unpackHalf2x16(bx).x;
-                    }
-                    r_bool = cmp_float(fa, fb);
-                    r_byte = r_bool ? 1u : 0u;
-                } else if (params.input_dtype == DTYPE_INT) {
-                    r_bool = cmp_int((int(ax) << 16) >> 16, (int(bx) << 16) >> 16);
-                    r_byte = r_bool ? 1u : 0u;
-                } else { // DTYPE_UINT
-                    r_bool = cmp_uint(ax, bx);
-                    r_byte = r_bool ? 1u : 0u;
-                }
+            a_32 = ax;
+            if (params.input_dtype == DTYPE_FLOAT) {
+                if (params.a_elem_bytes == 3u) fa = unpackBfloat2x16(ax).x;
+                else fa = unpackHalf2x16(ax).x;
             } else {
-                // Should not happen for output_bytes=1
-                r_byte = 0u;
+                fa = float(int(ax << 16) >> 16);
             }
-        } else if (params.input_elem_bytes == 4u) {
-            uint a = read_u32_a(ai);
-            uint b = read_u32_b(bi);
-            if (params.output_is_bool == 1u) {
-                if (params.input_dtype == DTYPE_FLOAT) r_bool = cmp_float(uintBitsToFloat(a), uintBitsToFloat(b));
-                else if (params.input_dtype == DTYPE_INT) r_bool = cmp_int(int(a), int(b));
-                else r_bool = cmp_uint(a, b);
-                r_byte = r_bool ? 1u : 0u;
-            } else {
-                r_byte = 0u;
-            }
-        } else if (params.input_elem_bytes == 8u) {
-            int64_t a = read_i64_a(ai);
-            int64_t b = read_i64_b(bi);
-            if (params.output_is_bool == 1u) {
-                r_bool = cmp_int64(a, b);
-                r_byte = r_bool ? 1u : 0u;
-            } else {
-                r_byte = 0u;
-            }
+        } else if (params.a_elem_bytes == 4u) {
+            a_32 = read_u32_a(ai);
+            if (params.input_dtype == DTYPE_FLOAT) fa = uintBitsToFloat(a_32);
+            else fa = float(int(a_32));
+        } else if (params.a_elem_bytes == 8u) {
+            a_64 = read_i64_a(ai);
+            if (params.input_dtype == DTYPE_FLOAT) fa = float(a_64); // not technically supported floats but cast exists
+            else fa = float(a_64);
         }
+
+        // Read B
+        uint b_32; int64_t b_64; float fb;
+        if (params.b_elem_bytes == 1u) {
+            b_32 = read_u8_b(bi);
+            fb = float(int(b_32 << 24) >> 24);
+        } else if (params.b_elem_bytes == 2u || params.b_elem_bytes == 3u) {
+            uint bx = read_u16_b(bi);
+            b_32 = bx;
+            if (params.input_dtype == DTYPE_FLOAT) {
+                if (params.b_elem_bytes == 3u) fb = unpackBfloat2x16(bx).x;
+                else fb = unpackHalf2x16(bx).x;
+            } else {
+                fb = float(int(bx << 16) >> 16);
+            }
+        } else if (params.b_elem_bytes == 4u) {
+            b_32 = read_u32_b(bi);
+            if (params.input_dtype == DTYPE_FLOAT) fb = uintBitsToFloat(b_32);
+            else fb = float(int(b_32));
+        } else if (params.b_elem_bytes == 8u) {
+            b_64 = read_i64_b(bi);
+            fb = float(b_64);
+        }
+
+        if (params.output_is_bool == 1u) {
+            if (params.input_dtype == DTYPE_FLOAT) {
+                r_bool = cmp_float(fa, fb);
+            } else if (params.input_dtype == DTYPE_INT) {
+                if (params.a_elem_bytes == 8u || params.b_elem_bytes == 8u) {
+                    int64_t a_val = (params.a_elem_bytes == 8u) ? a_64 : int64_t((params.a_elem_bytes == 1u) ? (int(a_32 << 24) >> 24) : ((params.a_elem_bytes <= 3u) ? (int(a_32 << 16) >> 16) : int(a_32)));
+                    int64_t b_val = (params.b_elem_bytes == 8u) ? b_64 : int64_t((params.b_elem_bytes == 1u) ? (int(b_32 << 24) >> 24) : ((params.b_elem_bytes <= 3u) ? (int(b_32 << 16) >> 16) : int(b_32)));
+                    r_bool = cmp_int64(a_val, b_val);
+                } else {
+                    int a_val = (params.a_elem_bytes == 1u) ? (int(a_32 << 24) >> 24) : ((params.a_elem_bytes <= 3u) ? (int(a_32 << 16) >> 16) : int(a_32));
+                    int b_val = (params.b_elem_bytes == 1u) ? (int(b_32 << 24) >> 24) : ((params.b_elem_bytes <= 3u) ? (int(b_32 << 16) >> 16) : int(b_32));
+                    r_bool = cmp_int(a_val, b_val);
+                }
+            } else { // DTYPE_UINT
+                r_bool = cmp_uint(a_32, b_32);
+            }
+            r_byte = r_bool ? 1u : 0u;
+        } else {
+            // output_bytes=1 means output is uint8_t
+            if (params.input_dtype == DTYPE_INT) r_byte = uint(op_int(int(a_32 << 24) >> 24, int(b_32 << 24) >> 24)) & 0xFFu;
+            else r_byte = op_uint(a_32, b_32) & 0xFFu;
+        }
+        
         c_bool[idx] = uint8_t(r_byte);
 
     } else if (out_elem_bytes == 2u || out_elem_bytes == 3u) {
@@ -330,19 +342,38 @@ void main() {
             uint ai = strided_idx_a(curr_idx);
             uint bi = strided_idx_b(curr_idx);
             
-            uint ax = read_u16_a(ai);
-            uint bx = read_u16_b(bi);
+            uint ax;
+            if (params.a_elem_bytes == 2u || params.a_elem_bytes == 3u) {
+                ax = read_u16_a(ai);
+            } else if (params.a_elem_bytes == 1u) {
+                ax = read_u8_a(ai);
+            } else if (params.a_elem_bytes == 4u) {
+                ax = read_u32_a(ai);
+            }
+
+            uint bx;
+            if (params.b_elem_bytes == 2u || params.b_elem_bytes == 3u) {
+                bx = read_u16_b(bi);
+            } else if (params.b_elem_bytes == 1u) {
+                bx = read_u8_b(bi);
+            } else if (params.b_elem_bytes == 4u) {
+                bx = read_u32_b(bi);
+            }
+
             uint out_half;
 
             if (params.input_dtype == DTYPE_FLOAT) {
                 float fa, fb;
-                if (params.input_elem_bytes == 3u) {
-                    fa = unpackBfloat2x16(ax).x;
-                    fb = unpackBfloat2x16(bx).x;
-                } else {
-                    fa = unpackHalf2x16(ax).x;
-                    fb = unpackHalf2x16(bx).x;
-                }
+                if (params.a_elem_bytes == 4u) fa = uintBitsToFloat(ax);
+                else if (params.a_elem_bytes == 3u) fa = unpackBfloat2x16(ax).x;
+                else if (params.a_elem_bytes == 2u) fa = unpackHalf2x16(ax).x;
+                else fa = float(ax);
+
+                if (params.b_elem_bytes == 4u) fb = uintBitsToFloat(bx);
+                else if (params.b_elem_bytes == 3u) fb = unpackBfloat2x16(bx).x;
+                else if (params.b_elem_bytes == 2u) fb = unpackHalf2x16(bx).x;
+                else fb = float(bx);
+
                 float fr = op_float(fa, fb);
                 if (out_elem_bytes == 3u) {
                     out_half = packBfloat2x16(vec2(fr, 0.0)) & 0xFFFFu;
@@ -361,25 +392,57 @@ void main() {
     } else if (out_elem_bytes == 4u) {
         uint ai = strided_idx_a(idx);
         uint bi = strided_idx_b(idx);
-        uint a = read_u32_a(ai);
-        uint b = read_u32_b(bi);
         uint out_val;
 
+        float fa, fb;
+        int64_t ia, ib;
+        uint ua, ub;
+
+        if (params.a_elem_bytes == 8u) {
+            ia = read_i64_a(ai);
+            fa = float(int(ia));  // float(int64_t) broken on MoltenVK; use int32 intermediate
+            ua = uint(ia);
+        } else if (params.a_elem_bytes == 4u) {
+            ua = read_u32_a(ai);
+            fa = uintBitsToFloat(ua);
+            ia = int64_t(int(ua));
+        } else if (params.a_elem_bytes == 2u || params.a_elem_bytes == 3u) {
+            ua = read_u16_a(ai);
+            fa = (params.a_elem_bytes == 3u) ? unpackBfloat2x16(ua).x : unpackHalf2x16(ua).x;
+            ia = int64_t(int(ua << 16) >> 16);
+        }
+
+        if (params.b_elem_bytes == 8u) {
+            ib = read_i64_b(bi);
+            fb = float(int(ib));  // float(int64_t) broken on MoltenVK; use int32 intermediate
+            ub = uint(ib);
+        } else if (params.b_elem_bytes == 4u) {
+            ub = read_u32_b(bi);
+            fb = uintBitsToFloat(ub);
+            ib = int64_t(int(ub));
+        } else if (params.b_elem_bytes == 2u || params.b_elem_bytes == 3u) {
+            ub = read_u16_b(bi);
+            fb = (params.b_elem_bytes == 3u) ? unpackBfloat2x16(ub).x : unpackHalf2x16(ub).x;
+            ib = int64_t(int(ub << 16) >> 16);
+        }
+
         if (params.input_dtype == DTYPE_FLOAT) {
-            float fr = op_float(uintBitsToFloat(a), uintBitsToFloat(b));
+            float fr = op_float(fa, fb);
             out_val = floatBitsToUint(fr);
         } else if (params.input_dtype == DTYPE_INT) {
-            out_val = uint(op_int(int(a), int(b)));
+            out_val = uint(op_int(int(ia), int(ib)));
         } else {
-            out_val = op_uint(a, b);
+            out_val = uint(op_uint(ua, ub));
         }
+        
         c_raw[idx] = out_val;
 
     } else if (out_elem_bytes == 8u) {
         uint ai = strided_idx_a(idx);
         uint bi = strided_idx_b(idx);
-        int64_t a = read_i64_a(ai);
-        int64_t b = read_i64_b(bi);
+        
+        int64_t a = (params.a_elem_bytes == 8u) ? read_i64_a(ai) : int64_t(int(read_u32_a(ai)));
+        int64_t b = (params.b_elem_bytes == 8u) ? read_i64_b(bi) : int64_t(int(read_u32_b(bi)));
         
         int64_t res = op_int64(a, b);
         

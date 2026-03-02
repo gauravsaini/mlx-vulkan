@@ -2,16 +2,63 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) writeonly buffer OutBuf { float out_data[]; };
+// Must match DTYPE_* constants in copy.comp and Dtype enum in mlx/dtype.h
+#define DTYPE_BOOL      0
+#define DTYPE_UINT8     1
+#define DTYPE_UINT16    2
+#define DTYPE_UINT32    3
+#define DTYPE_UINT64    4
+#define DTYPE_INT8      5
+#define DTYPE_INT16     6
+#define DTYPE_INT32     7
+#define DTYPE_INT64     8
+#define DTYPE_FLOAT16   9
+#define DTYPE_BFLOAT16  10
+#define DTYPE_FLOAT32   11
+
+layout(set = 0, binding = 0) buffer OutBuf { uint out_data[]; };
 
 layout(push_constant) uniform Params {
     uint n;
     float start;
     float step;
+    uint out_dtype;
 } params;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
-    out_data[idx] = params.start + float(idx) * params.step;
+
+    uint dtype = params.out_dtype;
+
+    // For integer types: convert start+step to integer FIRST (matches CPU cumulative behavior).
+    // CPU does: start_T = T(start); step_T = T(step); out[i] = start_T + i * step_T
+    if (dtype == DTYPE_INT32) {
+        int istart = int(params.start);
+        int istep  = int(params.step);
+        out_data[idx] = uint(istart + int(idx) * istep);
+    } else if (dtype == DTYPE_UINT32) {
+        uint ustart = uint(max(params.start, 0.0));
+        uint ustep  = uint(max(params.step, 0.0));
+        out_data[idx] = ustart + idx * ustep;
+    } else if (dtype == DTYPE_INT64) {
+        int istart = int(params.start);
+        int istep  = int(params.step);
+        int ival   = istart + int(idx) * istep;
+        out_data[idx * 2u]      = uint(ival);
+        out_data[idx * 2u + 1u] = (ival < 0) ? 0xFFFFFFFFu : 0u;
+    } else if (dtype == DTYPE_UINT64) {
+        uint ustart = uint(max(params.start, 0.0));
+        uint ustep  = uint(max(params.step, 0.0));
+        uint uval   = ustart + idx * ustep;
+        out_data[idx * 2u]      = uval;
+        out_data[idx * 2u + 1u] = 0u;
+    } else {
+        // float32 (and float16/bfloat16 use float32 buffer layout)
+        // Guard against 0 * inf = NaN for arange with infinite step (n=1 case)
+        float val = isinf(params.step)
+            ? params.start
+            : params.start + float(idx) * params.step;
+        out_data[idx] = floatBitsToUint(val);
+    }
 }

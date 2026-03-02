@@ -13,6 +13,7 @@
 #include "mlx/distributed/primitives.h"
 #include "mlx/fast_primitives.h"
 
+#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -169,8 +170,8 @@ void dispatch_binary(
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   // 4 bindings: InA(uint), InB(uint), OutC(uint raw), OutCBool(uint8)
-  // push constant size = 80 bytes (20 x uint32)
-  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 4, 80);
+  // push constant size = 84 bytes (21 x uint32)
+  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 4, 84);
   if (pipeline == VK_NULL_HANDLE)
     return;
 
@@ -220,7 +221,9 @@ void dispatch_binary(
     uint32_t op;
     uint32_t output_is_bool;
     uint32_t input_dtype;
-    uint32_t input_elem_bytes;
+    uint32_t a_elem_bytes;
+    uint32_t b_elem_bytes;
+    uint32_t out_elem_bytes;
     uint32_t ndim;
     uint32_t out_shape[4];
     uint32_t a_strides[4];
@@ -230,9 +233,18 @@ void dispatch_binary(
   pc.n = static_cast<uint32_t>(out.size());
   pc.op = op_id;
   pc.output_is_bool = output_is_bool ? 1u : 0u;
-  pc.input_dtype = to_input_dtype(in_dtype);
-  pc.input_elem_bytes =
-      in_dtype == bfloat16 ? 3u : static_cast<uint32_t>(in_dtype.size());
+  pc.input_dtype = to_input_dtype(promote_types(a.dtype(), b.dtype()));
+
+  pc.a_elem_bytes =
+      a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize());
+  pc.b_elem_bytes =
+      b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize());
+  pc.out_elem_bytes =
+      out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize());
+  // std::cout << "PushConst: a_elem_bytes=" << pc.a_elem_bytes
+  //           << " b=" << pc.b_elem_bytes << " out=" << pc.out_elem_bytes
+  //           << " input_dtype=" << pc.input_dtype << " a_dtype=" << a.dtype()
+  //           << " b_dtype=" << b.dtype() << std::endl;
 
   const auto& out_shape = shape;
   const auto& a_strides = strides[0];
@@ -584,7 +596,7 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("arange", layout, ds_layout, 1, 12);
+  VkPipeline pipeline = dev.get_pipeline("arange", layout, ds_layout, 1, 16);
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -602,14 +614,34 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
   write.pBufferInfo = &out_info;
   vkUpdateDescriptorSets(dev.vk_device(), 1, &write, 0, nullptr);
 
+  auto dtype_to_enum_arange = [](Dtype dt) -> uint32_t {
+    switch (dt) {
+      case bool_:    return 0;
+      case uint8:    return 1;
+      case uint16:   return 2;
+      case uint32:   return 3;
+      case uint64:   return 4;
+      case int8:     return 5;
+      case int16:    return 6;
+      case int32:    return 7;
+      case int64:    return 8;
+      case float16:  return 9;
+      case bfloat16: return 10;
+      case float32:  return 11;
+      default:       return 11;
+    }
+  };
+
   struct PushConst {
     uint32_t n;
     float start;
     float step;
+    uint32_t out_dtype;
   } pc{
       static_cast<uint32_t>(out.size()),
       static_cast<float>(start_),
-      static_cast<float>(step_)};
+      static_cast<float>(step_),
+      dtype_to_enum_arange(out.dtype())};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -1107,6 +1139,11 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
       nullptr,
       0,
       nullptr);
+
+  // Copy back from temp_out to out if we used temp buffers
+  if (use_temp) {
+    copy_gpu(*temp_out, out, CopyType::General, stream());
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1204,7 +1241,7 @@ void DivMod::eval_gpu(
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline =
-      dev.get_pipeline("binary_two", layout, ds_layout, 4, 16);
+      dev.get_pipeline("binary_two", layout, ds_layout, 4, 20);
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, outputs);
@@ -1228,16 +1265,36 @@ void DivMod::eval_gpu(
   }
   vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
+  auto dtype_to_enum_divmod = [](Dtype dt) -> uint32_t {
+    switch (dt) {
+      case bool_:    return 0;
+      case uint8:    return 1;
+      case uint16:   return 2;
+      case uint32:   return 3;
+      case uint64:   return 4;
+      case int8:     return 5;
+      case int16:    return 6;
+      case int32:    return 7;
+      case int64:    return 8;
+      case float16:  return 9;
+      case bfloat16: return 10;
+      case float32:  return 11;
+      default:       return 11;
+    }
+  };
+
   struct PushConst {
     uint32_t n;
     uint32_t op;
     uint32_t a_scalar;
     uint32_t b_scalar;
+    uint32_t dtype;
   } pc{
       static_cast<uint32_t>(outputs[0].size()),
       0u,
       inputs[0].data_size() == 1 ? 1u : 0u,
-      inputs[1].data_size() == 1 ? 1u : 0u};
+      inputs[1].data_size() == 1 ? 1u : 0u,
+      dtype_to_enum_divmod(inputs[0].dtype())};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
@@ -1515,8 +1572,11 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   while (sort_pow2 < sort_size)
     sort_pow2 <<= 1;
 
-  // Throw Error if sort dimension > 256 or not last axis
-  if (sort_pow2 > 256 || sort_axis != in.ndim() - 1) {
+  // Fall back to CPU if:
+  // - Sort dimension > 256
+  // - Not sorting on last axis
+  // - Input is not float32 (shader is hard-coded to use 32-bit float)
+  if (sort_pow2 > 256 || sort_axis != in.ndim() - 1 || in.dtype() != float32) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
