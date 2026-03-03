@@ -236,6 +236,12 @@ void copy_gpu_inplace(
 }
 
 void fill_gpu(const array& val, array& out, const Stream& s) {
+  if (out.size() == 0)
+    return;
+  // Match Metal's fill_gpu: allocate output if not already allocated.
+  if (!out.data_shared_ptr()) {
+    out.set_data(allocator::malloc(out.nbytes()));
+  }
   // Scalar broadcast: data_shape must be out.shape() so n = out.size() threads
   // are dispatched. The 4-arg overload uses in.shape() which is {} for a
   // scalar, causing only 1 thread to run and leaving remaining elements at

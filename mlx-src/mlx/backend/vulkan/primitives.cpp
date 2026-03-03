@@ -351,7 +351,7 @@ bool dispatch_unary(
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline("unary", layout, ds_layout, 2, 16);
   if (pipeline == VK_NULL_HANDLE)
-    return;
+    return true;
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(stream, ds_layout);
 
@@ -472,7 +472,10 @@ void Log::eval_gpu(const std::vector<array>& inputs, array& out) {
     op = static_cast<uint32_t>(UnaryOp::Log2);
   else
     op = static_cast<uint32_t>(UnaryOp::Log10);
-  dispatch_unary(inputs[0], out, op, stream());
+  if (!dispatch_unary(inputs[0], out, op, stream())) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+  }
 }
 
 // BitwiseInvert: fall back to CPU (requires XOR with all-ones broadcast)
@@ -488,20 +491,34 @@ void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 // Broadcast arrays are handled by the shader via modulo indexing:
 // idx % a_size / idx % b_size — works for scalar (size=1), broadcast, and full.
-#define BINARY_GPU(cls, op)                                          \
-  void cls::eval_gpu(const std::vector<array>& inputs, array& out) { \
-    dispatch_binary(                                                 \
-        inputs[0],                                                   \
-        inputs[1],                                                   \
-        out,                                                         \
-        static_cast<uint32_t>(BinaryOp::op),                         \
-        stream());                                                   \
+// Complex types fall back to CPU since the GPU shader only handles real types.
+#define BINARY_GPU(cls, op)                                                  \
+  void cls::eval_gpu(const std::vector<array>& inputs, array& out) {         \
+    if (issubdtype(out.dtype(), complexfloating) ||                          \
+        issubdtype(inputs[0].dtype(), complexfloating) ||                    \
+        issubdtype(inputs[1].dtype(), complexfloating)) {                    \
+      vulkan::device(stream().device).synchronize(stream());                 \
+      eval_cpu(inputs, out);                                                 \
+      return;                                                                \
+    }                                                                        \
+    dispatch_binary(                                                         \
+        inputs[0],                                                           \
+        inputs[1],                                                           \
+        out,                                                                 \
+        static_cast<uint32_t>(BinaryOp::op),                                \
+        stream());                                                           \
   }
 
 BINARY_GPU(Add, Add)
 BINARY_GPU(ArcTan2, Arctan2)
 BINARY_GPU(Divide, Div)
 void Equal::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (issubdtype(inputs[0].dtype(), complexfloating) ||
+      issubdtype(inputs[1].dtype(), complexfloating)) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
   uint32_t op = equal_nan_
       ? static_cast<uint32_t>(BinaryOp::EqualNan)
       : static_cast<uint32_t>(BinaryOp::Equal);
@@ -1814,11 +1831,19 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
 
   uint32_t scan_size = static_cast<uint32_t>(in.shape(axis_));
+  int ndim = in.ndim();
+  int norm_axis = axis_ < 0 ? axis_ + ndim : axis_;
 
-  // Shader supports scan_size ≤ 1024 (256 threads × chunk_size ≤ 4).
-  if (scan_size > 1024) {
-    throw std::runtime_error(
-        "[vulkan::Scan::eval_gpu] scan_size > 1024: unsupported");
+  // Shader assumes contiguous scan (last axis only) and float32 only.
+  // Fall back to CPU for:
+  //   (1) scan_size > 1024 (shader workgroup limit)
+  //   (2) non-last axis (scan elements are non-contiguous in memory)
+  //   (3) non-float32 dtype (int32, int64, float16, bfloat16, complex not handled)
+  bool is_float32 = in.dtype() == float32;
+  if (scan_size > 1024 || norm_axis != ndim - 1 || !is_float32) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
   }
 
   // Map reduce type to shader op code
@@ -1840,8 +1865,10 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
       op = 4u;
       break;
     default:
-      throw std::runtime_error(
-          "[vulkan::Scan::eval_gpu] unsupported reduce_type");
+      // Unsupported scan type: fall back to CPU
+      vulkan::device(stream().device).synchronize(stream());
+      eval_cpu(inputs, out);
+      return;
   }
 
   uint32_t n_scans = static_cast<uint32_t>(in.size() / scan_size);

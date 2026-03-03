@@ -97,6 +97,53 @@ float erfinv_approx(float x) {
     return p * x;
 }
 
+// Cody-Waite range reduction for sin/cos matching glibc/libm float32 output.
+//
+// Uses the standard glibc libm constants for float32 (s_cosf.c / s_sinf.c):
+//   C1 = 0x3FC90FDA = 1.5707962512969971...  (1 ULP below float32(π/2))
+//   C2 = 0x33A22168 = 7.5497894159e-8        (positive correction)
+//   C1 + C2 = π/2 to double precision
+//
+// For x = float32(π/2) = 0x3FC90FDB and n=1:
+//   x - n*C1 = ULP(π/2) = 1.192e-7  (exact float32 subtract)
+//   r = 1.192e-7 - 7.55e-8 = 4.37e-8
+//   q=1 → -sin(4.37e-8) ≈ -4.37e-8  (matches ARM libm)
+float cw_reduce(float xabs, out int q) {
+    // Standard glibc float32 pio2 Cody-Waite constants (s_cosf.c / s_sinf.c)
+    // C1+C2 = π/2 in double: 1.5707962513 + 7.5497894e-8 = 1.57079632...
+    const float FRAC_2_PI = 0.6366197468;  // nearest float32 to 2/π
+    const float C1 = 1.5707962513;         // 0x3FC90FDA: 1 ULP below float32(π/2)
+    const float C2 = 7.5497894159e-8;      // 0x33A22168: correction
+
+    float n = floor(xabs * FRAC_2_PI + 0.5);
+    // Use `precise` to prevent the compiler from contracting
+    // (xabs - n*C1) - n*C2  →  xabs - n*(C1+C2) = xabs - float32(π/2) = 0
+    precise float r1 = xabs - n * C1;
+    precise float r  = r1 - n * C2;
+    q = int(n) & 3;
+    return r;
+}
+
+float cw_sin(float x) {
+    int q;
+    float r = cw_reduce(abs(x), q);
+    float s;
+    if      (q == 0) s =  sin(r);
+    else if (q == 1) s =  cos(r);
+    else if (q == 2) s = -sin(r);
+    else             s = -cos(r);
+    return sign(x) * s;  // sin is odd
+}
+
+float cw_cos(float x) {
+    int q;
+    float r = cw_reduce(abs(x), q);
+    if      (q == 0) return  cos(r);
+    else if (q == 1) return -sin(r);
+    else if (q == 2) return -cos(r);
+    else             return  sin(r);
+}
+
 float compute_op(float val) {
     switch (params.op) {
         case UNARY_ABS:     return abs(val);
@@ -109,8 +156,8 @@ float compute_op(float val) {
         case UNARY_EXPM1:   return exp(val) - 1.0;
         case UNARY_LOG:     return log(val);
         case UNARY_LOG1P:   return log(1.0 + val);
-        case UNARY_SIN:     return sin(val);
-        case UNARY_COS:     return cos(val);
+        case UNARY_SIN:     return cw_sin(val);
+        case UNARY_COS:     return cw_cos(val);
         case UNARY_TAN:     return tan(val);
         case UNARY_SINH:    return sinh(val);
         case UNARY_COSH:    return cosh(val);
