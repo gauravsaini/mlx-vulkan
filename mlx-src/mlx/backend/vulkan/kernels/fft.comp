@@ -3,7 +3,7 @@
 // local_size_x = 1024: covers the largest threads_per_fft (n=4096, ept=8 → tpf=512).
 // Inactive threads (lid >= threads_per_fft * tg_batch_size) participate in barrier()
 // calls but skip all shared-memory reads/writes.
-layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 // ─── Complex helpers ──────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@
 #define NORM_LAYER_NORM 0
 #define NORM_RMS_NORM   1
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf      { float in_data[];    };
 layout(set = 0, binding = 1) readonly  buffer WeightBuf  { float weight_data[]; };

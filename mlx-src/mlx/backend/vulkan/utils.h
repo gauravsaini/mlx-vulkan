@@ -24,6 +24,10 @@ constexpr uint32_t WORKGROUP_SIZE = 256;
 // defined in utils.cpp to avoid a circular dependency on device.h.
 uint32_t preferred_workgroup_size();
 
+// Returns a pointer to a statically allocated VkSpecializationInfo configured
+// with the device's default workgroup_size (id=0) and subgroup_size (id=1).
+const VkSpecializationInfo* get_default_specialization_info(Device& d);
+
 // Map MLX Dtype to Vulkan format (for descriptor set hints)
 VkFormat to_vk_format(Dtype dtype);
 
@@ -33,7 +37,8 @@ uint32_t dtype_size(Dtype dtype);
 // String name for dtype (for pipeline cache keying)
 const char* dtype_name(Dtype dtype);
 
-// Insert a pipeline barrier ensuring prior compute writes are visible to subsequent compute reads
+// Insert a pipeline barrier ensuring prior compute writes are visible to
+// subsequent compute reads
 void insert_buffer_barrier(VkCommandBuffer cmd, VkBuffer buffer);
 
 // Insert barrier for all output buffers of an array

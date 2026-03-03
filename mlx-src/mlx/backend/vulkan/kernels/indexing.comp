@@ -5,7 +5,7 @@
 #define INDEX_SCATTER_ADD 2   // ScatterAxis add
 #define INDEX_GATHER_GEN  3   // Gather (mx.take): general ND gather, index dims first in output
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer SrcBuf { float src_data[]; };
 layout(set = 0, binding = 1) readonly  buffer IdxBuf { int   idx_data[]; };

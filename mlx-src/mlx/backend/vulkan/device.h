@@ -65,7 +65,8 @@ class Device {
       VkPipelineLayout& layout_out,
       VkDescriptorSetLayout& ds_layout_out,
       uint32_t num_bindings,
-      uint32_t push_constant_size = 0);
+      uint32_t push_constant_size = 0,
+      const VkSpecializationInfo* specialization_info = nullptr);
 
   // Memory management
   VmaAllocator vma_allocator() const {

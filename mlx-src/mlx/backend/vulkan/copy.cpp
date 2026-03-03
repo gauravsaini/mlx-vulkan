@@ -43,7 +43,7 @@ static void dispatch_copy_shader(
   VkDescriptorSetLayout ds_layout;
   // copy.comp now has 3 bindings and a 40-byte push constant (added
   // src_dtype/dst_dtype)
-  VkPipeline pipeline = dev.get_pipeline("copy", layout, ds_layout, 3, 40);
+  VkPipeline pipeline = dev.get_pipeline("copy", layout, ds_layout, 3, 40, vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
     return;
 

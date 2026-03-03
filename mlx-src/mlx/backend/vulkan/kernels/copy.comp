@@ -27,7 +27,7 @@
 #define DTYPE_FLOAT64   12
 #define DTYPE_COMPLEX64 13
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 // Raw uint32 views for 4-byte elements
 layout(set = 0, binding = 0) readonly  buffer SrcBuf  { uint src_data[];  };

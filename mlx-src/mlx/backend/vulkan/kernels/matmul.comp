@@ -3,7 +3,18 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "bf16.glsl"
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
+layout(constant_id = 1) const uint SUBGROUP_SIZE = 32;
+
+// The block size (TILE_SIZE) is dictated by the wave/subgroup width to maximize SIMD
+// efficiency. We define 16x16 natively for M1 (32 threads per wave), but we can adjust
+// this based on hardware constants.
+// For now, keep the structure logic, but allocate the tile size structurally.
+#define BM 16
+#define BN 16
+#define BK 16
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer MatA { uint a_raw[]; };
 layout(set = 0, binding = 1) readonly  buffer MatB { uint b_raw[]; };
@@ -52,13 +63,13 @@ float read_b(uint idx) {
     return 0.0;
 }
 
-shared float tile_a[16][16];
-shared float tile_b[16][16];
+shared float tile_a[BM][BK];
+shared float tile_b[BK][BN];
 
 void main() {
     uint batch_idx = gl_GlobalInvocationID.z;
-    uint row = gl_GlobalInvocationID.y;
-    uint col = gl_GlobalInvocationID.x;
+    uint block_row = gl_WorkGroupID.y;
+    uint block_col = gl_WorkGroupID.x;
 
     uint a_base = batch_idx * params.a_batch_stride;
     uint b_base = batch_idx * params.b_batch_stride;
@@ -66,15 +77,23 @@ void main() {
 
     float sum = 0.0;
 
-    uint local_row = gl_LocalInvocationID.y;
-    uint local_col = gl_LocalInvocationID.x;
+    // Linear local thread ID (from layout local_size_x_id = 0)
+    uint tid = gl_LocalInvocationID.x;
+    // Map linear thread ID to 2D subgroup-optimized layout natively
+    uint local_row = tid / BN;
+    uint local_col = tid % BN;
 
-    uint num_tiles = (params.K + 15) / 16;
+    // Global position for this thread
+    uint row = block_row * BM + local_row;
+    uint col = block_col * BN + local_col;
+
+    uint num_tiles = (params.K + BK - 1) / BK;
 
     for (uint t = 0; t < num_tiles; t++) {
-        uint a_col = t * 16 + local_col;
-        uint b_row = t * 16 + local_row;
+        uint a_col = t * BK + local_col;
+        uint b_row = t * BK + local_row;
 
+        // Cooperative memory fetch into shared tile
         tile_a[local_row][local_col] =
             (row < params.M && a_col < params.K)
                 ? read_a(a_base + row * params.K + a_col)
@@ -88,7 +107,8 @@ void main() {
         barrier();
         memoryBarrierShared();
 
-        for (uint k = 0; k < 16; k++) {
+        // Accumulate row*col of the current block
+        for (uint k = 0; k < BK; k++) {
             sum += tile_a[local_row][k] * tile_b[k][local_col];
         }
 

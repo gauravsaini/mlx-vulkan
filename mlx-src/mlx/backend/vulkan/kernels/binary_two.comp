@@ -19,7 +19,7 @@
 #define DTYPE_BFLOAT16  10
 #define DTYPE_FLOAT32   11
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InA   { uint  a_raw[];    };
 layout(set = 0, binding = 1) readonly  buffer InB   { uint  b_raw[];    };

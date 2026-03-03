@@ -1,7 +1,7 @@
 #version 450
 
 // Simplified 2D convolution (depthwise or small kernels)
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf     { float in_data[];     };
 layout(set = 0, binding = 1) readonly  buffer FilterBuf { float filter_data[]; };

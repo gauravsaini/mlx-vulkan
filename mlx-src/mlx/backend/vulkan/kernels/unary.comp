@@ -40,7 +40,7 @@
 #define UNARY_RADIANS   32
 #define UNARY_LOGNOT    33  // logical NOT: 0→1, else→0 (for bool arrays)
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 // Buffers as raw uint32 words; float16 is packed 2-per-word
 layout(set = 0, binding = 0) readonly  buffer InBuf   { uint in_data[]; };

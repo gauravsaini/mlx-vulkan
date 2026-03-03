@@ -425,7 +425,7 @@ void Device::create_vma() {
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
 static constexpr uint32_t kPipelineCacheVersion =
-    14; // bumped: unary.comp precise qualifier for Cody-Waite range reduction
+    15; // bumped: workgroup size layout(constant_id) tuning
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");
@@ -748,7 +748,8 @@ VkPipeline Device::get_pipeline(
     VkPipelineLayout& layout_out,
     VkDescriptorSetLayout& ds_layout_out,
     uint32_t num_bindings,
-    uint32_t push_constant_size) {
+    uint32_t push_constant_size,
+    const VkSpecializationInfo* specialization_info) {
   std::lock_guard<std::mutex> lk(mutex_);
 
   auto it = pipeline_map_.find(name);
@@ -826,8 +827,14 @@ VkPipeline Device::get_pipeline(
   pipeline_info.stage.sType =
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  const VkSpecializationInfo* final_spec = specialization_info;
+  if (!final_spec) {
+    final_spec = get_default_specialization_info(*this);
+  }
+
   pipeline_info.stage.module = shader_module;
   pipeline_info.stage.pName = "main";
+  pipeline_info.stage.pSpecializationInfo = final_spec;
 
   VkPipeline pipeline;
   VkResult res = vkCreateComputePipelines(

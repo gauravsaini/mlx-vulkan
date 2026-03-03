@@ -698,7 +698,7 @@ void fft_op(
 
     VkPipelineLayout layout;
     VkDescriptorSetLayout ds_layout;
-    VkPipeline pipeline = d.get_pipeline(base_name, layout, ds_layout, num_bindings, sizeof(FFTPushConstants));
+    VkPipeline pipeline = d.get_pipeline(base_name, layout, ds_layout, num_bindings, sizeof(FFTPushConstants), vulkan::get_default_specialization_info(d));
 
     VkDescriptorSet ds = d.alloc_descriptor_set(s, ds_layout);
     
