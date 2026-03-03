@@ -609,3 +609,33 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
 
 7. **Files changed**: `kernels/unary.comp`, `backend/vulkan/primitives.cpp`, `backend/vulkan/device.cpp`, `backend/vulkan/allocator.cpp`
 
+
+## UPDATED ON : 2026-03-03
+
+### fix (2026-03-03) — Cody-Waite sin/cos precision, CPU fallbacks, fill_gpu zero guard
+
+1. **Cody-Waite range reduction for sin/cos** (`unary.comp`):
+   - Added `cw_reduce()`, `cw_sin()`, `cw_cos()` functions with `precise` qualifier
+   - Uses standard glibc float32 constants (C1=1.5707962513, C2=7.5497894159e-8)
+   - Prevents compiler contraction that would cancel the reduction term
+   - Matches glibc/libm float32 output precision near zero
+
+2. **CPU fallbacks for unsupported types** (`primitives.cpp`):
+   - `Log::eval_gpu`: falls back to CPU if dispatch fails
+   - `BINARY_GPU` macro: falls back to CPU for complex64/complex128
+   - `Equal::eval_gpu`: falls back to CPU for complex types
+   - `Scan::eval_gpu`: falls back to CPU for non-last-axis, non-float32, or scan_size > 1024
+
+3. **fill_gpu zero-size and unallocated output guard** (`copy.cpp`):
+   - Early return when `out.size() == 0`
+   - Allocate output if not already allocated (matches Metal behavior)
+
+4. **Pipeline cache version bump** (`device.cpp`):
+   - Bumped v12 → v14 for Cody-Waite push constant change
+
+5. **Tests** (before → after):
+   - All stage tests: PASS (no regressions)
+   - sin/cos Cody-Waite precision fix confirmed
+
+6. **Files changed**: `copy.cpp`, `device.cpp`, `unary.comp`, `primitives.cpp`
+
