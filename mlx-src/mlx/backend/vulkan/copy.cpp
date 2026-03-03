@@ -222,6 +222,15 @@ void copy_gpu_inplace(
     std::optional<array> dynamic_o_offset) {
   if (out.size() == 0)
     return;
+  // Apply dynamic offsets (CPU-computed scalars in unified-memory buffers).
+  // On MoltenVK, VMA allocations are CPU-visible so data<int32_t>() is valid
+  // immediately after the offset array is populated by compute_dynamic_offset.
+  if (dynamic_i_offset.has_value()) {
+    i_offset += static_cast<int64_t>(*dynamic_i_offset->data<int32_t>());
+  }
+  if (dynamic_o_offset.has_value()) {
+    o_offset += static_cast<int64_t>(*dynamic_o_offset->data<int32_t>());
+  }
   dispatch_copy_shader(
       in, out, data_shape, i_strides, o_strides, i_offset, o_offset, ctype, s);
 }

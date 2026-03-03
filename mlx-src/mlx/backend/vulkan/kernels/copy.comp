@@ -112,6 +112,10 @@ float read_as_float(uint src_idx) {
     } else if (src_dtype == DTYPE_INT64) {
         uint lo = src_data[src_idx * 2u];
         int hi = int(src_data[src_idx * 2u + 1u]);
+        if ((hi == 0 && (lo & 0x80000000u) == 0u) ||
+            (hi == -1 && (lo & 0x80000000u) != 0u)) {
+            return float(int(lo));
+        }
         return float(lo) + float(hi) * 4294967296.0;
     } else {
         // float32 default
@@ -190,9 +194,11 @@ void raw_copy(uint src_idx, uint dst_idx) {
         uint src_word = src_data[src_idx / 2u];
         uint val = ((src_idx & 1u) == 0u) ? (src_word & 0xFFFFu) : (src_word >> 16u);
         if ((dst_idx & 1u) == 0u) {
-            dst_data[dst_idx / 2u] = (dst_data[dst_idx / 2u] & 0xFFFF0000u) | val;
+            atomicAnd(dst_data[dst_idx / 2u], 0xFFFF0000u);
+            atomicOr(dst_data[dst_idx / 2u], val);
         } else {
-            dst_data[dst_idx / 2u] = (dst_data[dst_idx / 2u] & 0x0000FFFFu) | (val << 16u);
+            atomicAnd(dst_data[dst_idx / 2u], 0x0000FFFFu);
+            atomicOr(dst_data[dst_idx / 2u], val << 16u);
         }
     } else {
         // 1-byte (bool/uint8/int8)

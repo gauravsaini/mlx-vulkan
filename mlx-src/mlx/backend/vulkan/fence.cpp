@@ -10,10 +10,11 @@
 namespace mlx::core {
 
 struct FenceImpl {
+  Stream stream;
   uint32_t count{0};
   VkSemaphore sem{VK_NULL_HANDLE};
 
-  FenceImpl() {
+  FenceImpl(Stream s) : stream(s) {
     VkSemaphoreTypeCreateInfo timeline_info{};
     timeline_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     timeline_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -39,24 +40,49 @@ struct FenceImpl {
   }
 };
 
-Fence::Fence(Stream) {
+Fence::Fence(Stream stream) {
   auto dtor = [](void* ptr) { delete static_cast<FenceImpl*>(ptr); };
-  fence_ = std::shared_ptr<void>(new FenceImpl{}, dtor);
+  fence_ = std::shared_ptr<void>(new FenceImpl{stream}, dtor);
 }
 
 void Fence::wait(Stream stream, const array&) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
 
+  if (f.stream == stream) {
+    return;
+  }
+
+  if (f.stream.device == Device::gpu) {
+    vulkan::device(f.stream.device).commit(f.stream);
+  }
+
   if (stream.device == Device::gpu) {
     // MoltenVK does not support GPU-side timeline semaphore waits in
-    // vkQueueSubmit. Drain the compute queue directly — this ensures any
-    // previously-submitted work (and its completion handlers that signal the
-    // fence semaphore) has run. We use vkQueueWaitIdle directly rather than
-    // synchronize(stream) because synchronize() commits the current in-flight
-    // command buffer which would corrupt the recording state for subsequent
-    // ops.
-    auto& dev = vulkan::device(stream.device);
-    vkQueueWaitIdle(dev.compute_queue());
+    // vkQueueSubmit, so we cannot encode a semaphore-wait into the command
+    // buffer. Instead, block the calling (main) thread until the CPU stream
+    // signals the timeline semaphore. The signal is enqueued to the CPU
+    // stream thread pool by Fence::update *after* the CPU primitive
+    // (e.g. hadamard butterfly) is dispatched, so waiting here guarantees
+    // that all CPU-stream work preceding this fence has completed before
+    // any subsequent GPU operation (e.g. subtraction) reads those buffers.
+    //
+    // Note: the old implementation only called vkQueueWaitIdle which drains
+    // the GPU queue but does NOT wait for the CPU stream thread -- causing a
+    // race when GPU ops immediately follow CPU ops on a different stream.
+    uint64_t wait_count = f.count;
+    if (wait_count > 0) {
+      VkSemaphoreWaitInfo wait_info{};
+      wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+      wait_info.semaphoreCount = 1;
+      wait_info.pSemaphores = &f.sem;
+      wait_info.pValues = &wait_count;
+      if (vkWaitSemaphores(
+              vulkan::device(Device::gpu).vk_device(),
+              &wait_info,
+              UINT64_MAX) != VK_SUCCESS) {
+        throw std::runtime_error("[Fence::wait] vkWaitSemaphores failed");
+      }
+    }
   } else if (stream.device == Device::cpu) {
     uint64_t wait_count = f.count;
     scheduler::enqueue(stream, [fence_ = fence_, wait_count]() mutable {

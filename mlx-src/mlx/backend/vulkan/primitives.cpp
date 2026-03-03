@@ -74,6 +74,7 @@ enum class BinaryOp : uint32_t {
   BitXor = 21,
   LeftShift = 22,
   RightShift = 23,
+  EqualNan = 24,
 };
 
 // Unary op IDs (must match unary.comp)
@@ -143,6 +144,28 @@ void dispatch_binary(
     array& out,
     uint32_t op_id,
     const Stream& s) {
+  // If either input has a non-zero buffer offset, strided_idx in the shader
+  // computes offsets from buffer[0] but the data starts at buffer[offset].
+  // Copy non-zero-offset inputs to contiguous arrays first.
+  if (a.offset() != 0 || b.offset() != 0) {
+    array a_eff(a.shape(), a.dtype(), nullptr, {});
+    array b_eff(b.shape(), b.dtype(), nullptr, {});
+    if (a.offset() != 0) {
+      a_eff.set_data(allocator::malloc(a_eff.nbytes()));
+      copy_gpu(a, a_eff, CopyType::General, s);
+    } else {
+      a_eff = a;
+    }
+    if (b.offset() != 0) {
+      b_eff.set_data(allocator::malloc(b_eff.nbytes()));
+      copy_gpu(b, b_eff, CopyType::General, s);
+    } else {
+      b_eff = b;
+    }
+    dispatch_binary(a_eff, b_eff, out, op_id, s);
+    return;
+  }
+
   auto [shape, strides] = collapse_contiguous_dims(a, b, out);
   if (shape.size() > 4) {
     array a_contig(out.shape(), a.dtype(), nullptr, {});
@@ -456,7 +479,12 @@ void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
 BINARY_GPU(Add, Add)
 BINARY_GPU(ArcTan2, Arctan2)
 BINARY_GPU(Divide, Div)
-BINARY_GPU(Equal, Equal)
+void Equal::eval_gpu(const std::vector<array>& inputs, array& out) {
+  uint32_t op = equal_nan_
+      ? static_cast<uint32_t>(BinaryOp::EqualNan)
+      : static_cast<uint32_t>(BinaryOp::Equal);
+  dispatch_binary(inputs[0], inputs[1], out, op, stream());
+}
 BINARY_GPU(Greater, Greater)
 BINARY_GPU(GreaterEqual, GreaterEq)
 BINARY_GPU(Less, Less)
@@ -931,18 +959,37 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
-  const array& a = inputs[0];
-  const array& b = inputs[1];
+  const array& a_orig = inputs[0];
+  const array& b_orig = inputs[1];
 
-  bool a_ok =
-      a.dtype() == float32 || a.dtype() == float16 || a.dtype() == bfloat16;
-  bool b_ok =
-      b.dtype() == float32 || b.dtype() == float16 || b.dtype() == bfloat16;
+  bool a_ok = a_orig.dtype() == float32 || a_orig.dtype() == float16 ||
+              a_orig.dtype() == bfloat16;
+  bool b_ok = b_orig.dtype() == float32 || b_orig.dtype() == float16 ||
+              b_orig.dtype() == bfloat16;
   if (!a_ok || !b_ok) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
   }
+
+  // Make contiguous copies if either input has non-standard strides
+  // (e.g. b.T is a transposed view — strides are (1, K) not (N, 1))
+  array a_contig(a_orig.shape(), a_orig.dtype(), nullptr, {});
+  array b_contig(b_orig.shape(), b_orig.dtype(), nullptr, {});
+  if (!a_orig.flags().row_contiguous) {
+    a_contig.set_data(allocator::malloc(a_contig.nbytes()));
+    copy_gpu(a_orig, a_contig, CopyType::General, stream());
+  } else {
+    a_contig = a_orig;
+  }
+  if (!b_orig.flags().row_contiguous) {
+    b_contig.set_data(allocator::malloc(b_contig.nbytes()));
+    copy_gpu(b_orig, b_contig, CopyType::General, stream());
+  } else {
+    b_contig = b_orig;
+  }
+  const array& a = a_contig;
+  const array& b = b_contig;
 
   bool use_temp_out = out.dtype() != float32;
   std::optional<array> temp_out;
@@ -1225,6 +1272,24 @@ void LogSumExp::eval_gpu(const std::vector<array>& inputs, array& out) {
 void DivMod::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
+  // binary_two.comp only handles scalar-broadcast, not full shape broadcasting.
+  // If any non-scalar input has a different shape than the output, fall back to CPU.
+  bool a_scalar = inputs[0].data_size() == 1;
+  bool b_scalar = inputs[1].data_size() == 1;
+  // broadcast_arrays() in ops.cpp pre-expands shapes to the output shape with
+  // stride-0 axes, so inputs[x].shape() == outputs[0].shape() always.
+  // Detect actual broadcasting via data_size < size (stride-0 implies fewer data).
+  bool a_broadcasted = !a_scalar && (inputs[0].data_size() != inputs[0].size());
+  bool b_broadcasted = !b_scalar && (inputs[1].data_size() != inputs[1].size());
+  bool needs_broadcast = a_broadcasted || b_broadcasted;
+  if (needs_broadcast) {
+    for (auto& out : outputs)
+      out.set_data(allocator::malloc(out.nbytes()));
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, outputs);
+    return;
+  }
+
   for (auto& out : outputs) {
     out.set_data(allocator::malloc(out.nbytes()));
   }
@@ -1457,12 +1522,28 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (out.size() == 0)
     return;
 
+  // Make contiguous copies of src and idx if needed (strides would confuse the shader)
+  array src_storage(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
+  if (!inputs[0].flags().row_contiguous) {
+    src_storage.set_data(allocator::malloc(src_storage.nbytes()));
+    copy_gpu(inputs[0], src_storage, CopyType::General, stream());
+  } else {
+    src_storage = inputs[0];
+  }
+  array idx_storage(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
+  if (!inputs[1].flags().row_contiguous) {
+    idx_storage.set_data(allocator::malloc(idx_storage.nbytes()));
+    copy_gpu(inputs[1], idx_storage, CopyType::General, stream());
+  } else {
+    idx_storage = inputs[1];
+  }
+
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  const array& src = inputs[0];
-  const array& idx = inputs[1];
+  const array& src = src_storage;
+  const array& idx = idx_storage;
 
   // Stride of the indexed axis in source and destination
   uint32_t src_stride = 1;
@@ -1482,7 +1563,10 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   pc.idx_offset = static_cast<uint32_t>(idx.offset() * idx.itemsize());
   pc.dst_offset = static_cast<uint32_t>(out.offset() * out.itemsize());
   pc.src_ax_size = static_cast<uint32_t>(src.shape(axis_));
-  // inner / src_outer_stride unused for INDEX_GATHER — leave as 0
+  // src_outer_stride repurposed as element_wise flag:
+  // 1 = idx.size() == out.size() (take_along_axis style, one index per output element)
+  // 0 = group-wise (1 index per dst_stride group)
+  pc.src_outer_stride = (idx.size() == out.size()) ? 1u : 0u;
 
   indexing_dispatch(
       dev,
@@ -1583,8 +1667,10 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   // Copy input to output (sort is in-place on output)
+  // Use General copy to handle non-contiguous (strided) inputs correctly
   out.set_data(allocator::malloc(out.nbytes()));
-  copy_gpu_inplace(in, out, CopyType::Vector, stream());
+  CopyType copy_type = in.flags().row_contiguous ? CopyType::Vector : CopyType::General;
+  copy_gpu_inplace(in, out, copy_type, stream());
 
   uint32_t n = static_cast<uint32_t>(out.size());
   uint32_t n_sorts = n / sort_size;
@@ -2636,17 +2722,143 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
   // GPU shader only handles pure power-of-2 WHT (m == 1) up to n = 2048
   bool can_gpu = (m == 1) && (n > 0) && (n <= 2048) && (in.dtype() == float32);
   if (!can_gpu) {
-    // Fall back to CPU for non-power-of-2, large n, or non-float32
-    eval_cpu(inputs, out);
+    // For large n or non-power-of-2 sizes we run the butterfly on CPU.
+    // We cannot call eval_cpu() directly (stream mismatch causes wrong values),
+    // so instead: copy input to a VMA buffer via GPU, synchronize, then run
+    // the butterfly in-place on the CPU-accessible unified-memory buffer.
+    //
+    // IMPORTANT: do NOT pre-allocate out before calling copy_gpu — copy_gpu
+    // internally calls set_copy_output_data which always re-allocates out.
+    // A double allocation causes the scheduler to see a stale buffer pointer
+    // when multiple streams are evaluated concurrently.
+    if (out.size() == 0) {
+      out.set_data(allocator::malloc(0));
+      return;
+    }
+    // copy_gpu allocates out AND dispatches the GPU copy in one shot.
+    copy_gpu(in, out, CopyType::General, s);
+    // Flush command buffer and wait for GPU copy to complete
+    vulkan::device(s.device).synchronize(s);
+
+    // --- Butterfly transforms in-place on out.data<T>() ---
+    auto compute_hadamard = [&]<typename T>() {
+      auto* out_ptr = out.data<T>();
+      size_t size = out.size();
+
+      // hadamard_n: in-place power-of-2 Walsh-Hadamard butterfly
+      float n_scale = (m > 1) ? 1.0f : scale_;
+      int n_over_2 = n / 2;
+      for (int b = 0; b < (int)(size / (size_t)n); b++) {
+        T* dp = out_ptr + (size_t)b * n;
+        int hh = 1;
+        while (hh < n) {
+          for (int i = 0; i < n / 2; i++) {
+            int kk = i & (hh - 1);
+            int j = ((i - kk) << 1) + kk;
+            float xv = static_cast<float>(dp[j]);
+            float yv = static_cast<float>(dp[j + hh]);
+            float nv1 = xv + yv;
+            float nv2 = xv - yv;
+            if (hh == n_over_2) {
+              nv1 *= n_scale;
+              nv2 *= n_scale;
+            }
+            dp[j] = static_cast<T>(nv1);
+            dp[j + hh] = static_cast<T>(nv2);
+          }
+          hh <<= 1;
+        }
+      }
+
+      // hadamard_m: apply non-power-of-2 Hadamard matrix (m ∈ {12,20,28})
+      if (m > 1) {
+        auto h_matrices = hadamard_matrices();
+        auto& mat_sv = h_matrices[m];
+        std::vector<bool> hmat;
+        hmat.reserve((size_t)m * m);
+        auto start = mat_sv.find('\n');
+        start = (start == std::string_view::npos) ? 0 : start + 1;
+        while (start < mat_sv.size()) {
+          auto end = mat_sv.find('\n', start);
+          if (end == std::string_view::npos)
+            end = mat_sv.size();
+          auto row = mat_sv.substr(start, end - start);
+          for (char c : row)
+            hmat.push_back(c == '+');
+          start = end + 1;
+        }
+        // Each batch of (m * n) elements: apply H_m matrix across the m groups
+        for (int b = 0; b < (int)(size / (size_t)m / (size_t)n); b++) {
+          T* dp = out_ptr + (size_t)b * (size_t)n * m;
+          std::vector<float> tmp(m);
+          for (int i = 0; i < n; i++) {
+            for (int j = 0; j < m; j++) {
+              float acc = 0.0f;
+              for (int kk = 0; kk < m; kk++) {
+                float val = static_cast<float>(dp[i + (size_t)kk * n]);
+                acc += hmat[(size_t)kk + (size_t)j * m] ? val : -val;
+              }
+              tmp[j] = acc;
+            }
+            for (int j = 0; j < m; j++) {
+              dp[i + (size_t)j * n] = static_cast<T>(tmp[j] * scale_);
+            }
+          }
+        }
+      }
+    };
+
+    if (in.dtype() == float32) {
+      compute_hadamard.template operator()<float>();
+    } else if (in.dtype() == float16) {
+      compute_hadamard.template operator()<float16_t>();
+    } else if (in.dtype() == bfloat16) {
+      compute_hadamard.template operator()<bfloat16_t>();
+    } else {
+      throw std::runtime_error("[vulkan::Hadamard] unsupported type");
+    }
+
+    // After CPU butterfly, insert a host→device memory barrier so subsequent
+    // GPU ops (e.g. subtraction in assertLess(y1-y2)) see our writes.
+    // Without this, the GPU could read stale cache lines from out's VMA buffer
+    // even on unified-memory hardware (MoltenVK / Apple M1).
+    {
+      auto& enc = vulkan::get_command_encoder(s);
+      VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      mb.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+      mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(
+          enc.cmd,
+          VK_PIPELINE_STAGE_HOST_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0,
+          1,
+          &mb,
+          0,
+          nullptr,
+          0,
+          nullptr);
+      enc.op_count++;
+    }
     return;
   }
 
-  // Copy input to output (in-place transform on the output buffer)
-  copy_gpu(
-      in,
-      out,
-      in.flags().row_contiguous ? CopyType::Vector : CopyType::General,
-      s);
+  // Allocate output buffer
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0)
+    return;
+
+  // The shader reads from src (binding 0) and writes to dst (binding 1).
+  // If the input is non-contiguous (e.g. from a stride-2 slice), we need
+  // to make a contiguous copy so the shader's linear indexing is correct.
+  array src_arr(in.shape(), in.dtype(), nullptr, {});
+  if (!in.flags().row_contiguous) {
+    src_arr.set_data(allocator::malloc(src_arr.nbytes()));
+    copy_gpu(in, src_arr, CopyType::General, s);
+    vulkan::device(s.device).add_temporary(s, src_arr);
+  } else {
+    src_arr = in;
+  }
 
   uint32_t batch_size = static_cast<uint32_t>(out.size() / n);
 
@@ -2672,8 +2884,10 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+  // Bind src_arr (contiguous copy or original in) as binding 0,
+  // and out as binding 1 (shader writes results here).
   VkDescriptorBufferInfo infos[2]{
-      {vulkan::get_buffer(in), 0, VK_WHOLE_SIZE},
+      {vulkan::get_buffer(src_arr), 0, VK_WHOLE_SIZE},
       {vulkan::get_buffer(out), 0, VK_WHOLE_SIZE}};
   VkWriteDescriptorSet writes[2]{};
   for (int i = 0; i < 2; i++) {

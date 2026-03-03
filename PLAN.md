@@ -77,7 +77,6 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 - `test_cos` / `test_sin` — precision near zero on GPU vs CPU (denormal handling)
 - `test_divmod` — still failing for some dtype combinations (partial fix applied)
 - `test_dynamic_slicing` — dynamic offset computation stub returns 0
-- `test_hadamard` — CPU fallback gives ~1.0 off vs reference
 - `test_inner` — shape mismatch in inner product computation
 - `test_sort` — multi-axis sort wrong for int32 and float32
 
@@ -88,6 +87,19 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 ---
 
 ## Known Issues / Critical Bugs Fixed
+
+### Fixed (2026-03-03) — Hadamard CPU/GPU Sync, Memory Bugs & Precision
+
+32. **Fence::wait deadlocks fixed** (`fence.cpp`):
+    - Added explicit commit to producer stream during cross-device semaphore wait to prevent queue stalling.
+
+33. **Hadamard memory & precision patches** (`primitives.cpp`):
+    - Fixed typing for float16/bfloat16 in `eval_cpu` GPU fallbacks, eliminating `1.0 != 0.0` mismatch.
+    - Added missing `dev.add_temporary(s, src_arr)` handling avoiding VAP use-after-free corruption in `eval_gpu`.
+
+34. **copy.comp data race & cancellation** (`kernels/copy.comp`):
+    - Solved precision cancellation from `int64` upcast to `float32` by taking a 32-bit fast path loop.
+    - Updated 16-bit element assignments in `copy.comp` via `atomicAnd/atomicOr` eliminating multithreading overwrites.
 
 ### Fixed (2026-03-03) — Dtype Coverage in copy/arange/binary/divmod shaders
 

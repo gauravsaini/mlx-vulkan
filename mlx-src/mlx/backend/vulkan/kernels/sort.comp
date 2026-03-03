@@ -23,23 +23,33 @@ void main() {
     uint tid      = gl_LocalInvocationID.x;
 
     if (sort_idx >= params.n_sorts) return;
-    uint base = sort_idx * params.sort_size;
+    // actual_stride = real sort dimension (may be < sort_size due to power-of-2 padding)
+    uint actual_stride = params.n / params.n_sorts;
+    uint base = sort_idx * actual_stride;
 
-    // Load
+    // Load: pad beyond actual_stride with +Inf so they sort to the end.
+    // Also replace NaN with +Inf in the sort key so NaN elements sort last.
+    // We keep the original value in s_data and use a separate key for compare.
+    const float POS_INF = uintBitsToFloat(0x7F800000u); // IEEE 754 +Infinity
     if (tid < params.sort_size) {
-        s_data[tid] = (base + tid < params.n) ? data[base + tid] : 3.402823466e+38;
+        float v = (tid < actual_stride) ? data[base + tid] : POS_INF;
+        s_data[tid] = v;
         s_idxs[tid] = tid;
     }
     barrier();
 
     // Bitonic sort
+    // For NaN-safe comparison: treat NaN as +Inf (goes to end in ascending).
     for (uint k = 2; k <= params.sort_size; k <<= 1) {
         for (uint j = k >> 1; j > 0; j >>= 1) {
             uint i = tid;
             uint l = i ^ j;
             if (l > i && i < params.sort_size) {
                 bool ascending_dir = ((i & k) == 0) == (params.ascending == 1u);
-                bool swap = (s_data[i] > s_data[l]) == ascending_dir;
+                // Replace NaN with +Inf for comparison so NaN always sorts last
+                float ki = isnan(s_data[i]) ? POS_INF : s_data[i];
+                float kl = isnan(s_data[l]) ? POS_INF : s_data[l];
+                bool swap = (ki > kl) == ascending_dir;
                 if (swap) {
                     float tmp_d = s_data[i]; s_data[i] = s_data[l]; s_data[l] = tmp_d;
                     uint  tmp_i = s_idxs[i]; s_idxs[i] = s_idxs[l]; s_idxs[l] = tmp_i;
@@ -49,8 +59,8 @@ void main() {
         }
     }
 
-    // Store
-    if (tid < params.sort_size && base + tid < params.n) {
+    // Store: only write back actual elements (not the FLT_MAX padding)
+    if (tid < actual_stride) {
         data[base + tid] = s_data[tid];
         if (params.with_index == 1u) {
             indices[base + tid] = s_idxs[tid];

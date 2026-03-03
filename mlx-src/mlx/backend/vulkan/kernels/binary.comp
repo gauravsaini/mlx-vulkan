@@ -29,6 +29,7 @@
 #define BINARY_BITWISE_XOR  21
 #define BINARY_LEFT_SHIFT   22
 #define BINARY_RIGHT_SHIFT  23
+#define BINARY_EQUAL_NAN    24
 
 #define DTYPE_FLOAT  0
 #define DTYPE_INT    1
@@ -119,6 +120,7 @@ int64_t read_i64_b(uint idx) {
 bool cmp_float(float a, float b) {
     switch (params.op) {
         case BINARY_EQUAL:       return (a == b);
+        case BINARY_EQUAL_NAN:   return (isnan(a) && isnan(b)) || (a == b);
         case BINARY_NOT_EQUAL:   return (a != b);
         case BINARY_LESS:        return (a <  b);
         case BINARY_LESS_EQ:     return (a <= b);
@@ -126,12 +128,16 @@ bool cmp_float(float a, float b) {
         case BINARY_GREATER_EQ:  return (a >= b);
         case BINARY_LOGICAL_AND: return (a != 0.0) && (b != 0.0);
         case BINARY_LOGICAL_OR:  return (a != 0.0) || (b != 0.0);
+        case BINARY_BITWISE_AND: return (a != 0.0) && (b != 0.0);
+        case BINARY_BITWISE_OR:  return (a != 0.0) || (b != 0.0);
+        case BINARY_BITWISE_XOR: return ((a != 0.0) != (b != 0.0));
         default:                 return false;
     }
 }
 bool cmp_int(int a, int b) {
     switch (params.op) {
         case BINARY_EQUAL:       return (a == b);
+        case BINARY_EQUAL_NAN:   return (a == b);
         case BINARY_NOT_EQUAL:   return (a != b);
         case BINARY_LESS:        return (a <  b);
         case BINARY_LESS_EQ:     return (a <= b);
@@ -139,12 +145,16 @@ bool cmp_int(int a, int b) {
         case BINARY_GREATER_EQ:  return (a >= b);
         case BINARY_LOGICAL_AND: return (a != 0) && (b != 0);
         case BINARY_LOGICAL_OR:  return (a != 0) || (b != 0);
+        case BINARY_BITWISE_AND: return (a & b) != 0;
+        case BINARY_BITWISE_OR:  return (a | b) != 0;
+        case BINARY_BITWISE_XOR: return (a ^ b) != 0;
         default:                 return false;
     }
 }
 bool cmp_uint(uint a, uint b) {
     switch (params.op) {
         case BINARY_EQUAL:       return (a == b);
+        case BINARY_EQUAL_NAN:   return (a == b);
         case BINARY_NOT_EQUAL:   return (a != b);
         case BINARY_LESS:        return (a <  b);
         case BINARY_LESS_EQ:     return (a <= b);
@@ -152,12 +162,16 @@ bool cmp_uint(uint a, uint b) {
         case BINARY_GREATER_EQ:  return (a >= b);
         case BINARY_LOGICAL_AND: return (a != 0u) && (b != 0u);
         case BINARY_LOGICAL_OR:  return (a != 0u) || (b != 0u);
+        case BINARY_BITWISE_AND: return (a & b) != 0u;
+        case BINARY_BITWISE_OR:  return (a | b) != 0u;
+        case BINARY_BITWISE_XOR: return (a ^ b) != 0u;
         default:                 return false;
     }
 }
 bool cmp_int64(int64_t a, int64_t b) {
     switch (params.op) {
         case BINARY_EQUAL:       return (a == b);
+        case BINARY_EQUAL_NAN:   return (a == b);
         case BINARY_NOT_EQUAL:   return (a != b);
         case BINARY_LESS:        return (a <  b);
         case BINARY_LESS_EQ:     return (a <= b);
@@ -165,6 +179,9 @@ bool cmp_int64(int64_t a, int64_t b) {
         case BINARY_GREATER_EQ:  return (a >= b);
         case BINARY_LOGICAL_AND: return (a != 0l) && (b != 0l);
         case BINARY_LOGICAL_OR:  return (a != 0l) || (b != 0l);
+        case BINARY_BITWISE_AND: return (a & b) != 0l;
+        case BINARY_BITWISE_OR:  return (a | b) != 0l;
+        case BINARY_BITWISE_XOR: return (a ^ b) != 0l;
         default:                 return false;
     }
 }

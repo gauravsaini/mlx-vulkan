@@ -3,6 +3,34 @@
 
 ## UPDATED ON : 2026-03-03 (session 2)
 
+### fix (2026-03-03) — Hadamard CPU/GPU Sync and memory/precision correctness
+
+1. **Fence::wait deadlocks fixed** (`fence.cpp`):
+   - Root cause: Cross-stream CPU/GPU synchronizations using `vkWaitSemaphores` would block threads but without forcing `device.commit()` on the producer stream, leading to deadlocks.
+   - Fix: Execute `vulkan::device(f.stream.device).commit(f.stream)` when waiting cross-device and track the producer stream.
+
+2. **Hadamard CPU Fallback Types** (`primitives.cpp`):
+   - Root cause: `Hadamard::eval_gpu` dispatched float16/bfloat16 unified memory fallbacks to CPU by incorrectly mapping memory as `float`, causing precision loss.
+   - Fix: Added typed lambda dispatch `compute_hadamard<T>` spanning `float16_t` and `bfloat16_t`.
+
+3. **VMAP Use-After-Free** (`primitives.cpp`):
+   - Root cause: VMAP non-contiguous dispatch allocated `src_arr` in `Hadamard::eval_gpu` but destroyed it at the end of the function before execution completed.
+   - Fix: Added `vulkan::device(s.device).add_temporary(s, src_arr)`.
+
+4. **copy.comp `int64` float cancellation** (`kernels/copy.comp`):
+   - Root cause: Upcasting int64 to float32 lost precision for negative numbers like -1. `float(4294967295) + float(-1) * 4.29e9` equated to identically `0.0`.
+   - Fix: Applied `float(int(lo))` fast-path when values fit inside a signed 32-bit integer.
+
+5. **copy.comp 16-bit thread race condition** (`kernels/copy.comp`):
+   - Root cause: Two threads were writing overlapping 16-bit outputs into a shared 32-bit `dst_data` block without atomics, leading to non-deterministic data corruption.
+   - Fix: Swapped static overwrites for `atomicAnd` and `atomicOr`.
+
+6. **Tests**:
+   - `test_hadamard` suite goes from failing / deadlocking to 100% PASS ✅.
+   - `test_hadamard_grad_vmap` PASS ✅.
+
+---
+
 ### fix (2026-03-03) — Dtype coverage in copy/arange/binary/divmod shaders
 
 1. **Stage 7 API fix** (`tests/vulkan/test_stage7_gpu_copy.py`):
