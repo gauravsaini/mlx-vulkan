@@ -1098,9 +1098,11 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   out.set_data(allocator::malloc(out.nbytes()));
   if (out.size() == 0 || a.size() == 0 || b.size() == 0) {
-    // K=0 case: e.g. (1,0)@(0,1) — output is non-empty (1,1) but sum over
-    // zero elements. Fill with zeros via CPU (VMA memory is CPU-accessible).
-    std::memset(out.data<float>(), 0, out.nbytes());
+    if (out.nbytes() > 0) {
+      auto& encoder = vulkan::get_command_encoder(stream());
+      encoder.op_count++;
+      vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+    }
     return;
   }
 
@@ -1125,7 +1127,7 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline(
-      "matmul",
+      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) && (K % 16 == 0) ? "matmul_coop" : "matmul",
       layout,
       ds_layout,
       3,
@@ -1227,13 +1229,17 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& raw_out = use_temp ? *temp_out : out;
 
   out.set_data(allocator::malloc(out.nbytes()));
-  if (use_temp)
-    memset(temp_out->data<void>(), 0, temp_out->nbytes());
-  memset(out.data<void>(), 0, out.nbytes());
 
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
+
+  if (use_temp && temp_out->nbytes() > 0) {
+    vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(*temp_out), 0, VK_WHOLE_SIZE, 0);
+  }
+  if (out.nbytes() > 0) {
+    vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+  }
 
   VkBuffer in_buf = vulkan::get_buffer(raw_in);
   VkBuffer out_buf = vulkan::get_buffer(raw_out);
@@ -1544,8 +1550,12 @@ struct IndexPushConst {
   uint32_t src_ax_size;
   uint32_t inner; // INDEX_GATHER_GEN: product(src dims after gather axis)
   uint32_t src_outer_stride; // INDEX_GATHER_GEN: d_ax * inner
+  // Multi-axis gather extensions (mx.take with ND index tensors):
+  uint32_t idx_ndim; // Number of dimensions in index tensor (0-4)
+  uint32_t idx_shape[4]; // Shape of index tensor
+  uint32_t idx_strides[4]; // Strides of index tensor
 };
-static constexpr uint32_t kIndexPushSize = sizeof(IndexPushConst); // 44
+static constexpr uint32_t kIndexPushSize = sizeof(IndexPushConst); // 80
 
 static void indexing_dispatch(
     vulkan::Device& dev,
@@ -1643,6 +1653,12 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     pc.src_ax_size = d_ax;
     pc.inner = inner;
     pc.src_outer_stride = d_ax * inner;
+    // Multi-axis gather: set index tensor metadata for ND indexing
+    pc.idx_ndim = static_cast<uint32_t>(idx.ndim());
+    for (int d = 0; d < 4; d++) {
+        pc.idx_shape[d] = (d < idx.ndim()) ? static_cast<uint32_t>(idx.shape(d)) : 1u;
+        pc.idx_strides[d] = (d < idx.ndim()) ? static_cast<uint32_t>(idx.strides(d)) : 1u;
+    }
 
     indexing_dispatch(
         dev,
@@ -1803,10 +1819,10 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
     sort_pow2 <<= 1;
 
   // Fall back to CPU if:
-  // - Sort dimension > 256
+  // - Sort dimension > 128 (shader only works with sort_size <= local_size_x)
   // - Not sorting on last axis
   // - Input is not float32 (shader is hard-coded to use 32-bit float)
-  if (sort_pow2 > 256 || sort_axis != in.ndim() - 1 || in.dtype() != float32) {
+  if (sort_pow2 > 128 || sort_axis != in.ndim() - 1 || in.dtype() != float32) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
@@ -1877,6 +1893,7 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
   vkCmdDispatch(cmd, n_sorts, 1, 1);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};

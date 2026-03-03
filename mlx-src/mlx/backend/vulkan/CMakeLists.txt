@@ -59,6 +59,14 @@ add_custom_command(
   VERBATIM)
 list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_stockham.spv)
 
+# Compile matmul.comp into matmul_coop.spv using cooperative matrix extension
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv)
+
 add_custom_command(
   OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv
   COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -o ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp

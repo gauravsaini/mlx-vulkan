@@ -14,6 +14,7 @@
 #define REDUCE_AND  4
 #define REDUCE_OR   5
 
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 // Raw uint32 input so we can handle any 4-byte type by reinterpretation
@@ -35,8 +36,8 @@ layout(push_constant) uniform Params {
     uint outer_stride; // = reduce_size * inner (stride between outer groups)
 } params;
 
-shared float sdata[256];
-shared uint sdata_uint[256];
+shared float sdata[WORKGROUP_SIZE];
+shared uint sdata_uint[WORKGROUP_SIZE];
 
 float identity_f(uint op) {
     if (op == REDUCE_SUM)  return 0.0;
@@ -73,7 +74,7 @@ void main() {
 
     if (is_bool_reduction) {
         uint acc = (params.op == REDUCE_AND) ? 1u : 0u;
-        for (uint i = tid; i < params.reduce_size; i += 256) {
+        for (uint i = tid; i < params.reduce_size; i += WORKGROUP_SIZE) {
             uint idx = in_base_str + i * params.inner;
             uint val = (params.input_elem_bytes == 1u)
                 ? uint(uint(in_bool[idx]) != 0u ? 1u : 0u)
@@ -85,7 +86,7 @@ void main() {
         sdata_uint[tid] = acc;
         barrier();
 
-        for (uint stride = 128; stride > 0; stride >>= 1) {
+        for (uint stride = WORKGROUP_SIZE / 2; stride > 0; stride >>= 1) {
             if (tid < stride) {
                 if (params.op == REDUCE_AND)
                     sdata_uint[tid] = sdata_uint[tid] & sdata_uint[tid + stride];
@@ -103,7 +104,7 @@ void main() {
         }
     } else {
         float acc = identity_f(params.op);
-        for (uint i = tid; i < params.reduce_size; i += 256) {
+        for (uint i = tid; i < params.reduce_size; i += WORKGROUP_SIZE) {
             uint idx = in_base_str + i * params.inner;
             float val;
             if (params.input_elem_bytes == 1u) {
@@ -125,7 +126,7 @@ void main() {
         sdata[tid] = acc;
         barrier();
 
-        for (uint stride = 128; stride > 0; stride >>= 1) {
+        for (uint stride = WORKGROUP_SIZE / 2; stride > 0; stride >>= 1) {
             if (tid < stride) {
                 sdata[tid] = combine_f(params.op, sdata[tid], sdata[tid + stride]);
             }

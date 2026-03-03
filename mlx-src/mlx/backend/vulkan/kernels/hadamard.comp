@@ -15,6 +15,7 @@
 //   - One workgroup handles one segment of n elements (batch_size segments total)
 //   - local_size_x = 256; each thread handles n/256 butterfly pairs per step
 
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, set = 0, binding = 0) readonly buffer SrcBuf { float src[]; };
@@ -39,7 +40,7 @@ void main() {
 
     // ── Load input into shared memory ────────────────────────────────────────
     // Each thread loads n/256 elements (or 1 if n <= 256)
-    uint elems_per_thread = (n + 255u) / 256u;
+    uint elems_per_thread = (n + (WORKGROUP_SIZE - 1)) / WORKGROUP_SIZE;
     for (uint k = 0u; k < elems_per_thread; k++) {
         uint pos = tid * elems_per_thread + k;
         if (pos < n) {
@@ -52,7 +53,7 @@ void main() {
     // h = 1, 2, 4, ..., n/2
     // Each iteration: n/2 butterfly pairs, split among 256 threads
     uint half_n = n >> 1u;
-    uint pairs_per_thread = (half_n + 255u) / 256u;
+    uint pairs_per_thread = (half_n + (WORKGROUP_SIZE - 1)) / WORKGROUP_SIZE;
 
     for (uint h = 1u; h < n; h <<= 1u) {
         for (uint p = 0u; p < pairs_per_thread; p++) {

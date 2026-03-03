@@ -92,6 +92,9 @@ class Device {
   uint32_t preferred_workgroup_size() const {
     return preferred_workgroup_size_;
   }
+  bool has_cooperative_matrix() const {
+    return has_cooperative_matrix_;
+  }
 
   // Descriptor set allocation (one-shot, freed after each commit)
   VkDescriptorSet alloc_descriptor_set(Stream s, VkDescriptorSetLayout layout);
@@ -120,6 +123,7 @@ class Device {
   // Subgroup / preferred workgroup sizes (queried at device init)
   uint32_t subgroup_size_{32};
   uint32_t preferred_workgroup_size_{256};
+  bool has_cooperative_matrix_{false};
 
   std::mutex mutex_;
   std::unordered_map<int, CommandEncoder> encoders_;

@@ -1,5 +1,6 @@
 #version 450
 
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
@@ -11,7 +12,7 @@ layout(push_constant) uniform Params {
     uint n_outputs;
 } params;
 
-shared float sdata[256];
+shared float sdata[WORKGROUP_SIZE];
 
 void main() {
     uint out_idx = gl_WorkGroupID.x;
@@ -22,7 +23,7 @@ void main() {
 
     // Find max
     float local_max = -3.402823466e+38;
-    for (uint i = tid; i < params.reduce_size; i += 256) {
+    for (uint i = tid; i < params.reduce_size; i += WORKGROUP_SIZE) {
         local_max = max(local_max, in_data[base + i]);
     }
     sdata[tid] = local_max;
@@ -36,7 +37,7 @@ void main() {
 
     // Sum exp(x - max)
     float local_sum = 0.0;
-    for (uint i = tid; i < params.reduce_size; i += 256) {
+    for (uint i = tid; i < params.reduce_size; i += WORKGROUP_SIZE) {
         local_sum += exp(in_data[base + i] - global_max);
     }
     sdata[tid] = local_sum;

@@ -38,13 +38,14 @@ void main() {
     }
     barrier();
 
-    // Bitonic sort
+    // Bitonic sort - each thread handles comparisons for its assigned elements
     // For NaN-safe comparison: treat NaN as +Inf (goes to end in ascending).
     for (uint k = 2; k <= params.sort_size; k <<= 1) {
         for (uint j = k >> 1; j > 0; j >>= 1) {
             uint i = tid;
             uint l = i ^ j;
-            if (l > i && i < params.sort_size) {
+            // Only process if l > i (ensures each pair handled once) and within bounds
+            if (l > i && i < params.sort_size && l < params.sort_size) {
                 bool ascending_dir = ((i & k) == 0) == (params.ascending == 1u);
                 // Replace NaN with +Inf for comparison so NaN always sorts last
                 float ki = isnan(s_data[i]) ? POS_INF : s_data[i];

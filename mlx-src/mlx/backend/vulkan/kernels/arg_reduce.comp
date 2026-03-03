@@ -7,6 +7,7 @@
 #define ARG_REDUCE_MAX 0
 #define ARG_REDUCE_MIN 1
 
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf  { uint in_data[];  };
@@ -22,7 +23,7 @@ layout(push_constant) uniform Params {
     uint outer_stride;
 } params;
 
-shared float s_vals[256];
+shared float s_vals[WORKGROUP_SIZE];
 shared uint  s_idxs[256];
 
 float get_val(uint idx) {
@@ -56,7 +57,7 @@ void main() {
     float best_val = params.op == ARG_REDUCE_MAX ? -3.402823466e+38 : 3.402823466e+38;
     uint  best_idx = 0;
 
-    for (uint i = tid; i < params.reduce_size; i += 256) {
+    for (uint i = tid; i < params.reduce_size; i += WORKGROUP_SIZE) {
         uint idx = in_base_str + i * params.inner;
         float v = get_val(idx);
         bool better = (params.op == ARG_REDUCE_MAX) ? (v > best_val) : (v < best_val);
@@ -70,7 +71,7 @@ void main() {
     s_idxs[tid] = best_idx;
     barrier();
 
-    for (uint stride = 128; stride > 0; stride >>= 1) {
+    for (uint stride = WORKGROUP_SIZE / 2; stride > 0; stride >>= 1) {
         if (tid < stride) {
             float v1 = s_vals[tid];
             float v2 = s_vals[tid + stride];

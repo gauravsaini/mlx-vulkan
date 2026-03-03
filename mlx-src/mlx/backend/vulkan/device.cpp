@@ -341,6 +341,13 @@ void Device::create_logical_device() {
         "[MLX Vulkan] Zero-copy (VK_EXT_external_memory_host) available\n");
   }
 
+  // Check for hardware tensor cores (Cooperative Matrix)
+  if (has_ext("VK_KHR_cooperative_matrix")) {
+    dev_extensions.push_back("VK_KHR_cooperative_matrix");
+    has_cooperative_matrix_ = true;
+    fprintf(stderr, "[MLX Vulkan] Cooperative Matrix (Tensor Cores) available\n");
+  }
+
   // Enable timeline semaphore feature
   VkPhysicalDeviceTimelineSemaphoreFeatures timeline_feat{};
   timeline_feat.sType =
@@ -425,7 +432,7 @@ void Device::create_vma() {
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
 static constexpr uint32_t kPipelineCacheVersion =
-    15; // bumped: workgroup size layout(constant_id) tuning
+    16; // bumped: IndexPushConst extended for multi-axis gather (idx_ndim, idx_shape[4], idx_strides[4])
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");

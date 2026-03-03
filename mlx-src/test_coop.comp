@@ -1,0 +1,12 @@
+#version 450
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_KHR_cooperative_matrix : enable
+layout(constant_id = 10) const uint COOP_M = 16;
+layout(constant_id = 11) const uint COOP_N = 16;
+layout(constant_id = 12) const uint COOP_K = 16;
+layout(local_size_x = 32) in;
+shared float tile_a_flat[256];
+void main() {
+    coopmat<float, gl_ScopeSubgroup, COOP_M, COOP_K, gl_MatrixUseA> matA;
+    coopMatLoad(matA, tile_a_flat, 0, 16, gl_CooperativeMatrixLayoutRowMajor);
+}

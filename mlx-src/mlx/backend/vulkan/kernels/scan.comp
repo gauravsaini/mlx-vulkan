@@ -14,6 +14,7 @@
 #define SCAN_MIN      3
 #define SCAN_LOGADDEXP 4
 
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
@@ -29,7 +30,7 @@ layout(push_constant) uniform Params {
 } params;
 
 shared float sdata[1024];  // flat storage for all elements of one scan segment
-shared float stotals[256]; // per-thread partial totals for the cross-chunk prefix
+shared float stotals[WORKGROUP_SIZE]; // per-thread partial totals for the cross-chunk prefix
 
 float identity_val() {
     if (params.op == SCAN_MUL)      return 1.0;
@@ -55,7 +56,7 @@ float combine(float a, float b) {
 void main() {
     uint scan_idx = gl_WorkGroupID.x;
     uint tid      = gl_LocalInvocationID.x;
-    uint N        = 256u;
+    uint N        = WORKGROUP_SIZE;
 
     if (scan_idx >= params.n_scans) return;
 

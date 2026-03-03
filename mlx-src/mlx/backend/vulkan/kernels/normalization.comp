@@ -3,6 +3,7 @@
 #define NORM_LAYER_NORM 0
 #define NORM_RMS_NORM   1
 
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf      { float in_data[];    };
@@ -19,7 +20,7 @@ layout(push_constant) uniform Params {
     uint has_bias;
 } params;
 
-shared float sdata[256];
+shared float sdata[WORKGROUP_SIZE];
 
 void main() {
     uint row = gl_WorkGroupID.x;
@@ -33,7 +34,7 @@ void main() {
     if (params.op == NORM_LAYER_NORM) {
         // Compute mean
         float local_sum = 0.0;
-        for (uint i = tid; i < params.n_cols; i += 256) {
+        for (uint i = tid; i < params.n_cols; i += WORKGROUP_SIZE) {
             local_sum += in_data[base + i];
         }
         sdata[tid] = local_sum;
@@ -48,7 +49,7 @@ void main() {
 
     // Compute variance (or mean square for RMS norm)
     float local_sq = 0.0;
-    for (uint i = tid; i < params.n_cols; i += 256) {
+    for (uint i = tid; i < params.n_cols; i += WORKGROUP_SIZE) {
         float diff = in_data[base + i] - mean;
         local_sq += diff * diff;
     }
@@ -63,7 +64,7 @@ void main() {
     barrier();
 
     // Normalize and scale
-    for (uint i = tid; i < params.n_cols; i += 256) {
+    for (uint i = tid; i < params.n_cols; i += WORKGROUP_SIZE) {
         float normalized = (in_data[base + i] - mean) * rstd;
         float w = params.has_weight == 1u ? weight_data[i] : 1.0;
         float b = params.has_bias   == 1u ? bias_data[i]   : 0.0;
