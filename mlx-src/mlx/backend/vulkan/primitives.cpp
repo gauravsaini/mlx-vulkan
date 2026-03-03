@@ -1826,13 +1826,11 @@ void ArgPartition::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& in = inputs[0];
-  out.set_data(allocator::malloc(out.nbytes()));
-  if (out.size() == 0)
-    return;
 
   uint32_t scan_size = static_cast<uint32_t>(in.shape(axis_));
   int ndim = in.ndim();
-  int norm_axis = axis_ < 0 ? axis_ + ndim : axis_;
+  int int_axis = static_cast<int>(axis_);
+  int norm_axis = int_axis < 0 ? int_axis + ndim : int_axis;
 
   // Shader assumes contiguous scan (last axis only) and float32 only.
   // Fall back to CPU for:
@@ -1870,6 +1868,10 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
       eval_cpu(inputs, out);
       return;
   }
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0)
+    return;
 
   uint32_t n_scans = static_cast<uint32_t>(in.size() / scan_size);
 
