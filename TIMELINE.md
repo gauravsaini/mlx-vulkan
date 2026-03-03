@@ -639,3 +639,18 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
 
 6. **Files changed**: `copy.cpp`, `device.cpp`, `unary.comp`, `primitives.cpp`
 
+
+## UPDATED ON : 2026-03-03 (session continuation)
+
+### fix (2026-03-03) — Scan CPU fallback segfault fix
+
+1. **Scan CPU fallback Vulkan barrier removal** (`primitives.cpp`):
+   - Root cause: CPU fallback was calling `vulkan::get_command_encoder()` after `eval_cpu()`,
+     mixing CPU and Vulkan execution models and causing segfaults in `test_scans`.
+   - Fix: Removed Vulkan memory barrier code (lines 1845-1861) from Scan::eval_gpu.
+   - CPU fallback now: `synchronize()` → `eval_cpu()` → `return`, without any Vulkan encoder access.
+
+2. **Tests**: test_scans no longer segfaults (fails on pre-existing reverse/inclusive logic).
+
+3. **Files changed**: `primitives.cpp`
+
