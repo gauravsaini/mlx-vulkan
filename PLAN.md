@@ -620,7 +620,7 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 ### Python REPL Tests — COMPLETE ✅
 
 - [x] `int32` arithmetic correctness (fixed binary.comp dtype bug)
-- [x] `test_array.py` full suite — 64/68 PASS (4 pre-existing failures)
+- [x] `test_array.py` full suite — 65/68 PASS (3 pre-existing failures)
 - [x] `test_ops.py` suite — ~100/134 PASS (9 pre-existing failures, no regressions)
 - [x] `test_random.py` — 14/14 PASS
 - [x] `unary.comp` int32 paths (abs, neg on int32) — audit complete
