@@ -19,6 +19,28 @@ void new_stream(Stream s) {
 void eval(array& arr) {
   auto outputs = arr.outputs();
 
+  // Systemic safety: if all outputs are zero-size, allocate empty buffers
+  // and skip the GPU dispatch entirely. Many primitives don't guard for
+  // size==0 individually, and binding a null VkBuffer causes a crash.
+  {
+    bool all_zero = true;
+    for (auto& o : outputs) {
+      if (o.size() != 0) {
+        all_zero = false;
+        break;
+      }
+    }
+    if (all_zero) {
+      for (auto& o : outputs) {
+        if (!o.has_primitive()) continue;
+        if (o.data_shared_ptr() == nullptr) {
+          o.set_data(allocator::malloc(0));
+        }
+      }
+      return;
+    }
+  }
+
   // Dispatch the primitive's GPU implementation
   arr.primitive().eval_gpu(arr.inputs(), outputs);
 

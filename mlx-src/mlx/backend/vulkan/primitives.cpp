@@ -182,6 +182,11 @@ void dispatch_binary(
 
   out.set_data(allocator::malloc(out.nbytes()));
 
+  // Nothing to do for empty output
+  if (out.size() == 0) {
+    return;
+  }
+
   auto& encoder = vulkan::get_command_encoder(s);
   auto& dev = vulkan::device(s.device);
   encoder.op_count++;
@@ -316,13 +321,24 @@ void dispatch_binary(
       nullptr);
 }
 
-// Dispatch a unary elementwise shader
-void dispatch_unary(
+// Dispatch a unary elementwise shader.
+// Returns false if the dtype is unsupported (caller should fall back to CPU).
+bool dispatch_unary(
     const array& in,
     array& out,
     uint32_t op_id,
     Stream stream) {
+  // Complex types (complex64 = 8 bytes) not handled by the GPU unary shader
+  if (issubdtype(in.dtype(), complexfloating)) {
+    return false;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
+
+  // Nothing to do for empty arrays
+  if (out.size() == 0) {
+    return true;
+  }
 
   auto& encoder = vulkan::get_command_encoder(stream);
   auto& dev = vulkan::device(stream.device);
@@ -391,6 +407,7 @@ void dispatch_unary(
       nullptr,
       0,
       nullptr);
+  return true;
 }
 
 } // anonymous namespace
@@ -399,10 +416,15 @@ void dispatch_unary(
 // Elementwise Unary
 // ─────────────────────────────────────────────────────────────────────────────
 
-#define UNARY_GPU(cls, op)                                             \
-  void cls::eval_gpu(const std::vector<array>& inputs, array& out) {   \
-    dispatch_unary(                                                    \
-        inputs[0], out, static_cast<uint32_t>(UnaryOp::op), stream()); \
+// For unsupported dtypes (complex64, etc.) fall back to CPU.
+#define UNARY_GPU(cls, op)                                               \
+  void cls::eval_gpu(const std::vector<array>& inputs, array& out) {     \
+    if (!dispatch_unary(                                                  \
+            inputs[0], out, static_cast<uint32_t>(UnaryOp::op),          \
+            stream())) {                                                   \
+      vulkan::device(stream().device).synchronize(stream());              \
+      eval_cpu(inputs, out);                                              \
+    }                                                                     \
   }
 
 UNARY_GPU(Abs, Abs)
@@ -616,6 +638,11 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
 void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
   out.set_data(allocator::malloc(out.nbytes()));
 
+  // Nothing to do for empty output (e.g., arange(10, 0, 1))
+  if (out.size() == 0) {
+    return;
+  }
+
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
@@ -713,6 +740,13 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (!inputs[0].flags().row_contiguous || !is_continuous_axes ||
       (inputs[0].dtype() != float32 && !is_f16 &&
        (inputs[0].dtype() != bool_ || out.dtype() != bool_))) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  // Empty input: fall to CPU to get the correct identity value (e.g. all([])=True)
+  if (inputs[0].size() == 0) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
@@ -999,8 +1033,12 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   out.set_data(allocator::malloc(out.nbytes()));
-  if (out.size() == 0)
+  if (out.size() == 0 || a.size() == 0 || b.size() == 0) {
+    // K=0 case: e.g. (1,0)@(0,1) — output is non-empty (1,1) but sum over
+    // zero elements. Fill with zeros via CPU (VMA memory is CPU-accessible).
+    std::memset(out.data<float>(), 0, out.nbytes());
     return;
+  }
 
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
