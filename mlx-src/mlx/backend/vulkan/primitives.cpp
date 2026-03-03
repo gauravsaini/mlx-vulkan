@@ -199,7 +199,13 @@ void dispatch_binary(
   VkDescriptorSetLayout ds_layout;
   // 4 bindings: InA(uint), InB(uint), OutC(uint raw), OutCBool(uint8)
   // push constant size = 84 bytes (21 x uint32)
-  VkPipeline pipeline = dev.get_pipeline("binary", layout, ds_layout, 4, 84);
+  VkPipeline pipeline = dev.get_pipeline(
+      "binary",
+      layout,
+      ds_layout,
+      4,
+      84,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
     return;
 
@@ -349,7 +355,13 @@ bool dispatch_unary(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("unary", layout, ds_layout, 2, 16);
+  VkPipeline pipeline = dev.get_pipeline(
+      "unary",
+      layout,
+      ds_layout,
+      2,
+      16,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
     return true;
 
@@ -417,14 +429,13 @@ bool dispatch_unary(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // For unsupported dtypes (complex64, etc.) fall back to CPU.
-#define UNARY_GPU(cls, op)                                               \
-  void cls::eval_gpu(const std::vector<array>& inputs, array& out) {     \
-    if (!dispatch_unary(                                                  \
-            inputs[0], out, static_cast<uint32_t>(UnaryOp::op),          \
-            stream())) {                                                   \
-      vulkan::device(stream().device).synchronize(stream());              \
-      eval_cpu(inputs, out);                                              \
-    }                                                                     \
+#define UNARY_GPU(cls, op)                                                   \
+  void cls::eval_gpu(const std::vector<array>& inputs, array& out) {         \
+    if (!dispatch_unary(                                                     \
+            inputs[0], out, static_cast<uint32_t>(UnaryOp::op), stream())) { \
+      vulkan::device(stream().device).synchronize(stream());                 \
+      eval_cpu(inputs, out);                                                 \
+    }                                                                        \
   }
 
 UNARY_GPU(Abs, Abs)
@@ -492,21 +503,21 @@ void BitwiseInvert::eval_gpu(const std::vector<array>& inputs, array& out) {
 // Broadcast arrays are handled by the shader via modulo indexing:
 // idx % a_size / idx % b_size — works for scalar (size=1), broadcast, and full.
 // Complex types fall back to CPU since the GPU shader only handles real types.
-#define BINARY_GPU(cls, op)                                                  \
-  void cls::eval_gpu(const std::vector<array>& inputs, array& out) {         \
-    if (issubdtype(out.dtype(), complexfloating) ||                          \
-        issubdtype(inputs[0].dtype(), complexfloating) ||                    \
-        issubdtype(inputs[1].dtype(), complexfloating)) {                    \
-      vulkan::device(stream().device).synchronize(stream());                 \
-      eval_cpu(inputs, out);                                                 \
-      return;                                                                \
-    }                                                                        \
-    dispatch_binary(                                                         \
-        inputs[0],                                                           \
-        inputs[1],                                                           \
-        out,                                                                 \
-        static_cast<uint32_t>(BinaryOp::op),                                \
-        stream());                                                           \
+#define BINARY_GPU(cls, op)                                          \
+  void cls::eval_gpu(const std::vector<array>& inputs, array& out) { \
+    if (issubdtype(out.dtype(), complexfloating) ||                  \
+        issubdtype(inputs[0].dtype(), complexfloating) ||            \
+        issubdtype(inputs[1].dtype(), complexfloating)) {            \
+      vulkan::device(stream().device).synchronize(stream());         \
+      eval_cpu(inputs, out);                                         \
+      return;                                                        \
+    }                                                                \
+    dispatch_binary(                                                 \
+        inputs[0],                                                   \
+        inputs[1],                                                   \
+        out,                                                         \
+        static_cast<uint32_t>(BinaryOp::op),                         \
+        stream());                                                   \
   }
 
 BINARY_GPU(Add, Add)
@@ -519,9 +530,8 @@ void Equal::eval_gpu(const std::vector<array>& inputs, array& out) {
     eval_cpu(inputs, out);
     return;
   }
-  uint32_t op = equal_nan_
-      ? static_cast<uint32_t>(BinaryOp::EqualNan)
-      : static_cast<uint32_t>(BinaryOp::Equal);
+  uint32_t op = equal_nan_ ? static_cast<uint32_t>(BinaryOp::EqualNan)
+                           : static_cast<uint32_t>(BinaryOp::Equal);
   dispatch_binary(inputs[0], inputs[1], out, op, stream());
 }
 BINARY_GPU(Greater, Greater)
@@ -587,7 +597,13 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("ternary", layout, ds_layout, 4, 16);
+  VkPipeline pipeline = dev.get_pipeline(
+      "ternary",
+      layout,
+      ds_layout,
+      4,
+      16,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -668,7 +684,13 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("arange", layout, ds_layout, 1, 16);
+  VkPipeline pipeline = dev.get_pipeline(
+      "arange",
+      layout,
+      ds_layout,
+      1,
+      16,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -688,19 +710,32 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   auto dtype_to_enum_arange = [](Dtype dt) -> uint32_t {
     switch (dt) {
-      case bool_:    return 0;
-      case uint8:    return 1;
-      case uint16:   return 2;
-      case uint32:   return 3;
-      case uint64:   return 4;
-      case int8:     return 5;
-      case int16:    return 6;
-      case int32:    return 7;
-      case int64:    return 8;
-      case float16:  return 9;
-      case bfloat16: return 10;
-      case float32:  return 11;
-      default:       return 11;
+      case bool_:
+        return 0;
+      case uint8:
+        return 1;
+      case uint16:
+        return 2;
+      case uint32:
+        return 3;
+      case uint64:
+        return 4;
+      case int8:
+        return 5;
+      case int16:
+        return 6;
+      case int32:
+        return 7;
+      case int64:
+        return 8;
+      case float16:
+        return 9;
+      case bfloat16:
+        return 10;
+      case float32:
+        return 11;
+      default:
+        return 11;
     }
   };
 
@@ -762,7 +797,8 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
-  // Empty input: fall to CPU to get the correct identity value (e.g. all([])=True)
+  // Empty input: fall to CPU to get the correct identity value (e.g.
+  // all([])=True)
   if (inputs[0].size() == 0) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -806,7 +842,13 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
   // 4 bindings: InRaw, OutFloat, OutBool, InBool
   // Push constant is now 32 bytes (8 × uint32) to include inner and
   // outer_stride.
-  VkPipeline pipeline = dev.get_pipeline("reduce", layout, ds_layout, 4, 32);
+  VkPipeline pipeline = dev.get_pipeline(
+      "reduce",
+      layout,
+      ds_layout,
+      4,
+      32,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     throw std::runtime_error("[vulkan::eval_gpu] reduce pipeline not found");
     return;
@@ -925,8 +967,13 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("arg_reduce", layout, ds_layout, 2, 20);
+  VkPipeline pipeline = dev.get_pipeline(
+      "arg_reduce",
+      layout,
+      ds_layout,
+      2,
+      20,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -1014,9 +1061,9 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& b_orig = inputs[1];
 
   bool a_ok = a_orig.dtype() == float32 || a_orig.dtype() == float16 ||
-              a_orig.dtype() == bfloat16;
+      a_orig.dtype() == bfloat16;
   bool b_ok = b_orig.dtype() == float32 || b_orig.dtype() == float16 ||
-              b_orig.dtype() == bfloat16;
+      b_orig.dtype() == bfloat16;
   if (!a_ok || !b_ok) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -1077,7 +1124,13 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("matmul", layout, ds_layout, 3, 36);
+  VkPipeline pipeline = dev.get_pipeline(
+      "matmul",
+      layout,
+      ds_layout,
+      3,
+      36,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -1187,7 +1240,13 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("softmax", layout, ds_layout, 2, 8);
+  VkPipeline pipeline = dev.get_pipeline(
+      "softmax",
+      layout,
+      ds_layout,
+      2,
+      8,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -1264,7 +1323,13 @@ void LogSumExp::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("logsumexp", layout, ds_layout, 2, 12);
+  VkPipeline pipeline = dev.get_pipeline(
+      "logsumexp",
+      layout,
+      ds_layout,
+      2,
+      12,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -1328,12 +1393,14 @@ void DivMod::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   // binary_two.comp only handles scalar-broadcast, not full shape broadcasting.
-  // If any non-scalar input has a different shape than the output, fall back to CPU.
+  // If any non-scalar input has a different shape than the output, fall back to
+  // CPU.
   bool a_scalar = inputs[0].data_size() == 1;
   bool b_scalar = inputs[1].data_size() == 1;
   // broadcast_arrays() in ops.cpp pre-expands shapes to the output shape with
   // stride-0 axes, so inputs[x].shape() == outputs[0].shape() always.
-  // Detect actual broadcasting via data_size < size (stride-0 implies fewer data).
+  // Detect actual broadcasting via data_size < size (stride-0 implies fewer
+  // data).
   bool a_broadcasted = !a_scalar && (inputs[0].data_size() != inputs[0].size());
   bool b_broadcasted = !b_scalar && (inputs[1].data_size() != inputs[1].size());
   bool needs_broadcast = a_broadcasted || b_broadcasted;
@@ -1360,8 +1427,13 @@ void DivMod::eval_gpu(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("binary_two", layout, ds_layout, 4, 20);
+  VkPipeline pipeline = dev.get_pipeline(
+      "binary_two",
+      layout,
+      ds_layout,
+      4,
+      20,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, outputs);
@@ -1387,19 +1459,32 @@ void DivMod::eval_gpu(
 
   auto dtype_to_enum_divmod = [](Dtype dt) -> uint32_t {
     switch (dt) {
-      case bool_:    return 0;
-      case uint8:    return 1;
-      case uint16:   return 2;
-      case uint32:   return 3;
-      case uint64:   return 4;
-      case int8:     return 5;
-      case int16:    return 6;
-      case int32:    return 7;
-      case int64:    return 8;
-      case float16:  return 9;
-      case bfloat16: return 10;
-      case float32:  return 11;
-      default:       return 11;
+      case bool_:
+        return 0;
+      case uint8:
+        return 1;
+      case uint16:
+        return 2;
+      case uint32:
+        return 3;
+      case uint64:
+        return 4;
+      case int8:
+        return 5;
+      case int16:
+        return 6;
+      case int32:
+        return 7;
+      case int64:
+        return 8;
+      case float16:
+        return 9;
+      case bfloat16:
+        return 10;
+      case float32:
+        return 11;
+      default:
+        return 11;
     }
   };
 
@@ -1473,8 +1558,13 @@ static void indexing_dispatch(
     size_t n_out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("indexing", layout, ds_layout, 3, kIndexPushSize);
+  VkPipeline pipeline = dev.get_pipeline(
+      "indexing",
+      layout,
+      ds_layout,
+      3,
+      kIndexPushSize,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
     throw std::runtime_error("[indexing_dispatch] Pipeline not found.");
 
@@ -1577,7 +1667,8 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (out.size() == 0)
     return;
 
-  // Make contiguous copies of src and idx if needed (strides would confuse the shader)
+  // Make contiguous copies of src and idx if needed (strides would confuse the
+  // shader)
   array src_storage(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
   if (!inputs[0].flags().row_contiguous) {
     src_storage.set_data(allocator::malloc(src_storage.nbytes()));
@@ -1619,8 +1710,8 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   pc.dst_offset = static_cast<uint32_t>(out.offset() * out.itemsize());
   pc.src_ax_size = static_cast<uint32_t>(src.shape(axis_));
   // src_outer_stride repurposed as element_wise flag:
-  // 1 = idx.size() == out.size() (take_along_axis style, one index per output element)
-  // 0 = group-wise (1 index per dst_stride group)
+  // 1 = idx.size() == out.size() (take_along_axis style, one index per output
+  // element) 0 = group-wise (1 index per dst_stride group)
   pc.src_outer_stride = (idx.size() == out.size()) ? 1u : 0u;
 
   indexing_dispatch(
@@ -1724,7 +1815,8 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Copy input to output (sort is in-place on output)
   // Use General copy to handle non-contiguous (strided) inputs correctly
   out.set_data(allocator::malloc(out.nbytes()));
-  CopyType copy_type = in.flags().row_contiguous ? CopyType::Vector : CopyType::General;
+  CopyType copy_type =
+      in.flags().row_contiguous ? CopyType::Vector : CopyType::General;
   copy_gpu_inplace(in, out, copy_type, stream());
 
   uint32_t n = static_cast<uint32_t>(out.size());
@@ -1743,7 +1835,13 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("sort", layout, ds_layout, 2, 20);
+  VkPipeline pipeline = dev.get_pipeline(
+      "sort",
+      layout,
+      ds_layout,
+      2,
+      20,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     allocator::free(idx_alloc);
     vulkan::device(stream().device).synchronize(stream());
@@ -1836,7 +1934,8 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Fall back to CPU for:
   //   (1) scan_size > 1024 (shader workgroup limit)
   //   (2) non-last axis (scan elements are non-contiguous in memory)
-  //   (3) non-float32 dtype (int32, int64, float16, bfloat16, complex not handled)
+  //   (3) non-float32 dtype (int32, int64, float16, bfloat16, complex not
+  //   handled)
   bool is_float32 = in.dtype() == float32;
   if (scan_size > 1024 || norm_axis != ndim - 1 || !is_float32) {
     vulkan::device(stream().device).synchronize(stream());
@@ -1896,8 +1995,13 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("scan", layout, ds_layout, 2, sizeof(pc));
+  VkPipeline pipeline = dev.get_pipeline(
+      "scan",
+      layout,
+      ds_layout,
+      2,
+      sizeof(pc),
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
     throw std::runtime_error(
         "[vulkan::Scan::eval_gpu] scan pipeline not found");
@@ -2054,7 +2158,13 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("conv", layout, ds_layout, 3, 52);
+  VkPipeline pipeline = dev.get_pipeline(
+      "conv",
+      layout,
+      ds_layout,
+      3,
+      52,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -2162,7 +2272,13 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("rbits", layout, ds_layout, 2, 12);
+  VkPipeline pipeline = dev.get_pipeline(
+      "rbits",
+      layout,
+      ds_layout,
+      2,
+      12,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
@@ -2384,7 +2500,13 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   // 4 bindings, push_constant = 6 x uint32 = 24 bytes
-  VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+  VkPipeline pipeline = dev.get_pipeline(
+      "quantized",
+      layout,
+      ds_layout,
+      4,
+      24,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(s.device).add_temporary(s, dq_weights);
     throw std::runtime_error(
@@ -2524,8 +2646,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
     VkPipelineLayout layout;
     VkDescriptorSetLayout ds_layout;
-    VkPipeline pipeline =
-        dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+    VkPipeline pipeline = dev.get_pipeline(
+        "quantized",
+        layout,
+        ds_layout,
+        4,
+        24,
+        vulkan::get_default_specialization_info(dev));
     if (pipeline == VK_NULL_HANDLE) {
       vulkan::device(s.device).add_temporary(s, dq_weights);
       throw std::runtime_error(
@@ -2627,7 +2754,13 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("quantized", layout, ds_layout, 4, 24);
+  VkPipeline pipeline = dev.get_pipeline(
+      "quantized",
+      layout,
+      ds_layout,
+      4,
+      24,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(s.device).add_temporary(s, dq1);
     vulkan::device(s.device).add_temporary(s, dq2);
@@ -2943,8 +3076,13 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("hadamard", layout, ds_layout, 2, sizeof(pc));
+  VkPipeline pipeline = dev.get_pipeline(
+      "hadamard",
+      layout,
+      ds_layout,
+      2,
+      sizeof(pc),
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     eval_cpu(inputs, out);
     return;
@@ -3146,8 +3284,13 @@ void LayerNorm::eval_gpu(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("normalization", layout, ds_layout, 4, 24);
+  VkPipeline pipeline = dev.get_pipeline(
+      "normalization",
+      layout,
+      ds_layout,
+      4,
+      24,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     fallback_(inputs);
     return;
@@ -3263,8 +3406,13 @@ void RMSNorm::eval_gpu(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline =
-      dev.get_pipeline("normalization", layout, ds_layout, 4, 24);
+  VkPipeline pipeline = dev.get_pipeline(
+      "normalization",
+      layout,
+      ds_layout,
+      4,
+      24,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     fallback_(inputs);
     return;
@@ -3359,7 +3507,13 @@ void RoPE::eval_gpu(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline("rope", layout, ds_layout, 4, 12);
+  VkPipeline pipeline = dev.get_pipeline(
+      "rope",
+      layout,
+      ds_layout,
+      4,
+      12,
+      vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     fallback_(inputs);
     return;
