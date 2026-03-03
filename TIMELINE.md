@@ -1,7 +1,27 @@
 # MLX Vulkan Backend — Change Timeline
 
-
 ## UPDATED ON : 2026-03-03 (session 2)
+
+### feat (2026-03-03) — Top-Level JIT Kernel Fusion (mx.compile GPU)
+
+1. **JIT GLSL generation (`compiled.cpp`)**:
+   - Implemented `Compiled::eval_gpu` for Vulkan, replacing the old CPU fallback.
+   - Generates GLSL compute shader source code dynamically from the MLX traced graph.
+   - Computes expression strings for 30+ operators (Unary, Binary, Ternary) mapping to GLSL math native variants (e.g. `Log1p`, `LogAddExp`, `ArcTan2`).
+   - Supports both `contiguous` (flat 1D indexing) and `strided` (ND coordinate decomposition via pushing dynamic shape bounds + stride array buffers) pathways.
+   
+2. **Runtime SPIR-V Compilation (`jit_compiler.cpp`)**:
+   - Bound C++ infrastructure safely interacting with `<shaderc/shaderc.h>` producing unrolled compute pipelines at runtime without disk I/O.
+   - Protected execution pipeline via `JitPipelineEntry` map keyed per globally derived graph-hash name.
+   - Vulkan 1.2 target spec natively applied with performance optimization toggled ON globally.
+   - Dynamic caching circumvents double-compilation of overlapping expressions minimizing framework overhead natively.
+
+3. **Dependencies updated**:
+   - Appended `find_library` for `shaderc` directly inside `mlx/backend/vulkan/CMakeLists.txt` guaranteeing correct Vulkan SDK mapping.
+   
+4. **Validation Test Coverage**:
+   - Confirmed isolated JIT scripts operating at 100% correct float matching against reference executions (`x * 2 + y`, complex trigonometry `sin_cos`, conditional reductions, max_min chaining).
+   - Python native compiled decorator correctly routes graphs natively onto Apple Silicon hardware bypassing fallback.
 
 ### fix (2026-03-03) — Hadamard CPU/GPU Sync and memory/precision correctness
 

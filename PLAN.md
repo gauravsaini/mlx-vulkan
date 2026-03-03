@@ -741,11 +741,10 @@ These stages timeout after 20s. A hang blocks the entire test suite.
 Gaps identified in REVIEW.md, assessed against current implementation:
 
 ### A. JIT Kernel Fusion (`mx.compile()` GPU path)
-**Status**: CPU fallback only. `Compiled::eval_gpu` delegates to `eval_cpu`.
-**Gap**: True GPU fusion requires runtime SPIR-V generation via `glslang`/`shaderc` JIT.
+**Status**: ✅ COMPLETE. True GPU fusion via runtime SPIR-V generation (`shaderc` JIT).
 **Plan**:
-- [ ] Implement `Compiled::eval_gpu` with shaderc JIT: fuse elementwise chains into single SPIR-V kernel
-- [ ] Cache fused kernels by op-graph hash
+- [x] Implement `Compiled::eval_gpu` with shaderc JIT: fuse elementwise chains into single SPIR-V kernel
+- [x] Cache fused kernels by op-graph hash
 
 ### B. Workgroup Tuning for AMD RDNA
 **Status**: ✅ Infrastructure COMPLETE. Subgroup size queried at init; M1/MoltenVK = 32/128.
