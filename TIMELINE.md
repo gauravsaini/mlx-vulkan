@@ -1,5 +1,31 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-04 (session 1)
+
+### feat (2026-03-04) — Cooperative Matrix Operations and Workgroup Tuning
+
+1. **Hardware Specialization & Subgroups** (`utils.cpp`, `device.cpp`):
+   - Successfully dynamically queries system `VkPhysicalDeviceSubgroupProperties` to determine backend constraints (e.g. `32` on MoltenVK, `64` on AMD).
+   - Injects `preferred_workgroup_size_` down to all bound GLSL shaders via `VkSpecializationInfo` to override hardcoded workgroup limits efficiently on-device without rewriting binaries.
+
+2. **Cooperative Matrix Matmul** (`matmul.comp`, `primitives.cpp`):
+   - Discovers `VK_KHR_cooperative_matrix` extensions cleanly upon initialization and exposes a flag for Tensor Core optimization.
+   - Built a separate `matmul_coop.spv` utilizing cooperative scalar memory fetches (`coopMatLoad` and `coopMatMulAdd`) for 16x16 tile sizes to fully extract raw tensor core compute capability.
+   - Evaluates compatibility safely at runtime to silently fall back to classical SGEMM blocking architecture when vectors aren't a clean multiple of 16.
+
+### fix (2026-03-04) — Empty Matrix Overwrites & Boolean Reduction Fixes
+
+1. **Empty Tensor Caching Bug** (`primitives.cpp`):
+   - Root cause: Operations like `test_empty_matmuls (Zeros 10x0 @ 0x10)` would write output zeroes exclusively on CPU via `std::memset()`, resulting in invalid coherence when passed directly back to subsequent GPU evaluators (`mx.array_equal`) that read non-flushed allocations.
+   - Fix: Swapped structural defaults from `memset` directly into Vulkan transfer pipelines (`vkCmdFillBuffer`) on the active encoder stream, ensuring 100% coherence synchronization without CPU delays.
+
+2. **Reduction / Boolean Arrays Corruption** (All Compute Shaders):
+   - Root cause: Upgrading `WORKGROUP_SIZE` dynamically via `VkSpecializationInfo` caused `local_size_x` to reduce from 256 to 128 correctly; however, shared memory stride aggregations (e.g., `for (uint stride = 128; stride > 0; ...)`) maintained hardcoded boundaries. This led the first 128 elements to be XORed/ANDed against physically uninitialized garbage memory offsets.
+   - Fix: Ran exhaustive parsing script converting `i += 256` and `stride = 128` statically towards dynamic `WORKGROUP_SIZE` mappings affecting `reduce.comp`, `softmax.comp`, `logsumexp.comp`, `scan.comp` and `hadamard.comp`.
+   - Result: Fixed drastic structural failure across suite. Test `mx.all` returned accurately and `test_ops.py` escalated uniformly to `102` test successes natively.
+
+---
+
 ## UPDATED ON : 2026-03-03 (session 2)
 
 ### feat (2026-03-03) — Top-Level JIT Kernel Fusion (mx.compile GPU)
