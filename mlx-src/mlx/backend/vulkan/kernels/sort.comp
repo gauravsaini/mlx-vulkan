@@ -2,7 +2,7 @@
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) buffer DataBuf { float data[]; };
+layout(set = 0, binding = 0) buffer DataBuf { uint data[]; };
 layout(set = 0, binding = 1) buffer IdxBuf  { uint  indices[]; };
 
 layout(push_constant) uniform Params {
@@ -11,12 +11,13 @@ layout(push_constant) uniform Params {
     uint n_sorts;
     uint ascending;  // 1=ascending, 0=descending
     uint with_index; // 1=also sort indices
+    uint type_is_int; // 1=int32, 0=float32
 } params;
 
 // Bitonic sort - each workgroup sorts one subarray
 // Requires sort_size <= 2 * local_size_x and sort_size is power of 2
-shared float s_data[512];
-shared uint  s_idxs[512];
+shared uint s_data[512];
+shared uint s_idxs[512];
 
 void main() {
     uint sort_idx = gl_WorkGroupID.x;
@@ -31,9 +32,12 @@ void main() {
     // Load: pad beyond actual_stride with +Inf so they sort to the end.
     // Also replace NaN with +Inf in the sort key so NaN elements sort last.
     // We keep the original value in s_data and use a separate key for compare.
-    const float POS_INF = uintBitsToFloat(0x7F800000u); // IEEE 754 +Infinity
+    const uint POS_INF_FLOAT = 0x7F800000u; // IEEE 754 +Infinity
+    const uint MAX_INT32 = 0x7FFFFFFFu;
+    const uint PAD_VAL = (params.type_is_int == 1u) ? MAX_INT32 : POS_INF_FLOAT;
+
     if (tid < params.sort_size) {
-        float v = (tid < actual_stride) ? data[base + tid] : POS_INF;
+        uint v = (tid < actual_stride) ? data[base + tid] : PAD_VAL;
         s_data[tid] = v;
         s_idxs[tid] = tid;
     }
@@ -48,20 +52,30 @@ void main() {
             // Only process if l > i (ensures each pair handled once) and within bounds
             if (l > i && i < params.sort_size && l < params.sort_size) {
                 bool ascending_dir = ((i & k) == 0) == (params.ascending == 1u);
-                // Replace NaN with +Inf for comparison so NaN always sorts last
-                float ki = isnan(s_data[i]) ? POS_INF : s_data[i];
-                float kl = isnan(s_data[l]) ? POS_INF : s_data[l];
-                bool swap = (ki > kl) == ascending_dir;
+                
+                bool swap = false;
+                if (params.type_is_int == 1u) {
+                    int ki = int(s_data[i]);
+                    int kl = int(s_data[l]);
+                    swap = (ki > kl) == ascending_dir;
+                } else {
+                    float fi = uintBitsToFloat(s_data[i]);
+                    float fl = uintBitsToFloat(s_data[l]);
+                    float ki = isnan(fi) ? uintBitsToFloat(POS_INF_FLOAT) : fi;
+                    float kl = isnan(fl) ? uintBitsToFloat(POS_INF_FLOAT) : fl;
+                    swap = (ki > kl) == ascending_dir;
+                }
+
                 if (swap) {
-                    float tmp_d = s_data[i]; s_data[i] = s_data[l]; s_data[l] = tmp_d;
-                    uint  tmp_i = s_idxs[i]; s_idxs[i] = s_idxs[l]; s_idxs[l] = tmp_i;
+                    uint tmp_d = s_data[i]; s_data[i] = s_data[l]; s_data[l] = tmp_d;
+                    uint tmp_i = s_idxs[i]; s_idxs[i] = s_idxs[l]; s_idxs[l] = tmp_i;
                 }
             }
             barrier();
         }
     }
 
-    // Store: only write back actual elements (not the FLT_MAX padding)
+    // Store: only write back actual elements (not the PAD_VAL padding)
     if (tid < actual_stride) {
         data[base + tid] = s_data[tid];
         if (params.with_index == 1u) {

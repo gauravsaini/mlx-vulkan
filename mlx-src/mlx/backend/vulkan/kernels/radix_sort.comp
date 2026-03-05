@@ -1,0 +1,150 @@
+#version 450
+
+// Radix Sort - LSB (Least Significant Bit) digit-by-digit counting sort
+// Supports arrays larger than 256 elements by using multi-pass digit sorting
+// Works with 32-bit integers and float32 (with sign-bit correction)
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+// Input and output buffers
+layout(set = 0, binding = 0) readonly  buffer InBuf   { uint  in_data[]; };
+layout(set = 0, binding = 1) writeonly buffer OutBuf  { uint  out_data[]; };
+layout(set = 0, binding = 2) buffer     TempBuf  { uint  temp_data[]; };
+
+layout(push_constant) uniform Params {
+    uint n;           // Total number of elements
+    uint digit;       // Current digit being processed (0-7 for 4-bit digits)
+    uint ascending;   // 1 = ascending, 0 = descending
+    uint dtype;       // 0 = float32, 1 = int32
+} params;
+
+// Shared memory for counting and prefix sum
+// 16 buckets (4-bit digits) per workgroup
+shared uint s_count[16];
+shared uint s_prefix[16];
+
+// Convert raw bits to a sort key that preserves correct ordering
+// For float32: flip sign bit so negatives sort before positives (IEEE 754 trick)
+// For int32: flip sign bit (two's complement → unsigned for correct ordering)
+uint to_key(uint raw) {
+    if (params.dtype == 0u) {
+        // Float32: if negative (sign bit set), flip all bits; else flip just sign bit
+        uint mask = uint(-int(raw >> 31u)) | 0x80000000u;
+        return raw ^ mask;
+    } else {
+        // Int32: flip sign bit to convert two's complement to unsigned ordering
+        return raw ^ 0x80000000u;
+    }
+}
+
+// Convert sort key back to raw bits (inverse of to_key)
+uint from_key(uint key) {
+    if (params.dtype == 0u) {
+        // Float32: inverse of to_key
+        uint mask = uint(-int(~key >> 31u)) | 0x80000000u;
+        return key ^ mask;
+    } else {
+        // Int32: flip sign bit back
+        return key ^ 0x80000000u;
+    }
+}
+
+// Extract 4-bit digit from the sort key at current digit position
+uint get_digit(uint key, uint digit) {
+    uint shift = digit * 4;
+    return (key >> shift) & 0xFu;
+}
+
+// Count elements in each digit bucket (Phase 1)
+void count_phase(uint local_idx, uint digit, uint ascending) {
+    // Initialize shared counters to 0
+    if (local_idx < 16) {
+        s_count[local_idx] = 0u;
+    }
+    barrier();
+
+    // Each thread processes elements: count how many elements belong to each bucket
+    // Use atomic adds for thread-safe counting
+    for (uint i = local_idx; i < params.n; i += gl_WorkGroupSize.x) {
+        uint raw_val = in_data[i];
+        uint key = to_key(raw_val);
+        uint d = get_digit(key, digit);
+
+        // For descending order, invert the digit so counting works correctly
+        if (ascending == 0u) {
+            d = 15u - d;
+        }
+
+        atomicAdd(s_count[d], 1u);
+    }
+    barrier();
+
+    // Copy counts to prefix array for scan
+    if (local_idx < 16) {
+        s_prefix[local_idx] = s_count[local_idx];
+    }
+    barrier();
+}
+
+// Compute prefix sum on bucket counts (Phase 2)
+void prefix_sum_phase(uint local_idx) {
+    // Hillis-Steele inclusive scan on 16 buckets
+    // NOTE: barrier() must be reached by ALL workgroup threads
+    for (uint offset = 1u; offset < 16u; offset <<= 1u) {
+        uint val = 0u;
+        if (local_idx < 16u && local_idx >= offset) {
+            val = s_prefix[local_idx - offset];
+        }
+        barrier();
+        if (local_idx < 16u && local_idx >= offset) {
+            s_prefix[local_idx] += val;
+        }
+        barrier();
+    }
+
+    // Convert inclusive to exclusive: prefix[i] = sum of counts[0..i-1]
+    uint excl_val = 0u;
+    if (local_idx < 16u) {
+        excl_val = (local_idx > 0u) ? s_prefix[local_idx - 1u] : 0u;
+    }
+    barrier();
+    if (local_idx < 16u) {
+        s_prefix[local_idx] = excl_val;
+    }
+    barrier();
+}
+
+// Scatter elements to sorted positions (Phase 3)
+void scatter_phase(uint local_idx, uint digit, uint ascending) {
+    // Each thread processes elements and writes to correct positions
+    for (uint i = local_idx; i < params.n; i += gl_WorkGroupSize.x) {
+        uint raw_val = in_data[i];
+        uint key = to_key(raw_val);
+        uint d = get_digit(key, digit);
+
+        // For descending order, invert the digit
+        if (ascending == 0u) {
+            d = 15u - d;
+        }
+
+        // Get position from atomic increment on bucket offset
+        uint pos = atomicAdd(s_prefix[d], 1u);
+        out_data[pos] = raw_val;  // Write original raw bits, not the key
+    }
+}
+
+void main() {
+    uint local_idx = gl_LocalInvocationID.x;
+    uint digit = params.digit;
+    uint ascending = params.ascending;
+
+    // Phase 1: Count elements in each digit bucket
+    count_phase(local_idx, digit, ascending);
+
+    // Phase 2: Compute prefix sum to get bucket offsets
+    prefix_sum_phase(local_idx);
+
+    // Phase 3: Scatter elements to sorted positions
+    scatter_phase(local_idx, digit, ascending);
+}
+

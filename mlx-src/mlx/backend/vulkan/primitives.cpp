@@ -218,7 +218,16 @@ void dispatch_binary(
   VkDescriptorBufferInfo b_info{b_buf, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo c_info{c_buf, 0, VK_WHOLE_SIZE};
 
-  bool output_is_bool = (out.dtype() == bool_);
+  bool output_is_bool = (out.dtype() == bool_) &&
+      (op_id == static_cast<uint32_t>(BinaryOp::Equal) ||
+       op_id == static_cast<uint32_t>(BinaryOp::NotEq) ||
+       op_id == static_cast<uint32_t>(BinaryOp::Less) ||
+       op_id == static_cast<uint32_t>(BinaryOp::LessEq) ||
+       op_id == static_cast<uint32_t>(BinaryOp::Greater) ||
+       op_id == static_cast<uint32_t>(BinaryOp::GreaterEq) ||
+       op_id == static_cast<uint32_t>(BinaryOp::LogicAnd) ||
+       op_id == static_cast<uint32_t>(BinaryOp::LogicOr) ||
+       op_id == static_cast<uint32_t>(BinaryOp::EqualNan));
 
   VkWriteDescriptorSet writes[4]{};
   for (int i = 0; i < 4; i++) {
@@ -467,7 +476,22 @@ UNARY_GPU(IsNegInf, IsNegInf)
 // Log::eval_gpu handled below (supports base-e, base-2, base-10 via state())
 UNARY_GPU(Log1p, Log1p)
 UNARY_GPU(Negative, Neg)
-UNARY_GPU(Round, Round)
+// Round is a no-op on integer types; the GPU shader reinterprets int bits as
+// float bits which gives wrong results (e.g. round(15_int32) → 0).
+// Fall back to CPU for all non-floating dtypes.
+void Round::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (!issubdtype(inputs[0].dtype(), floating)) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+  if (!dispatch_unary(
+          inputs[0], out, static_cast<uint32_t>(UnaryOp::Round), stream())) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+  }
+}
+
 // LogicalNot uses a dedicated LOGNOT opcode (not NEG) to correctly handle bool
 // byte-packing
 void LogicalNot::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -476,9 +500,18 @@ void LogicalNot::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 UNARY_GPU(Sigmoid, Sigmoid)
 UNARY_GPU(Sign, Sign)
-UNARY_GPU(Sin, Sin)
+// Sqrt and Rsqrt share the same C++ class (Sqrt with recip_=true for Rsqrt).
+// Dispatch UNARY_RSQRT or UNARY_SQRT based on state().
+void Sqrt::eval_gpu(const std::vector<array>& inputs, array& out) {
+  uint32_t op = state()
+      ? static_cast<uint32_t>(UnaryOp::Rsqrt)
+      : static_cast<uint32_t>(UnaryOp::Sqrt);
+  if (!dispatch_unary(inputs[0], out, op, stream())) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+  }
+}
 UNARY_GPU(Sinh, Sinh)
-UNARY_GPU(Sqrt, Sqrt)
 UNARY_GPU(Square, Square)
 UNARY_GPU(Tan, Tan)
 UNARY_GPU(Tanh, Tanh)
@@ -643,7 +676,7 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t cond_scalar;
     uint32_t true_scalar;
     uint32_t false_scalar;
-    uint32_t true_elem_bytes;   // 2=f16, 3=bf16, 4=f32
+    uint32_t true_elem_bytes; // 2=f16, 3=bf16, 4=f32
     uint32_t false_elem_bytes;
     uint32_t out_elem_bytes;
   } pc{
@@ -652,7 +685,8 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
       true_.data_size() == 1 ? 1u : 0u,
       false_.data_size() == 1 ? 1u : 0u,
       true_.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(true_.itemsize()),
-      false_.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(false_.itemsize()),
+      false_.dtype() == bfloat16 ? 3u
+                                 : static_cast<uint32_t>(false_.itemsize()),
       out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -660,16 +694,25 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Zero-initialize output buffer for 16-bit types because the ternary shader
   // uses atomicOr to write each 16-bit half into shared uint32 words.
   // Without this, the unused half would contain garbage.
-  uint32_t out_elem_bytes = out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize());
+  uint32_t out_elem_bytes =
+      out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize());
   if (out_elem_bytes < 4u && out.nbytes() > 0) {
     vkCmdFillBuffer(cmd, out_buf, 0, VK_WHOLE_SIZE, 0);
     VkMemoryBarrier zero_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     zero_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    zero_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd,
+    zero_barrier.dstAccessMask =
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 1, &zero_barrier, 0, nullptr, 0, nullptr);
+        0,
+        1,
+        &zero_barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
   }
 
   vkCmdPushConstants(
@@ -1882,11 +1925,11 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Fall back to CPU if:
   // - Not sorting on last axis
-  // - Input is not float32 (bitonic sort uses float comparisons)
+  // float32 or int32 (bitonic sort uses explicit logic for these)
   // - Not contiguous
   // - Sort size > 128 (bitonic sort limit; radix sort disabled pending
   // stability fix)
-  bool supported_dtype = (in.dtype() == float32);
+  bool supported_dtype = (in.dtype() == float32 || in.dtype() == int32);
   if (sort_axis != in.ndim() - 1 || !supported_dtype ||
       !in.flags().row_contiguous || sort_pow2 > 128) {
     vulkan::device(stream().device).synchronize(stream());
@@ -1929,7 +1972,7 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
         layout,
         ds_layout,
         2,
-        20,
+        24,
         vulkan::get_default_specialization_info(dev));
     if (pipeline == VK_NULL_HANDLE) {
       allocator::free(idx_alloc);
@@ -1958,7 +2001,8 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
       uint32_t n_sorts;
       uint32_t ascending;
       uint32_t with_index;
-    } pc{n, sort_pow2, n_sorts, 1u, 0u};
+      uint32_t type_is_int;
+    } pc{n, sort_pow2, n_sorts, 1u, 0u, in.dtype() == int32 ? 1u : 0u};
 
     vkCmdPushConstants(
         cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);

@@ -1,0 +1,212 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#ifdef MLX_USE_COOP_MAT
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_KHR_cooperative_matrix : enable
+#endif
+
+#include "bf16.glsl"
+
+
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
+layout(constant_id = 1) const uint SUBGROUP_SIZE = 32;
+
+const uint BN = 16;
+const uint BM = 16;
+const uint BK = 16;
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer MatA { uint a_raw[]; };
+layout(set = 0, binding = 1) readonly  buffer MatB { uint b_raw[]; };
+layout(set = 0, binding = 2) readonly  buffer IndicesA { uint indices_a[]; };
+layout(set = 0, binding = 3) readonly  buffer IndicesB { uint indices_b[]; };
+layout(set = 0, binding = 4) writeonly buffer MatC { float c_data[]; };
+
+layout(push_constant) uniform Params {
+    uint M;
+    uint N;
+    uint K;
+    uint a_elem_bytes;
+    uint b_elem_bytes;
+    
+    uint a_batch_ndim;
+    uint b_batch_ndim;
+    uint idx_a_ndim;
+    uint idx_b_ndim;
+    uint out_batch_ndim;
+    
+    // Unrolled shape/stride buffering here to bypass MoltenVK MSL array-stride padding
+    uint shape_a_0; uint shape_a_1; uint shape_a_2; uint shape_a_3;
+    uint stride_a_0; uint stride_a_1; uint stride_a_2; uint stride_a_3;
+    uint shape_b_0; uint shape_b_1; uint shape_b_2; uint shape_b_3;
+    uint stride_b_0; uint stride_b_1; uint stride_b_2; uint stride_b_3;
+
+    // Matrix inner dimensions strides (stride_a[-2], stride_a[-1])
+    uint a_stride_row;
+    uint a_stride_col;
+    uint b_stride_row;
+    uint b_stride_col;
+
+    uint shape_idx_a_0; uint shape_idx_a_1; uint shape_idx_a_2; uint shape_idx_a_3;
+    uint stride_idx_a_0; uint stride_idx_a_1; uint stride_idx_a_2; uint stride_idx_a_3;
+    uint shape_idx_b_0; uint shape_idx_b_1; uint shape_idx_b_2; uint shape_idx_b_3;
+    uint stride_idx_b_0; uint stride_idx_b_1; uint stride_idx_b_2; uint stride_idx_b_3;
+
+    uint shape_out_0; uint shape_out_1; uint shape_out_2; uint shape_out_3;
+} params;
+
+float read_a(uint idx) {
+    if (params.a_elem_bytes == 4u) {
+        return uintBitsToFloat(a_raw[idx]);
+    } else if (params.a_elem_bytes == 2u) {
+        uint word = a_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackHalf2x16(half_val).x;
+    } else if (params.a_elem_bytes == 3u) {
+        uint word = a_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackBfloat2x16(half_val).x;
+    }
+    return 0.0;
+}
+
+float read_b(uint idx) {
+    if (params.b_elem_bytes == 4u) {
+        return uintBitsToFloat(b_raw[idx]);
+    } else if (params.b_elem_bytes == 2u) {
+        uint word = b_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackHalf2x16(half_val).x;
+    } else if (params.b_elem_bytes == 3u) {
+        uint word = b_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackBfloat2x16(half_val).x;
+    }
+    return 0.0;
+}
+
+shared float tile_a_flat[256];
+shared float tile_b_flat[256];
+
+
+uint elem_to_loc(uint elem, uint shape[4], uint strides[4], uint ndim) {
+    uint loc = 0;
+    for (int i = int(ndim) - 1; i >= 0; --i) {
+        loc += (elem % shape[i]) * strides[i];
+        elem /= shape[i];
+    }
+    return loc;
+}
+
+// Computes the broadcasted location mapping for idx arrays
+uint elem_to_loc_broadcast(uint elem, uint shape_out[4], uint shape_idx[4], uint stride_idx[4], uint ndim_out, uint ndim_idx) {
+    uint loc = 0;
+    for (int i = int(ndim_out) - 1; i >= 0; --i) {
+        int j = int(ndim_idx) - (int(ndim_out) - i);
+        uint out_pos = elem % shape_out[i];
+        
+        if (j >= 0 && shape_idx[j] > 1) { // Broadcast mapping
+            loc += out_pos * stride_idx[j];
+        }
+        elem /= shape_out[i];
+    }
+    return loc;
+}
+
+
+void main() {
+    uint batch_idx = gl_GlobalInvocationID.z;
+    uint block_row = gl_WorkGroupID.y;
+    uint block_col = gl_WorkGroupID.x;
+
+    uint shape_a[4] = uint[4](params.shape_a_0, params.shape_a_1, params.shape_a_2, params.shape_a_3);
+    uint stride_a[4] = uint[4](params.stride_a_0, params.stride_a_1, params.stride_a_2, params.stride_a_3);
+    uint shape_b[4] = uint[4](params.shape_b_0, params.shape_b_1, params.shape_b_2, params.shape_b_3);
+    uint stride_b[4] = uint[4](params.stride_b_0, params.stride_b_1, params.stride_b_2, params.stride_b_3);
+    
+    uint shape_idx_a[4] = uint[4](params.shape_idx_a_0, params.shape_idx_a_1, params.shape_idx_a_2, params.shape_idx_a_3);
+    uint stride_idx_a[4] = uint[4](params.stride_idx_a_0, params.stride_idx_a_1, params.stride_idx_a_2, params.stride_idx_a_3);
+    uint shape_idx_b[4] = uint[4](params.shape_idx_b_0, params.shape_idx_b_1, params.shape_idx_b_2, params.shape_idx_b_3);
+    uint stride_idx_b[4] = uint[4](params.stride_idx_b_0, params.stride_idx_b_1, params.stride_idx_b_2, params.stride_idx_b_3);
+    
+    uint shape_out[4] = uint[4](params.shape_out_0, params.shape_out_1, params.shape_out_2, params.shape_out_3);
+
+    // We translate the batch index directly into the indices array shapes using broadcast mappings over shape_out
+    uint idx_a_loc = params.idx_a_ndim > 0 ? elem_to_loc_broadcast(batch_idx, shape_out, shape_idx_a, stride_idx_a, params.out_batch_ndim, params.idx_a_ndim) : 0;
+    uint idx_b_loc = params.idx_b_ndim > 0 ? elem_to_loc_broadcast(batch_idx, shape_out, shape_idx_b, stride_idx_b, params.out_batch_ndim, params.idx_b_ndim) : 0;
+    
+    // In MLX CPU fallback, GatherMM computes the "real" batch_a index by looking up indices_A.
+    // If indices are not provided (ndim == 0), the batch index directly maps to the matrix batch index.
+    uint batch_a = (params.idx_a_ndim > 0) ? indices_a[idx_a_loc] : 0;
+    uint batch_b = (params.idx_b_ndim > 0) ? indices_b[idx_b_loc] : 0;
+    
+    // Base indices are raw elements skipped. The matrix dimensions M*K and K*N 
+    // are already naturally bounded inside `stride_a` and `stride_b` pushed from Python natively.
+    // However, we MUST add the base offsets to ensure memory layout reflects stride modifications.
+
+    uint a_base = 0;
+    if (params.a_batch_ndim > 0) {
+        a_base = (params.idx_a_ndim > 0) ? elem_to_loc(batch_a, shape_a, stride_a, params.a_batch_ndim)
+                                         : elem_to_loc_broadcast(batch_idx, shape_out, shape_a, stride_a, params.out_batch_ndim, params.a_batch_ndim);
+    }
+    
+    uint b_base = 0;
+    if (params.b_batch_ndim > 0) {
+        b_base = (params.idx_b_ndim > 0) ? elem_to_loc(batch_b, shape_b, stride_b, params.b_batch_ndim)
+                                         : elem_to_loc_broadcast(batch_idx, shape_out, shape_b, stride_b, params.out_batch_ndim, params.b_batch_ndim);
+    }
+    
+    // Note: C doesn't gather, C is a dense block matching the batch out-size
+    uint c_base = batch_idx * (params.M * params.N);
+
+    float sum = 0.0;
+
+    uint tid = gl_LocalInvocationID.x;
+    uint local_row = tid / BN;
+    uint local_col = tid % BN;
+
+    uint row = block_row * BM + local_row;
+    uint col = block_col * BN + local_col;
+    
+    uint num_tiles = (params.K + BK - 1) / BK;
+    
+    for (uint t = 0; t < num_tiles; t++) {
+        uint a_col = t * BK + local_col;
+        uint b_row = t * BK + local_row;
+
+        uint a_idx = a_base + row * params.a_stride_row + a_col * params.a_stride_col;
+        uint b_idx = b_base + b_row * params.b_stride_row + col * params.b_stride_col;
+
+        memoryBarrierShared();
+        barrier();
+
+        if (row < params.M && a_col < params.K) {
+            tile_a_flat[local_row * 16 + local_col] = read_a(a_idx);
+        } else {
+            tile_a_flat[local_row * 16 + local_col] = 0.0;
+        }
+
+        if (b_row < params.K && col < params.N) {
+            tile_b_flat[local_row * 16 + local_col] = read_b(b_idx);
+        } else {
+            tile_b_flat[local_row * 16 + local_col] = 0.0;
+        }
+        
+        memoryBarrierShared();
+        barrier();
+
+        for (uint k = 0; k < 16; k++) {
+            sum += tile_a_flat[local_row * 16 + k] * tile_b_flat[k * 16 + local_col];
+        }
+
+        memoryBarrierShared();
+        barrier();
+    }
+
+    if (row < params.M && col < params.N) {
+        c_data[c_base + row * params.N + col] = sum;
+    }
+}
