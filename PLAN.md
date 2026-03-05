@@ -13,7 +13,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
 **Current device**: Apple M1 via MoltenVK (macOS development)
-**Last verified**: 2026-03-03
+**Last verified**: 2026-03-05 (session 2)
 
 ---
 
@@ -67,22 +67,47 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 ---
 
-## Known Issues / Remaining Failures (2026-03-03)
+## Codebase Gap Analysis — Verified 2026-03-05
 
-### Official test_ops.py — Still Failing (~11/36 tested)
+> Based on live run of all 134 `test_ops.py` tests and source audit of all 24 shaders + `primitives.cpp`.
 
-- `test_array_equal` — `equal_nan=True` not implemented on GPU
-- `test_bitwise_ops` — left_shift/right_shift for uint16/int16/uint64/int64 not in binary.comp
-- `test_complex_ops` — complex64 dtype unsupported on GPU (expected limitation)
-- `test_cos` / `test_sin` — precision near zero on GPU vs CPU (denormal handling)
-- `test_divmod` — still failing for some dtype combinations (partial fix applied)
-- `test_dynamic_slicing` — dynamic offset computation stub returns 0
-- `test_inner` — shape mismatch in inner product computation
-- `test_sort` — multi-axis sort wrong for int32 and float32
+### test_ops.py Results: ~114/134 PASS (before segfault)
 
-### Stage Tests — One Failure
+The full suite segfaults partway through `test_scans` (scan_size > 1024 triggers CPU fallback path which crashes). Tests after that point are unverified.
 
-- `test_stage11_matmul.py` — batch matmul `(4,16,32)@(4,32,16)` fails
+#### ✅ PASSING (confirmed)
+abs, add, all, allclose, any, arange_*, argmin_argmax, argpartition, array_equal, as_strided, atleast_*, binary_ops, bitwise_grad, bitwise_ops, broadcast*, ceil, clip, comparisons, complex_ops, complex_power, concatenate, conjugate, cos, degrees, depends, diag, diagonal, divide, divmod, dynamic_slicing, empty_matmuls, erf, erfinv, exp, expm1, eye, flatten, floor, full_ones_zeros, hadamard*, hamming_general, hanning_general, inner, integer_power, irregular_*, isclose, isfinite, isposinf, issubdtype, kron, large_binary, log, log10, log1p, log2, logical_*, masked_scatter, mean, min_and_max, move_swap_axes, multiply, negative, pad, partition, prod, radians, reciprocal, remainder, repeat, roll*, sigmoid, sign, sin, slice_*, softmax, split, sqrt, square, squeeze_expand, stack, std, stop_gradient, subtract, sum, take, take_along_axis, tensordot, tile, to_from_fp8, trace, transpose_*, tri, trig_ops, tril, triu, unary_ops*, var, view, where
+
+#### ❌ FAILING (confirmed root causes)
+
+| Test | Root Cause | Fix Needed |
+|---|---|---|
+| `test_isinf` | GPU returns `[False, False]` not `[False, True]` — NaN/Inf detection not wired in unary | Add `isinf` GPU path in `unary.comp` |
+| `test_isnan` | Same — NaN detection missing on GPU | Add `isnan` GPU path in `unary.comp` |
+| `test_isneginf` | Same — negative inf detection missing | Add `isneginf` = `isinf && val < 0` path |
+| `test_logaddexp` | Returns `False` — logaddexp wrong for Inf inputs | NaN/Inf handling in `binary.comp` LogAddExp |
+| `test_logcumsumexp` | Scan > 1024 CPU fallback crashes | Fix scan > 1024 multi-pass |
+| `test_logsumexp` | LogAddExp path fails for Inf | Same as logaddexp |
+| `test_maximum` | Returns `False` — NaN propagation wrong | NaN passthrough in `binary.comp` maximum |
+| `test_median` | Returns 3.0 not 2 — sort wrong for int32 | Fix radix sort int32 negative numbers |
+| `test_minimum` | Same NaN propagation issue | NaN passthrough in `binary.comp` minimum |
+| `test_nan_to_num` | Returns `False` — not detecting NaN | Requires `isnan` fix first |
+| `test_outer` | Shape mismatch — matrix outer product wrong | Fix outer product dispatch |
+| `test_put_along_axis` | `[0, 0]` != `[15, 122]` — ScatterAxis wrong result | ScatterAxis GPU dispatch bug |
+| `test_real_imag` | Complex type not handled on GPU | complex64 CPU fallback needed |
+| `test_round` | Wrong result — round() not correctly implemented | `round.comp` path in unary |
+| `test_rsqrt` | Returns `False` — rsqrt precision issue | Fix rsqrt in `unary.comp` |
+| `test_scalar_inputs` | `False != True` — scalar broadcast missing | Scalar input handling in binary |
+| `test_scans` | Segfault at scan_size > 1024 | Multi-pass scan implementation |
+| `test_sort` | int32 sort wrong; axis=None wrong | Fix radix sort int32 + multi-axis dispatch |
+| `test_sort_nan` | NaN ordering wrong in sort | NaN handling in sort shader |
+| `test_linspace` | Float precision wrong | linspace endpoint calculation |
+| `test_meshgrid` | Wrong output shape | meshgrid indexing logic |
+
+#### ⚠️ UNKNOWN (after segfault cutoff)
+`test_take` through `test_where` — these ran before in isolation but status in full suite interrupted by scan segfault.
+
+---
 
 ---
 
@@ -691,7 +716,199 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ---
 
-## Next Steps (Priority Order)
+## Pending Work — Prioritized (as of 2026-03-05)
+
+> Based on live audit: 134 tests in `test_ops.py`, 24 shaders, full `primitives.cpp` code review.
+
+---
+
+### 🔴 P0 — Segfault blocking full test suite run
+
+| ID | Issue | File | Root Cause |
+|---|---|---|---|
+| S1 | `test_scans` segfaults at scan_size > 1024 | `primitives.cpp` | CPU fallback path in `Scan::eval_gpu` leaves encoder in bad state when called within pytest subprocess |
+| S2 | Full `test_ops.py` always segfaults partway | MoltenVK | Likely leaked descriptor set or dangling VkBuffer after scan CPU fallback — needs LLDB investigation |
+
+**Fix S1 first**: Either implement multi-pass scan GPU, or make the CPU fallback path fully safe (synchronize stream cleanly, never touch the encoder after).
+
+---
+
+### 🔴 P1 — Correctness bugs in shipped shaders
+
+#### 1.1 NaN/Inf detection missing in `unary.comp` ✅ DONE (2026-03-05)
+Tests: `test_isinf` ✅, `test_isnan` ✅, `test_isneginf` ✅, `test_nan_to_num` ✅
+
+- Added `UNARY_ISINF`, `UNARY_ISNAN`, `UNARY_ISNEGINF` to `unary.comp`
+- Fixed `dispatch_unary` to register 3 descriptor bindings (was 2 — caused segfault)
+- Fixed SIMD `IsInf`/`IsNaN`/`IsNegInf` in `unary_ops.h` to handle `complex64` element-by-element
+  instead of treating real+imag as raw float32 pairs (shifted result bug)
+- Fixed `ternary.comp` boolean condition: was reading bool as `float[]` (packed uint8 treated as
+  non-zero float → every element evaluated as true). Now reads as `uint[]`, extracts byte at `idx`.
+- Fixed `ternary.comp` float16/bfloat16: added sized reads for true/false/out buffers;
+  zero-initializes 16-bit output before dispatch so `atomicOr` writes are safe
+- Fixed `Select::eval_gpu` push constants: 16 → 28 bytes, added `elem_bytes` fields
+
+#### 1.2 NaN propagation wrong in `binary.comp` maximum/minimum/logaddexp ✅ DONE (2026-03-05)
+Tests: `test_maximum` ✅, `test_minimum` ✅, `test_logaddexp` ✅, `test_logsumexp` ✅
+
+- Fixed NaN propagation in `binary.comp` for `BINARY_MAX`, `BINARY_MIN`, `BINARY_LOGADDEXP`
+- Fixed `LogAddExp` for `complex64` in `binary_ops.h`: use `log(exp(a)+exp(b))` not max-trick
+
+#### 1.3 Sort — int32 with negatives broken
+Tests: `test_sort` ❌ (int32 subtests), `test_median` ❌
+
+- `radix_sort.comp` reinterprets int32 as uint32 directly — negative numbers sort AFTER positives
+- **Fix**: In `get_digit()`, XOR the sign bit so negative int32 values sort correctly: `value ^ 0x80000000u`
+
+#### 1.4 Sort — axis=None / multi-axis fallback issues
+Tests: `test_sort` ❌ (axis=None subtests)
+
+- `axis=None` flattens then sorts — dispatch in `Sort::eval_gpu` doesn't flatten before dispatching radix sort
+- Multi-axis: the sort dispatch only handles last axis; axis=0 or axis=1 on 2D arrays falls through wrong
+- **Fix**: In `Sort::eval_gpu`, detect `axis=None` → call `mx::flatten()` first; for non-last-axis, detect and fall back cleanly to CPU
+
+#### 1.5 Sort — NaN ordering
+Tests: `test_sort_nan` ❌
+
+- For float sort, IEEE `NaN != NaN` so NaN keys should sort to the end — current float_to_key doesn't handle NaN
+- **Fix**: In `radix_sort.comp`, add NaN guard: `isnan(f) ? 0xFFFFFFFFu : float_to_key(f)`
+
+#### 1.6 ScatterAxis wrong result for `put_along_axis`
+Tests: `test_put_along_axis` ❌, returns `[0, 0]` instead of `[15, 122]`
+
+- `ScatterAxis::eval_gpu` has a known bug in thread count dispatch: `pc.n = idx.size()` still not matching actual scatter semantics correctly for multi-row cases
+- **Fix**: Step through `put_along_axis` → `ScatterAxis` dispatch carefully; verify index iteration logic in `indexing.comp` for the scatter path
+
+#### 1.7 `rsqrt` precision
+Tests: `test_rsqrt` ❌
+
+- GPU `1.0/sqrt(x)` has worse precision than CPU `std::rsqrt()` for edge values
+- **Fix**: Use `inversesqrt()` in GLSL which maps to hardware instruction, or add a Newton-Raphson refinement step
+
+#### 1.8 `round` wrong result
+Tests: `test_round` ❌
+
+- `round()` in GLSL uses "round half to even" (banker's rounding) on some drivers; MLX CPU uses "round half away from zero"
+- **Fix**: Replace `round(x)` with `floor(x + 0.5)` in `unary.comp` for the Round case
+
+#### 1.9 `linspace` precision
+Tests: `test_linspace` ❌
+
+- Linspace endpoints may have floating point accumulation error vs CPU
+- **Fix**: Check `arange.comp` start/stop/step calculation; use `lerp(start, stop, t/n)` pattern
+
+#### 1.10 `meshgrid` shape wrong
+Tests: `test_meshgrid` ❌
+
+- meshgrid uses indexing='xy' vs 'ij' — wrong axis assignment
+- **Fix**: Check `meshgrid` Python wrapper in `mlx-src/python/mlx/core/__init__.py`; likely a Python-level fix not GPU
+
+#### 1.11 `outer` shape mismatch
+Tests: `test_outer` ❌
+
+- `mx.outer(a, b)` should produce `(len(a), len(b))` matrix via broadcasting reshape
+- **Fix**: Check dispatch path; may need reshape+broadcast before binary multiply
+
+#### 1.12 Scalar input handling
+Tests: `test_scalar_inputs` ❌
+
+- Broadcasting scalar Python values to MLX arrays before GPU dispatch has edge cases
+- **Fix**: Check `Binary::eval_gpu` path when one input is `ndim=0` (scalar)
+
+---
+
+### 🔴 P2 — Missing GPU implementations (CPU fallback but should be GPU)
+
+#### 2.1 Scan > 1024 — multi-pass GPU
+- **Status**: CPU fallback with segfault risk
+- **Target**: Support up to 128K elements  
+- **Implementation**:
+  - Pass 1: serial scan within each block of 1024 → block partial sums
+  - Pass 2: scan the partial sums (reuse scan.comp itself, recursively or iteratively)
+  - Pass 3: add block prefix to each block
+  - Multi-dispatch from `Scan::eval_gpu` based on `scan_size`
+- **Files**: `kernels/scan.comp`, `primitives.cpp`
+
+#### 2.2 Sort — axis=None support
+- **Status**: CPU fallback but currently dispatcher breaks axis=None
+- **Fix**: Flatten in `Sort::eval_gpu`, dispatch radix sort, then reshape result
+
+#### 2.3 Sort — non-float32/int32 dtypes
+- **Status**: CPU fallback for bfloat16, float16, int8, uint8, int64
+- **Fix**: Extend `radix_sort.comp` to support more dtypes via appropriate key encoding
+
+#### 2.4 Multi-axis Gather (ND index tensors)
+- **Status**: IndexPushConst extended with `idx_ndim/idx_shape/idx_strides` (push const size 80), but `indexing.comp` not yet updated to use them
+- **Fix**: Implement ND gather path in `indexing.comp` reading `idx_ndim`, `idx_shape[]`, `idx_strides[]` from push constants
+- **Files**: `kernels/indexing.comp`
+
+#### 2.5 GatherMM — untested on real workloads
+- **Status**: `gather_mm.comp` exists with full tiled SGEMM + batch index lookup; `primitives.cpp` dispatch fully wired
+- **Risk**: Push constant exceeds 128 bytes (sizeof PushConst = ~200 bytes) — **this will fail on any Vulkan driver**
+- **Fix**: MoltenVK allows up to 256 bytes in practice but Vulkan spec only guarantees 128; refactor to use UBO instead of push constants for the extra fields
+
+#### 2.6 Hadamard large arrays (n > 2048)
+- **Status**: Falls to CPU for n > 2048 or non-power-of-2
+- **Fix**: Increase GPU limit (currently 2048) or implement multi-pass butterfly in `hadamard.comp`
+
+---
+
+### 🟡 P3 — Infrastructure gaps
+
+#### 3.1 Pipeline cache version discipline
+- Many push constant size changes are not always followed by `kPipelineCacheVersion` bumps
+- Current version: `16` — verify this is correct and that all layout-changing edits bump it
+- **Action**: Add a comment block listing all version bump reasons for audit
+
+#### 3.2 GatherMM push constant size violation
+- **Critical**: `sizeof(PushConst)` in `GatherMM::eval_gpu` = ~200 bytes, violates Vulkan 128-byte guarantee
+- **Fix**: Move batch shape/stride arrays to a separate UBO (binding 5)
+
+#### 3.3 `matmul_coop.spv` compilation safety
+- `CMakeLists.txt` compiles `matmul.comp` with `-DMLX_USE_COOP_MAT=1` using `GL_KHR_cooperative_matrix`
+- MoltenVK does NOT support `VK_KHR_cooperative_matrix` — this compile will fail on macOS builds
+- **Fix**: Guard `matmul_coop.spv` compilation with a cmake check for `VK_KHR_cooperative_matrix` support
+
+#### 3.4 `has_cooperative_matrix_` flag always false on M1
+- `device.cpp` checks for `VK_KHR_cooperative_matrix` extension — MoltenVK never advertises it
+- So `matmul_coop` pipeline is never selected on M1, meaning the cooperative path is untested
+- **Action**: Add test `PYTHONPATH=python python3.11 -c "import mlx.core as mx; print(mx.gpu.device_info())"`
+
+#### 3.5 Full test suite segfault isolation
+- The segfault in `test_scans` propagates and kills all subsequent tests in pytest
+- **Fix**: Run `test_ops.py` with `--forked` (each test in subprocess) or isolate scan test
+
+---
+
+### 🟢 P4 — Performance & Polish
+
+| # | Task | Impact |
+|---|---|---|
+| 4.1 | GPU sort: support bfloat16/float16 via key encoding in radix_sort.comp | Covers transformer KV-cache topK |
+| 4.2 | AMD RDNA matmul tile tuning: verify BN=32 for 64-wide wavefronts actually helps | AMD perf |
+| 4.3 | fast::Quantize dequantize GPU shader path | Eliminates CPU sync round-trip |
+| 4.4 | Rader/Bluestein FFT for non-power-of-2 sizes | Completeness |
+| 4.5 | Distributed: AllReduce via vkCmdCopyBuffer | Multi-GPU |
+| 4.6 | Numerical equivalence test suite (GPU vs CPU for all ops) | Regression safety |
+| 4.7 | CI: fix lavapipe compatibility for cooperative_matrix compile guard | CI health |
+
+---
+
+### Summary Dashboard
+
+| Category | Count | Status |
+|---|---|---|
+| test_ops.py PASSING | ~114/134 | Suite segfaults before completion |
+| test_ops.py FAILING | ~20 | See P1 table above |
+| Shaders compiled | 24/24 | All present |
+| Segfault (blocks CI) | 1 | P0 — scan > 1024 crash |
+| NaN/Inf handling | 0/5 ops | P1.1, P1.2 |
+| Sort correctness | partial | P1.3–P1.5 |
+| Scan > 1024 GPU | ❌ | P2.1 |
+| Multi-axis Gather GPU | ❌ | P2.4 |
+| GatherMM push const size | 🚨 spec violation | P3.2 |
+| Coop matrix on M1 | ❌ unsupported | P3.3, P3.4 |
+
 
 ### Immediate: Unblock test_array.py and test_ops.py
 

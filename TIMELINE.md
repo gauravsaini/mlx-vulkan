@@ -1,6 +1,60 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-05 (session 2)
+
+### fix (2026-03-05) — P1 Correctness: isinf/isnan/isneginf/nan_to_num/maximum/minimum/logaddexp/logsumexp
+
+**P1.1 — NaN/Inf unary detection (8 tests fixed)**
+
+1. **`unary.comp` — Added UNARY_ISINF, UNARY_ISNAN, UNARY_ISNEGINF** (`kernels/unary.comp`):
+   - Three new cases in `compute_op()` using GLSL `isinf()`/`isnan()` builtins.
+   - Output routed through the bool binding (`out_bool`); result stored as `uint8_t`.
+
+2. **`dispatch_unary` — 3 descriptor bindings, not 2** (`primitives.cpp`):
+   - `unary.comp` defines bindings 0=In, 1=Out (float), 2=Out (bool); was registering only 2.
+   - Caused VK validation errors and segfaults on any bool-output unary op.
+
+3. **`unary_ops.h` — SIMD complex64 guard for IsInf/IsNaN/IsNegInf** (`backend/cpu/unary_ops.h`):
+   - `Simd<T,N>` specializations called `simd::isnan(x)` treating complex64 as float32 pairs.
+   - Added `if constexpr (is_complex<T>)` to iterate per element via scalar `operator()`.
+   - Fixes wrong shifted results like `isnan([0+0j, nan+0j])` → `[False, False]` instead of `[False, True]`.
+
+4. **`binary_ops.h` — LogAddExp for complex64** (`backend/cpu/binary_ops.h`):
+   - Max-trick doesn't apply to complex numbers; added `if constexpr (is_complex<T>) return log(exp(x)+exp(y))`.
+
+**P1.2 — NaN propagation in binary ops (4 tests fixed)**
+
+5. **`binary.comp` — NaN propagation in BINARY_MAX, BINARY_MIN, BINARY_LOGADDEXP** (`kernels/binary.comp`):
+   - GLSL `max(a,b)` silently drops NaN; IEEE 754 requires NaN to propagate.
+   - Pattern: `(isnan(a) || isnan(b)) ? (0.0/0.0) : max(a, b)`.
+
+**Bonus fix: ternary.comp boolean condition and float16 decode bugs**
+
+6. **`ternary.comp` — Bool condition read as float** (`kernels/ternary.comp`):
+   - Declared `cond_data` as `float[]`; bools are packed uint8 — 4 per uint32 word.
+   - Reading 4 bytes as float gives non-zero garbage → every condition evaluated as true.
+   - Fix: declare as `uint[]`, extract byte at `idx >> 2` with byte shift `(idx & 3) * 8`.
+
+7. **`ternary.comp` — float16/bfloat16 true/false value decode** (`kernels/ternary.comp`):
+   - Now reads true/false/out buffers as `uint[]` with inline sized-read logic per `elem_bytes`.
+   - For 16-bit outputs: uses `atomicOr` to write each half into shared uint32 words.
+   - `Select::eval_gpu` push constants extended 16 → 28 bytes with `true_elem_bytes`, `false_elem_bytes`, `out_elem_bytes`.
+   - Zero-initializes 16-bit output buffer via `vkCmdFillBuffer` before dispatch so atomicOr is safe.
+
+**Tests fixed**: `test_isinf` ✅ `test_isnan` ✅ `test_isneginf` ✅ `test_nan_to_num` ✅
+                 `test_maximum` ✅ `test_minimum` ✅ `test_logaddexp` ✅ `test_logsumexp` ✅
+
+**Files changed**:
+- `mlx/backend/cpu/binary_ops.h`
+- `mlx/backend/cpu/unary_ops.h`
+- `mlx/backend/vulkan/kernels/binary.comp`
+- `mlx/backend/vulkan/kernels/ternary.comp`
+- `mlx/backend/vulkan/primitives.cpp`
+
+---
+
 ## UPDATED ON : 2026-03-05
+
 
 ### fix (2026-03-05) — GatherMM VJP Gradients (ScatterAxis Thread Scaling & Type Safety)
 
