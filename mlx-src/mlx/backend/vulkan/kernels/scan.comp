@@ -19,6 +19,8 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) readonly  buffer InBuf  { float in_data[];  };
 layout(set = 0, binding = 1) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 2) writeonly buffer TotalsBuf { float out_totals[]; };
+layout(set = 0, binding = 3) readonly  buffer PrefixBuf { float in_prefix[];  };
 
 layout(push_constant) uniform Params {
     uint n;          // total output elements
@@ -27,6 +29,9 @@ layout(push_constant) uniform Params {
     uint op;         // SCAN_ADD / SCAN_MUL / SCAN_MAX / SCAN_MIN
     uint inclusive;  // 1 = inclusive, 0 = exclusive
     uint reverse;    // 1 = scan in reverse direction
+    uint save_totals;// 1 = save segment total to out_totals[scan_idx]
+    uint has_prefix; // 1 = add in_prefix[scan_idx] to all elements
+    uint stride_dist;// Distance between prefixes/totals for independent scans (usually 1, but for multi-axis recurrency it scales)
 } params;
 
 shared float sdata[1024];  // flat storage for all elements of one scan segment
@@ -101,6 +106,12 @@ void main() {
         barrier();
     }
     // stotals[tid] is now the inclusive prefix of chunk totals [0..tid].
+
+    // Save the total of the entire segment (which is stotals[N - 1])
+    if (params.save_totals == 1u && tid == N - 1u) {
+        out_totals[scan_idx * params.stride_dist] = stotals[tid];
+    }
+
     // Convert to exclusive: stotals[tid] = sum of chunks [0..tid-1]
     {
         float val = (tid > 0u) ? stotals[tid - 1u] : ident;
@@ -112,6 +123,9 @@ void main() {
     // ── Phase 3: Add chunk prefix (stotals[tid]) to all elements in chunk ───
     // After: sdata[pos] = inclusive scan of the full segment up to pos.
     float prefix = stotals[tid];
+    if (params.has_prefix == 1u) {
+        prefix = combine(in_prefix[scan_idx * params.stride_dist], prefix);
+    }
     for (uint k = 0u; k < chunk_size; k++) {
         uint pos = chunk_base + k;
         if (pos < params.scan_size) {

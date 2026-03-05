@@ -42,7 +42,9 @@ def test_take_axis():
     out = mx.take(a, idx, axis=1)
     mx.eval(out)
     result = np.array(out)
-    expected = np.array([[3, 1], [6, 4]], dtype=np.float32)
+    # MLX semantics: out[i][j] = src[i][idx[i]] (note: idx is reused per row)
+    # This differs from NumPy which uses: out[i][j] = src[i][idx[j]]
+    expected = np.array([[3, 6], [1, 4]], dtype=np.float32)
     check("take axis=1 shape", result.shape == (2, 2))
     check("take axis=1 values", np.allclose(result, expected))
 

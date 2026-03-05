@@ -25,6 +25,12 @@ layout(set = 0, binding = 2) readonly  buffer IndicesA { uint indices_a[]; };
 layout(set = 0, binding = 3) readonly  buffer IndicesB { uint indices_b[]; };
 layout(set = 0, binding = 4) writeonly buffer MatC { float c_data[]; };
 
+// Shape/stride arrays moved to SSBO to stay within push constant 128-byte limit.
+// Layout: [shape_a(4), stride_a(4), shape_b(4), stride_b(4),
+//          shape_idx_a(4), stride_idx_a(4), shape_idx_b(4), stride_idx_b(4),
+//          shape_out(4)] = 36 uint32 values
+layout(set = 0, binding = 5) readonly buffer ShapeStrides { uint ss_data[]; };
+
 layout(push_constant) uniform Params {
     uint M;
     uint N;
@@ -37,25 +43,12 @@ layout(push_constant) uniform Params {
     uint idx_a_ndim;
     uint idx_b_ndim;
     uint out_batch_ndim;
-    
-    // Unrolled shape/stride buffering here to bypass MoltenVK MSL array-stride padding
-    uint shape_a_0; uint shape_a_1; uint shape_a_2; uint shape_a_3;
-    uint stride_a_0; uint stride_a_1; uint stride_a_2; uint stride_a_3;
-    uint shape_b_0; uint shape_b_1; uint shape_b_2; uint shape_b_3;
-    uint stride_b_0; uint stride_b_1; uint stride_b_2; uint stride_b_3;
 
     // Matrix inner dimensions strides (stride_a[-2], stride_a[-1])
     uint a_stride_row;
     uint a_stride_col;
     uint b_stride_row;
     uint b_stride_col;
-
-    uint shape_idx_a_0; uint shape_idx_a_1; uint shape_idx_a_2; uint shape_idx_a_3;
-    uint stride_idx_a_0; uint stride_idx_a_1; uint stride_idx_a_2; uint stride_idx_a_3;
-    uint shape_idx_b_0; uint shape_idx_b_1; uint shape_idx_b_2; uint shape_idx_b_3;
-    uint stride_idx_b_0; uint stride_idx_b_1; uint stride_idx_b_2; uint stride_idx_b_3;
-
-    uint shape_out_0; uint shape_out_1; uint shape_out_2; uint shape_out_3;
 } params;
 
 float read_a(uint idx) {
@@ -122,17 +115,18 @@ void main() {
     uint block_row = gl_WorkGroupID.y;
     uint block_col = gl_WorkGroupID.x;
 
-    uint shape_a[4] = uint[4](params.shape_a_0, params.shape_a_1, params.shape_a_2, params.shape_a_3);
-    uint stride_a[4] = uint[4](params.stride_a_0, params.stride_a_1, params.stride_a_2, params.stride_a_3);
-    uint shape_b[4] = uint[4](params.shape_b_0, params.shape_b_1, params.shape_b_2, params.shape_b_3);
-    uint stride_b[4] = uint[4](params.stride_b_0, params.stride_b_1, params.stride_b_2, params.stride_b_3);
+    // Read shape/stride arrays from SSBO (binding 5)
+    uint shape_a[4] = uint[4](ss_data[0], ss_data[1], ss_data[2], ss_data[3]);
+    uint stride_a[4] = uint[4](ss_data[4], ss_data[5], ss_data[6], ss_data[7]);
+    uint shape_b[4] = uint[4](ss_data[8], ss_data[9], ss_data[10], ss_data[11]);
+    uint stride_b[4] = uint[4](ss_data[12], ss_data[13], ss_data[14], ss_data[15]);
     
-    uint shape_idx_a[4] = uint[4](params.shape_idx_a_0, params.shape_idx_a_1, params.shape_idx_a_2, params.shape_idx_a_3);
-    uint stride_idx_a[4] = uint[4](params.stride_idx_a_0, params.stride_idx_a_1, params.stride_idx_a_2, params.stride_idx_a_3);
-    uint shape_idx_b[4] = uint[4](params.shape_idx_b_0, params.shape_idx_b_1, params.shape_idx_b_2, params.shape_idx_b_3);
-    uint stride_idx_b[4] = uint[4](params.stride_idx_b_0, params.stride_idx_b_1, params.stride_idx_b_2, params.stride_idx_b_3);
+    uint shape_idx_a[4] = uint[4](ss_data[16], ss_data[17], ss_data[18], ss_data[19]);
+    uint stride_idx_a[4] = uint[4](ss_data[20], ss_data[21], ss_data[22], ss_data[23]);
+    uint shape_idx_b[4] = uint[4](ss_data[24], ss_data[25], ss_data[26], ss_data[27]);
+    uint stride_idx_b[4] = uint[4](ss_data[28], ss_data[29], ss_data[30], ss_data[31]);
     
-    uint shape_out[4] = uint[4](params.shape_out_0, params.shape_out_1, params.shape_out_2, params.shape_out_3);
+    uint shape_out[4] = uint[4](ss_data[32], ss_data[33], ss_data[34], ss_data[35]);
 
     // We translate the batch index directly into the indices array shapes using broadcast mappings over shape_out
     uint idx_a_loc = params.idx_a_ndim > 0 ? elem_to_loc_broadcast(batch_idx, shape_out, shape_idx_a, stride_idx_a, params.out_batch_ndim, params.idx_a_ndim) : 0;

@@ -1,5 +1,43 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-05 (session 3)
+
+### feat (2026-03-05) — P2 GPU Implementations: Scan Multi-pass & GatherMM SSBO Refactor
+
+**P2.1 — Scan > 1024 multi-pass GPU ✅**
+
+1. **Removed `scan_size > 1024` guard** (`primitives.cpp`):
+   - The recursive multi-pass scan code already existed (block scan → recursive totals scan → prefix application) but was blocked by a guard.
+   - Simply removing the guard enables GPU scan for arbitrary sizes.
+   - Verified: `cumsum(ones(N))` correct for N = 1023, 1024, 1025, 2048, 2049, 5000, 50000.
+
+**P2.5 — GatherMM push constant 128-byte violation ✅**
+
+2. **`gather_mm.comp` — Shape/stride arrays moved to SSBO** (`kernels/gather_mm.comp`):
+   - Push constant `Params` struct was 200 bytes (50 uint32 fields), violating Vulkan's 128-byte minimum.
+   - Refactored to 14 scalar fields in push constants (56 bytes) + 36 shape/stride fields in SSBO (binding 5).
+   - SSBO reads via `layout(set=0, binding=5) buffer ShapeStrideBuf { uint ss_data[]; }`.
+
+3. **`GatherMM::eval_gpu` — SSBO allocation and binding** (`primitives.cpp`):
+   - Allocates host-coherent SSBO, fills with shape/stride data via `mapped_ptr`.
+   - Binds as descriptor set binding 5 (total 6 bindings).
+   - Registers completed handler to free SSBO after GPU execution.
+   - Also removed debug `std::cout` statements from GatherMM dispatch.
+
+**P2.2 — Sort axis=None: already handled**
+
+4. Confirmed `sort(axis=None)` already works via `ops.cpp:2350` which flattens → sorts on axis=0.
+
+**Tests** (all with Python 3.11 matching build):
+- Scan multi-pass: 7/7 sizes ✅
+- Sort float32 (n=5,32,64,128): 4/4 ✅
+- Sort int32 (n=5,32,64,128): 4/4 ✅
+- Sort axis=None: ✅
+
+**Files changed**: `primitives.cpp`, `kernels/gather_mm.comp`
+
+---
+
 ## UPDATED ON : 2026-03-05 (session 2)
 
 ### fix (2026-03-05) — P1 Correctness: isinf/isnan/isneginf/nan_to_num/maximum/minimum/logaddexp/logsumexp
@@ -44,12 +82,28 @@
 **Tests fixed**: `test_isinf` ✅ `test_isnan` ✅ `test_isneginf` ✅ `test_nan_to_num` ✅
                  `test_maximum` ✅ `test_minimum` ✅ `test_logaddexp` ✅ `test_logsumexp` ✅
 
+**P1.3, P1.4, P1.5 — Sort / ArgSort Float and Int32 (3 tests fixed)**
+
+8. **`sort.comp` — Bitonic Sort Int32 Support** (`kernels/sort.comp`):
+   - Removed hardcoded float comparisons (`uintBitsToFloat`). Now checks `params.type_is_int` push constant to decide whether to interpret `[i]` memory slot as `int` or `float` for `>` comparisons.
+   - Padded elements use `MAX_INT32` if integer, preserving integer sorting capabilities without parsing fake floats.
+   - Replaced all buffer type signatures from `float data[]` to `uint data[]` and `shared float s_data` to `shared uint s_data`.
+
+9. **`Sort::eval_gpu` parameters & fallbacks** (`primitives.cpp`):
+   - Expanded GPU dispatch `supported_dtype` to include `int32`.
+   - Updated `SortPushConst` layout to include `uint32_t type_is_int`, increasing specialization pipeline cache layout 20 → 24 bytes in Vulkan device.
+   - `test_sort` axis=None and multi-axis correctly falls back to CPU due to `sort_axis != in.ndim() - 1` logic, effectively bypassing broken Radix Sort.
+
+**Tests fixed**: `test_sort` ✅ `test_median` ✅ `test_sort_nan` ✅
+
 **Files changed**:
 - `mlx/backend/cpu/binary_ops.h`
 - `mlx/backend/cpu/unary_ops.h`
 - `mlx/backend/vulkan/kernels/binary.comp`
 - `mlx/backend/vulkan/kernels/ternary.comp`
+- `mlx/backend/vulkan/kernels/sort.comp`
 - `mlx/backend/vulkan/primitives.cpp`
+- `mlx/backend/vulkan/device.cpp`
 
 ---
 

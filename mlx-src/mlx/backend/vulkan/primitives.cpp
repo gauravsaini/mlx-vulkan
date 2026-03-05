@@ -503,14 +503,14 @@ UNARY_GPU(Sign, Sign)
 // Sqrt and Rsqrt share the same C++ class (Sqrt with recip_=true for Rsqrt).
 // Dispatch UNARY_RSQRT or UNARY_SQRT based on state().
 void Sqrt::eval_gpu(const std::vector<array>& inputs, array& out) {
-  uint32_t op = state()
-      ? static_cast<uint32_t>(UnaryOp::Rsqrt)
-      : static_cast<uint32_t>(UnaryOp::Sqrt);
+  uint32_t op = state() ? static_cast<uint32_t>(UnaryOp::Rsqrt)
+                        : static_cast<uint32_t>(UnaryOp::Sqrt);
   if (!dispatch_unary(inputs[0], out, op, stream())) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
   }
 }
+UNARY_GPU(Sin, Sin)
 UNARY_GPU(Sinh, Sinh)
 UNARY_GPU(Square, Square)
 UNARY_GPU(Tan, Tan)
@@ -1924,11 +1924,10 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
     sort_pow2 <<= 1;
 
   // Fall back to CPU if:
-  // - Not sorting on last axis
-  // float32 or int32 (bitonic sort uses explicit logic for these)
+  // - Not sorting on last axis (non-contiguous scan)
+  // - Not float32 or int32 (bitonic/radix sort logic for these only)
   // - Not contiguous
-  // - Sort size > 128 (bitonic sort limit; radix sort disabled pending
-  // stability fix)
+  // - Sort size > 128 (bitonic sort limit; radix sort has stability issues)
   bool supported_dtype = (in.dtype() == float32 || in.dtype() == int32);
   if (sort_axis != in.ndim() - 1 || !supported_dtype ||
       !in.flags().row_contiguous || sort_pow2 > 128) {
@@ -2193,12 +2192,12 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Shader assumes contiguous scan (last axis only) and float32 only.
   // Fall back to CPU for:
-  //   (1) scan_size > 1024 (shader workgroup limit)
-  //   (2) non-last axis (scan elements are non-contiguous in memory)
-  //   (3) non-float32 dtype (int32, int64, float16, bfloat16, complex not
+  //   (1) non-last axis (scan elements are non-contiguous in memory)
+  //   (2) non-float32 dtype (int32, int64, float16, bfloat16, complex not
   //   handled)
+  // Note: scan_size > 1024 is handled by the recursive multi-pass scan below.
   bool is_float32 = in.dtype() == float32;
-  if (scan_size > 1024 || norm_axis != ndim - 1 || !is_float32) {
+  if (norm_axis != ndim - 1 || !is_float32) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
@@ -2233,78 +2232,316 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (out.size() == 0)
     return;
 
+  // Define a recursive helper lambda inside eval_gpu that does block scanning
+  std::function<void(
+      VkBuffer, VkBuffer, uint32_t, uint32_t, uint32_t, bool, bool)>
+      scan_gpu_recursive = [&](VkBuffer in_buf,
+                               VkBuffer out_buf,
+                               uint32_t current_scan_size,
+                               uint32_t current_n_scans,
+                               uint32_t stride_dist,
+                               bool inclusive,
+                               bool reverse) {
+        auto& encoder = vulkan::get_command_encoder(stream());
+        auto& dev = vulkan::device(stream().device);
+
+        struct ScanPushConst {
+          uint32_t n;
+          uint32_t scan_size;
+          uint32_t n_scans;
+          uint32_t op;
+          uint32_t inclusive;
+          uint32_t reverse;
+          uint32_t save_totals;
+          uint32_t has_prefix;
+          uint32_t stride_dist;
+        };
+
+        if (current_scan_size <= 1024) {
+          // Base case: single block scan
+          encoder.op_count++;
+          ScanPushConst pc{
+              current_scan_size * current_n_scans,
+              current_scan_size,
+              current_n_scans,
+              op,
+              inclusive ? 1u : 0u,
+              reverse ? 1u : 0u,
+              0u,
+              0u,
+              stride_dist};
+
+          VkPipelineLayout layout;
+          VkDescriptorSetLayout ds_layout;
+          VkPipeline pipeline = dev.get_pipeline(
+              "scan",
+              layout,
+              ds_layout,
+              4,
+              sizeof(pc),
+              vulkan::get_default_specialization_info(dev));
+
+          VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+          VkDescriptorBufferInfo infos[4]{
+              {in_buf, 0, VK_WHOLE_SIZE},
+              {out_buf, 0, VK_WHOLE_SIZE},
+              {out_buf, 0, VK_WHOLE_SIZE}, // unused totals buf (safe dummy)
+              {in_buf, 0, VK_WHOLE_SIZE} // unused prefix buf (safe dummy)
+          };
+          VkWriteDescriptorSet writes[4]{};
+          for (int i = 0; i < 4; i++) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = ds;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &infos[i];
+          }
+          vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+          vkCmdPushConstants(
+              encoder.cmd,
+              layout,
+              VK_SHADER_STAGE_COMPUTE_BIT,
+              0,
+              sizeof(pc),
+              &pc);
+          vkCmdBindPipeline(
+              encoder.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+          vkCmdBindDescriptorSets(
+              encoder.cmd,
+              VK_PIPELINE_BIND_POINT_COMPUTE,
+              layout,
+              0,
+              1,
+              &ds,
+              0,
+              nullptr);
+          vkCmdDispatch(encoder.cmd, current_n_scans, 1, 1);
+
+          VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+          barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+          barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+          vkCmdPipelineBarrier(
+              encoder.cmd,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              0,
+              1,
+              &barrier,
+              0,
+              nullptr,
+              0,
+              nullptr);
+        } else {
+          // Recursive case: multi-block scan
+          uint32_t chunk_size = 1024;
+          uint32_t num_chunks =
+              (current_scan_size + chunk_size - 1) / chunk_size;
+
+          size_t totals_bytes = num_chunks * current_n_scans * sizeof(float);
+          auto totals_alloc = allocator::malloc(totals_bytes);
+          VkBuffer totals_buf =
+              static_cast<vulkan::VulkanBuffer*>(totals_alloc.ptr())->buffer;
+
+          // Ensure zeroed out to prevent garbage values
+          vkCmdFillBuffer(encoder.cmd, totals_buf, 0, VK_WHOLE_SIZE, 0);
+
+          VkMemoryBarrier zero_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+          zero_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+          zero_barrier.dstAccessMask =
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+          vkCmdPipelineBarrier(
+              encoder.cmd,
+              VK_PIPELINE_STAGE_TRANSFER_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              0,
+              1,
+              &zero_barrier,
+              0,
+              nullptr,
+              0,
+              nullptr);
+
+          // Pass 1: Block-wise inclusive scan, saving chunk totals
+          encoder.op_count++;
+          ScanPushConst pc1{
+              current_scan_size * current_n_scans,
+              chunk_size,
+              num_chunks * current_n_scans,
+              op,
+              inclusive ? 1u : 0u, // Pass 1 determines output inclusiveness
+              reverse ? 1u : 0u,
+              1u, // save_totals
+              0u, // has_prefix
+              1u // Pass 1 always lays blocks out flat in the auxiliary totals
+                 // buffer. The stride applies during the recursive internal
+                 // scan mapping
+          };
+
+          VkPipelineLayout layout;
+          VkDescriptorSetLayout ds_layout;
+          VkPipeline pipeline = dev.get_pipeline(
+              "scan",
+              layout,
+              ds_layout,
+              4,
+              sizeof(pc1),
+              vulkan::get_default_specialization_info(dev));
+
+          VkDescriptorSet ds1 = dev.alloc_descriptor_set(stream(), ds_layout);
+          VkDescriptorBufferInfo infos1[4]{
+              {in_buf, 0, VK_WHOLE_SIZE},
+              {out_buf, 0, VK_WHOLE_SIZE},
+              {totals_buf, 0, VK_WHOLE_SIZE},
+              {in_buf, 0, VK_WHOLE_SIZE}}; // dummy prefix
+          VkWriteDescriptorSet writes1[4]{};
+          for (int i = 0; i < 4; i++) {
+            writes1[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes1[i].dstSet = ds1;
+            writes1[i].dstBinding = i;
+            writes1[i].descriptorCount = 1;
+            writes1[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes1[i].pBufferInfo = &infos1[i];
+          }
+          vkUpdateDescriptorSets(dev.vk_device(), 4, writes1, 0, nullptr);
+
+          vkCmdPushConstants(
+              encoder.cmd,
+              layout,
+              VK_SHADER_STAGE_COMPUTE_BIT,
+              0,
+              sizeof(pc1),
+              &pc1);
+          vkCmdBindPipeline(
+              encoder.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+          vkCmdBindDescriptorSets(
+              encoder.cmd,
+              VK_PIPELINE_BIND_POINT_COMPUTE,
+              layout,
+              0,
+              1,
+              &ds1,
+              0,
+              nullptr);
+          vkCmdDispatch(encoder.cmd, num_chunks * current_n_scans, 1, 1);
+
+          VkMemoryBarrier barrier1{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+          barrier1.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+          barrier1.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+          vkCmdPipelineBarrier(
+              encoder.cmd,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              0,
+              1,
+              &barrier1,
+              0,
+              nullptr,
+              0,
+              nullptr);
+
+          // Pass 2: Exclusive scan of the totals block recursively
+          // The block prefixes themselves are always exclusive of their own
+          // chunks, so that they can be added across the block elements
+          // smoothly.
+          scan_gpu_recursive(
+              totals_buf,
+              totals_buf,
+              num_chunks,
+              current_n_scans,
+              num_chunks, // Pass 2 scans across the num_chunks elements
+                          // allocated per segment scan, ignoring parallel inner
+                          // loops
+              false, // Must be exclusive for the block prefix dependencies
+              reverse);
+
+          // Pass 3: Expand the prefixes back onto the blocks
+          encoder.op_count++;
+          ScanPushConst pc3{
+              current_scan_size * current_n_scans,
+              chunk_size,
+              num_chunks * current_n_scans,
+              op,
+              inclusive ? 1u : 0u,
+              reverse ? 1u : 0u,
+              0u, // save_totals
+              1u, // has_prefix
+              1u // Prefix block application reads from flat layout
+          };
+
+          VkDescriptorSet ds3 = dev.alloc_descriptor_set(stream(), ds_layout);
+          VkDescriptorBufferInfo infos3[4]{
+              {out_buf,
+               0,
+               VK_WHOLE_SIZE}, // Read from out_buf (partially scanned)
+              {out_buf, 0, VK_WHOLE_SIZE}, // Write back to out_buf
+              {totals_buf, 0, VK_WHOLE_SIZE}, // dummy
+              {totals_buf, 0, VK_WHOLE_SIZE} // Reading from totals prefix
+          };
+          VkWriteDescriptorSet writes3[4]{};
+          for (int i = 0; i < 4; i++) {
+            writes3[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes3[i].dstSet = ds3;
+            writes3[i].dstBinding = i;
+            writes3[i].descriptorCount = 1;
+            writes3[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes3[i].pBufferInfo = &infos3[i];
+          }
+          vkUpdateDescriptorSets(dev.vk_device(), 4, writes3, 0, nullptr);
+
+          vkCmdPushConstants(
+              encoder.cmd,
+              layout,
+              VK_SHADER_STAGE_COMPUTE_BIT,
+              0,
+              sizeof(pc3),
+              &pc3);
+          vkCmdBindPipeline(
+              encoder.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+          vkCmdBindDescriptorSets(
+              encoder.cmd,
+              VK_PIPELINE_BIND_POINT_COMPUTE,
+              layout,
+              0,
+              1,
+              &ds3,
+              0,
+              nullptr);
+          vkCmdDispatch(encoder.cmd, num_chunks * current_n_scans, 1, 1);
+
+          VkMemoryBarrier barrier3{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+          barrier3.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+          barrier3.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+          vkCmdPipelineBarrier(
+              encoder.cmd,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              0,
+              1,
+              &barrier3,
+              0,
+              nullptr,
+              0,
+              nullptr);
+
+          // Free temporary buffer after GPU finishes
+          auto s = stream();
+          dev.add_completed_handler(
+              s, [totals_alloc]() mutable { allocator::free(totals_alloc); });
+        }
+      };
+
   uint32_t n_scans = static_cast<uint32_t>(in.size() / scan_size);
 
-  auto& encoder = vulkan::get_command_encoder(stream());
-  auto& dev = vulkan::device(stream().device);
-  encoder.op_count++;
-
-  struct ScanPushConst {
-    uint32_t n;
-    uint32_t scan_size;
-    uint32_t n_scans;
-    uint32_t op;
-    uint32_t inclusive;
-    uint32_t reverse;
-  } pc{
-      static_cast<uint32_t>(out.size()),
+  scan_gpu_recursive(
+      vulkan::get_buffer(in),
+      vulkan::get_buffer(out),
       scan_size,
       n_scans,
-      op,
-      inclusive_ ? 1u : 0u,
-      reverse_ ? 1u : 0u};
-
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline(
-      "scan",
-      layout,
-      ds_layout,
-      2,
-      sizeof(pc),
-      vulkan::get_default_specialization_info(dev));
-  if (pipeline == VK_NULL_HANDLE)
-    throw std::runtime_error(
-        "[vulkan::Scan::eval_gpu] scan pipeline not found");
-
-  VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
-  VkDescriptorBufferInfo infos[2]{
-      {vulkan::get_buffer(in), 0, VK_WHOLE_SIZE},
-      {vulkan::get_buffer(out), 0, VK_WHOLE_SIZE}};
-  VkWriteDescriptorSet writes[2]{};
-  for (int i = 0; i < 2; i++) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = ds;
-    writes[i].dstBinding = i;
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
-
-  VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(
-      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(
-      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  // Dispatch one workgroup per independent scan segment
-  vkCmdDispatch(cmd, n_scans, 1, 1);
-
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
       1,
-      &barrier,
-      0,
-      nullptr,
-      0,
-      nullptr);
+      inclusive_,
+      reverse_);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2786,50 +3023,18 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t idx_b_ndim;
     uint32_t out_batch_ndim;
 
-    uint32_t shape_a_0;
-    uint32_t shape_a_1;
-    uint32_t shape_a_2;
-    uint32_t shape_a_3;
-    uint32_t stride_a_0;
-    uint32_t stride_a_1;
-    uint32_t stride_a_2;
-    uint32_t stride_a_3;
-    uint32_t shape_b_0;
-    uint32_t shape_b_1;
-    uint32_t shape_b_2;
-    uint32_t shape_b_3;
-    uint32_t stride_b_0;
-    uint32_t stride_b_1;
-    uint32_t stride_b_2;
-    uint32_t stride_b_3;
-
     uint32_t a_stride_row;
     uint32_t a_stride_col;
     uint32_t b_stride_row;
     uint32_t b_stride_col;
-
-    uint32_t shape_idx_a_0;
-    uint32_t shape_idx_a_1;
-    uint32_t shape_idx_a_2;
-    uint32_t shape_idx_a_3;
-    uint32_t stride_idx_a_0;
-    uint32_t stride_idx_a_1;
-    uint32_t stride_idx_a_2;
-    uint32_t stride_idx_a_3;
-    uint32_t shape_idx_b_0;
-    uint32_t shape_idx_b_1;
-    uint32_t shape_idx_b_2;
-    uint32_t shape_idx_b_3;
-    uint32_t stride_idx_b_0;
-    uint32_t stride_idx_b_1;
-    uint32_t stride_idx_b_2;
-    uint32_t stride_idx_b_3;
-
-    uint32_t shape_out_0;
-    uint32_t shape_out_1;
-    uint32_t shape_out_2;
-    uint32_t shape_out_3;
   } pc{};
+
+  // Shape/stride data goes into a separate SSBO (binding 5) to stay within
+  // the 128-byte push constant limit.
+  // Layout: shape_a[4], stride_a[4], shape_b[4], stride_b[4],
+  //         shape_idx_a[4], stride_idx_a[4], shape_idx_b[4], stride_idx_b[4],
+  //         shape_out[4] = 36 uint32 values
+  uint32_t ss_data[36] = {};
 
   uint32_t M = (a.ndim() >= 2) ? static_cast<uint32_t>(a.shape(-2)) : 1u;
   uint32_t K = static_cast<uint32_t>(a.shape(-1));
@@ -2850,13 +3055,78 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
           : "gather_mm",
       layout,
       ds_layout,
-      5,
-      sizeof(PushConst), // Size of custom push const
+      6, // 6 bindings: A, B, IdxA, IdxB, C, ShapeStrides
+      sizeof(PushConst),
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     dev.synchronize(s);
     eval_cpu(inputs, out);
     return;
+  }
+
+  // Populate push constants (scalars only, fits in 56 bytes)
+  pc.M = M;
+  pc.N = N;
+  pc.K = K;
+
+  pc.a_elem_bytes =
+      a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize());
+  pc.b_elem_bytes =
+      b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize());
+
+  auto get_batch_dims = [](const auto& v) {
+    return decltype(v){v.begin(), v.end() - 2};
+  };
+
+  auto batch_shape_A = get_batch_dims(a.shape());
+  auto batch_strides_A = get_batch_dims(a.strides());
+  auto batch_shape_B = get_batch_dims(b.shape());
+  auto batch_strides_B = get_batch_dims(b.strides());
+
+  pc.a_batch_ndim = batch_shape_A.size();
+  pc.b_batch_ndim = batch_shape_B.size();
+  pc.idx_a_ndim = lhs_indices.size() > 0 ? lhs_indices.ndim() : 0;
+  pc.idx_b_ndim = rhs_indices.size() > 0 ? rhs_indices.ndim() : 0;
+
+  pc.out_batch_ndim = out.ndim() > 2 ? out.ndim() - 2 : 0;
+
+  pc.a_stride_row = a.ndim() > 1 ? a.strides()[a.ndim() - 2] : 0;
+  pc.a_stride_col = a.ndim() > 0 ? a.strides()[a.ndim() - 1] : 1;
+  pc.b_stride_row = b.ndim() > 1 ? b.strides()[b.ndim() - 2] : 0;
+  pc.b_stride_col = b.ndim() > 0 ? b.strides()[b.ndim() - 1] : 1;
+
+  // Populate shape/stride SSBO data
+  auto fill4 = [](uint32_t* dst, uint32_t limit, const auto& arr) {
+    for (uint32_t i = 0; i < 4; i++)
+      dst[i] = (i < limit) ? static_cast<uint32_t>(arr[i]) : 1u;
+  };
+
+  fill4(&ss_data[0], pc.a_batch_ndim, batch_shape_A);
+  fill4(&ss_data[4], pc.a_batch_ndim, batch_strides_A);
+  fill4(&ss_data[8], pc.b_batch_ndim, batch_shape_B);
+  fill4(&ss_data[12], pc.b_batch_ndim, batch_strides_B);
+  fill4(&ss_data[16], pc.idx_a_ndim, lhs_indices.shape());
+  fill4(&ss_data[20], pc.idx_a_ndim, lhs_indices.strides());
+  fill4(&ss_data[24], pc.idx_b_ndim, rhs_indices.shape());
+  fill4(&ss_data[28], pc.idx_b_ndim, rhs_indices.strides());
+  auto batch_shape_out = get_batch_dims(out.shape());
+  fill4(&ss_data[32], pc.out_batch_ndim, batch_shape_out);
+
+  // Allocate and fill SSBO for shape/stride data
+  size_t ss_bytes = sizeof(ss_data);
+  auto ss_alloc = allocator::malloc(ss_bytes);
+  VkBuffer ss_buf =
+      static_cast<vulkan::VulkanBuffer*>(ss_alloc.ptr())->buffer;
+
+  // Copy shape/stride data to the GPU buffer (HOST_COHERENT, already mapped)
+  {
+    auto* vk_buf = static_cast<vulkan::VulkanBuffer*>(ss_alloc.ptr());
+    void* mapped = vk_buf->mapped_ptr;
+    if (!mapped) {
+      // Fallback: map if not already mapped
+      vmaMapMemory(dev.vma_allocator(), vk_buf->allocation, &mapped);
+    }
+    memcpy(mapped, ss_data, ss_bytes);
   }
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
@@ -2865,9 +3135,10 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkDescriptorBufferInfo idx_a_info{idx_a_buf, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo idx_b_info{idx_b_buf, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo c_info{c_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo ss_info{ss_buf, 0, VK_WHOLE_SIZE};
 
-  VkWriteDescriptorSet writes[5]{};
-  for (int i = 0; i < 5; i++) {
+  VkWriteDescriptorSet writes[6]{};
+  for (int i = 0; i < 6; i++) {
     writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[i].dstSet = ds;
     writes[i].dstBinding = i;
@@ -2879,140 +3150,8 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   writes[2].pBufferInfo = &idx_a_info;
   writes[3].pBufferInfo = &idx_b_info;
   writes[4].pBufferInfo = &c_info;
-  vkUpdateDescriptorSets(dev.vk_device(), 5, writes, 0, nullptr);
-
-  auto get_batch_dims = [](const auto& v) {
-    return decltype(v){v.begin(), v.end() - 2};
-  };
-
-  auto batch_shape_A = get_batch_dims(a.shape());
-  auto batch_strides_A = get_batch_dims(a.strides());
-  auto batch_shape_B = get_batch_dims(b.shape());
-  auto batch_strides_B = get_batch_dims(b.strides());
-
-  std::cout << "[GatherMM] A.shape = " << a.shape()
-            << ", A.strides = " << a.strides() << "\n";
-  std::cout << "[GatherMM] B.shape = " << b.shape()
-            << ", B.strides = " << b.strides() << "\n";
-  std::cout << "[GatherMM] lhs_indices.shape = " << lhs_indices.shape()
-            << ", lhs_indices.size = " << lhs_indices.size()
-            << ", lhs_indices.ndim = " << lhs_indices.ndim() << "\n";
-  std::cout << "[GatherMM] rhs_indices.shape = " << rhs_indices.shape()
-            << ", rhs_indices.size = " << rhs_indices.size()
-            << ", rhs_indices.ndim = " << rhs_indices.ndim() << "\n";
-  std::cout << "[GatherMM] out.shape = " << out.shape() << "\n";
-
-  pc.M = M;
-  pc.N = N;
-  pc.K = K;
-
-  pc.a_elem_bytes =
-      a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize());
-  pc.b_elem_bytes =
-      b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize());
-
-  pc.a_batch_ndim = batch_shape_A.size();
-  pc.b_batch_ndim = batch_shape_B.size();
-  pc.idx_a_ndim = lhs_indices.size() > 0 ? lhs_indices.ndim() : 0;
-  pc.idx_b_ndim = rhs_indices.size() > 0 ? rhs_indices.ndim() : 0;
-
-  pc.out_batch_ndim = out.ndim() > 2 ? out.ndim() - 2 : 0;
-  auto batch_shape_out = get_batch_dims(out.shape());
-
-  auto set_val = [](uint32_t& p_0,
-                    uint32_t& p_1,
-                    uint32_t& p_2,
-                    uint32_t& p_3,
-                    uint32_t limit,
-                    const auto& arr) {
-    p_0 = 0 < limit ? arr[0] : 1;
-    p_1 = 1 < limit ? arr[1] : 1;
-    p_2 = 2 < limit ? arr[2] : 1;
-    p_3 = 3 < limit ? arr[3] : 1;
-  };
-
-  auto set_stride = [](uint32_t& p_0,
-                       uint32_t& p_1,
-                       uint32_t& p_2,
-                       uint32_t& p_3,
-                       uint32_t limit,
-                       const auto& arr) {
-    p_0 = 0 < limit ? arr[0] : 1;
-    p_1 = 1 < limit ? arr[1] : 1;
-    p_2 = 2 < limit ? arr[2] : 1;
-    p_3 = 3 < limit ? arr[3] : 1;
-  };
-
-  set_val(
-      pc.shape_a_0,
-      pc.shape_a_1,
-      pc.shape_a_2,
-      pc.shape_a_3,
-      pc.a_batch_ndim,
-      batch_shape_A);
-  set_stride(
-      pc.stride_a_0,
-      pc.stride_a_1,
-      pc.stride_a_2,
-      pc.stride_a_3,
-      pc.a_batch_ndim,
-      batch_strides_A);
-  set_val(
-      pc.shape_b_0,
-      pc.shape_b_1,
-      pc.shape_b_2,
-      pc.shape_b_3,
-      pc.b_batch_ndim,
-      batch_shape_B);
-  set_stride(
-      pc.stride_b_0,
-      pc.stride_b_1,
-      pc.stride_b_2,
-      pc.stride_b_3,
-      pc.b_batch_ndim,
-      batch_strides_B);
-
-  set_val(
-      pc.shape_idx_a_0,
-      pc.shape_idx_a_1,
-      pc.shape_idx_a_2,
-      pc.shape_idx_a_3,
-      pc.idx_a_ndim,
-      lhs_indices.shape());
-  set_stride(
-      pc.stride_idx_a_0,
-      pc.stride_idx_a_1,
-      pc.stride_idx_a_2,
-      pc.stride_idx_a_3,
-      pc.idx_a_ndim,
-      lhs_indices.strides());
-  set_val(
-      pc.shape_idx_b_0,
-      pc.shape_idx_b_1,
-      pc.shape_idx_b_2,
-      pc.shape_idx_b_3,
-      pc.idx_b_ndim,
-      rhs_indices.shape());
-  set_stride(
-      pc.stride_idx_b_0,
-      pc.stride_idx_b_1,
-      pc.stride_idx_b_2,
-      pc.stride_idx_b_3,
-      pc.idx_b_ndim,
-      rhs_indices.strides());
-
-  set_val(
-      pc.shape_out_0,
-      pc.shape_out_1,
-      pc.shape_out_2,
-      pc.shape_out_3,
-      pc.out_batch_ndim,
-      batch_shape_out);
-
-  pc.a_stride_row = a.ndim() > 1 ? a.strides()[a.ndim() - 2] : 0;
-  pc.a_stride_col = a.ndim() > 0 ? a.strides()[a.ndim() - 1] : 1;
-  pc.b_stride_row = b.ndim() > 1 ? b.strides()[b.ndim() - 2] : 0;
-  pc.b_stride_col = b.ndim() > 0 ? b.strides()[b.ndim() - 1] : 1;
+  writes[5].pBufferInfo = &ss_info;
+  vkUpdateDescriptorSets(dev.vk_device(), 6, writes, 0, nullptr);
 
   uint32_t batch_size_out = out.size() / (M * N);
 
@@ -3047,10 +3186,15 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
       0,
       nullptr);
 
+  // Free shape/stride buffer after GPU finishes
+  dev.add_completed_handler(
+      s, [ss_alloc]() mutable { allocator::free(ss_alloc); });
+
   if (use_temp_out) {
     copy_gpu(*temp_out, out, CopyType::General, s);
   }
 }
+
 
 void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Gather + dequantize + matmul — no GPU implementation yet.
