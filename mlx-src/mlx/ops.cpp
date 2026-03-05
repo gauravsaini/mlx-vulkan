@@ -1682,14 +1682,14 @@ array isnan(const array& a, StreamOrDevice s /* = {} */) {
   if (issubdtype(a.dtype(), integer) || a.dtype() == bool_) {
     return full(a.shape(), false, bool_, s);
   }
-  return not_equal(a, a, s);
+  return array(a.shape(), bool_, std::make_shared<IsNaN>(to_stream(s)), {a});
 }
 
 array isinf(const array& a, StreamOrDevice s /* = {} */) {
   if (issubdtype(a.dtype(), integer) || a.dtype() == bool_) {
     return full(a.shape(), false, bool_, s);
   }
-  return logical_or(isposinf(a, s), isneginf(a, s), s);
+  return array(a.shape(), bool_, std::make_shared<IsInf>(to_stream(s)), {a});
 }
 
 array isfinite(const array& a, StreamOrDevice s /* = {} */) {
@@ -1710,7 +1710,7 @@ array isneginf(const array& a, StreamOrDevice s /* = {} */) {
   if (issubdtype(a.dtype(), integer) || a.dtype() == bool_) {
     return full(a.shape(), false, bool_, s);
   }
-  return equal(a, array(-std::numeric_limits<float>::infinity(), a.dtype()), s);
+  return array(a.shape(), bool_, std::make_shared<IsNegInf>(to_stream(s)), {a});
 }
 
 array where(

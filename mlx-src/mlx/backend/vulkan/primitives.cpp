@@ -111,6 +111,9 @@ enum class UnaryOp : uint32_t {
   Log2 = 29,
   Log10 = 30,
   LogNot = 33,
+  IsInf = 34,
+  IsNan = 35,
+  IsNegInf = 36,
 };
 
 // Compute broadcast strides for an input array relative to the output shape.
@@ -359,7 +362,7 @@ bool dispatch_unary(
       "unary",
       layout,
       ds_layout,
-      2,
+      3,
       16,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
@@ -370,7 +373,7 @@ bool dispatch_unary(
   VkDescriptorBufferInfo in_info{in_buf, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo out_info{out_buf, 0, VK_WHOLE_SIZE};
 
-  VkWriteDescriptorSet writes[2]{};
+  VkWriteDescriptorSet writes[3]{};
   writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   writes[0].dstSet = ds;
   writes[0].dstBinding = 0;
@@ -382,7 +385,11 @@ bool dispatch_unary(
   writes[1].dstBinding = 1;
   writes[1].pBufferInfo = &out_info;
 
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
+  writes[2] = writes[0];
+  writes[2].dstBinding = 2;
+  writes[2].pBufferInfo = &out_info;
+
+  vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
 
   struct PushConst {
     uint32_t n;
@@ -454,6 +461,9 @@ UNARY_GPU(ErfInv, Erfinv)
 UNARY_GPU(Exp, Exp)
 UNARY_GPU(Expm1, Expm1)
 UNARY_GPU(Floor, Floor)
+UNARY_GPU(IsInf, IsInf)
+UNARY_GPU(IsNaN, IsNan)
+UNARY_GPU(IsNegInf, IsNegInf)
 // Log::eval_gpu handled below (supports base-e, base-2, base-10 via state())
 UNARY_GPU(Log1p, Log1p)
 UNARY_GPU(Negative, Neg)
@@ -602,7 +612,7 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
       layout,
       ds_layout,
       4,
-      16,
+      28,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     vulkan::device(stream().device).synchronize(stream());
@@ -633,13 +643,35 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t cond_scalar;
     uint32_t true_scalar;
     uint32_t false_scalar;
+    uint32_t true_elem_bytes;   // 2=f16, 3=bf16, 4=f32
+    uint32_t false_elem_bytes;
+    uint32_t out_elem_bytes;
   } pc{
       static_cast<uint32_t>(out.size()),
       cond.data_size() == 1 ? 1u : 0u,
       true_.data_size() == 1 ? 1u : 0u,
-      false_.data_size() == 1 ? 1u : 0u};
+      false_.data_size() == 1 ? 1u : 0u,
+      true_.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(true_.itemsize()),
+      false_.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(false_.itemsize()),
+      out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
+
+  // Zero-initialize output buffer for 16-bit types because the ternary shader
+  // uses atomicOr to write each 16-bit half into shared uint32 words.
+  // Without this, the unused half would contain garbage.
+  uint32_t out_elem_bytes = out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize());
+  if (out_elem_bytes < 4u && out.nbytes() > 0) {
+    vkCmdFillBuffer(cmd, out_buf, 0, VK_WHOLE_SIZE, 0);
+    VkMemoryBarrier zero_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    zero_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    zero_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &zero_barrier, 0, nullptr, 0, nullptr);
+  }
+
   vkCmdPushConstants(
       cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -1101,7 +1133,8 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (out.nbytes() > 0) {
       auto& encoder = vulkan::get_command_encoder(stream());
       encoder.op_count++;
-      vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+      vkCmdFillBuffer(
+          encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
     }
     return;
   }
@@ -1127,7 +1160,10 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline(
-      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) && (K % 16 == 0) ? "matmul_coop" : "matmul",
+      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) &&
+              (K % 16 == 0)
+          ? "matmul_coop"
+          : "matmul",
       layout,
       ds_layout,
       3,
@@ -1188,7 +1224,8 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Grid: dynamically computed from specialization caps
   uint32_t subgroup_size = dev.subgroup_size();
   uint32_t BN = (subgroup_size == 64) ? 32 : 16;
-  uint32_t BM = 256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
+  uint32_t BM =
+      256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
   vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -1238,7 +1275,8 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
   encoder.op_count++;
 
   if (use_temp && temp_out->nbytes() > 0) {
-    vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(*temp_out), 0, VK_WHOLE_SIZE, 0);
+    vkCmdFillBuffer(
+        encoder.cmd, vulkan::get_buffer(*temp_out), 0, VK_WHOLE_SIZE, 0);
   }
   if (out.nbytes() > 0) {
     vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
@@ -1628,9 +1666,10 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (inputs.size() == 2 && axes_.size() == 1 && slice_sizes_[axes_[0]] == 1) {
     const array& src = inputs[0];
     const array& idx = inputs[1];
-    
-    // INDEX_GATHER_GEN mathematically hardcodes inner contiguous dimension sizes.
-    // If the source array is transposed or non-contiguous, we must fall back to CPU eval.
+
+    // INDEX_GATHER_GEN mathematically hardcodes inner contiguous dimension
+    // sizes. If the source array is transposed or non-contiguous, we must fall
+    // back to CPU eval.
     if (!src.flags().row_contiguous) {
       vulkan::device(stream().device).synchronize(stream());
       eval_cpu(inputs, out);
@@ -1669,8 +1708,10 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     // Multi-axis gather: set index tensor metadata for ND indexing
     pc.idx_ndim = static_cast<uint32_t>(idx.ndim());
     for (int d = 0; d < 4; d++) {
-        pc.idx_shape[d] = (d < idx.ndim()) ? static_cast<uint32_t>(idx.shape(d)) : 1u;
-        pc.idx_strides[d] = (d < idx.ndim()) ? static_cast<uint32_t>(idx.strides(d)) : 1u;
+      pc.idx_shape[d] =
+          (d < idx.ndim()) ? static_cast<uint32_t>(idx.shape(d)) : 1u;
+      pc.idx_strides[d] =
+          (d < idx.ndim()) ? static_cast<uint32_t>(idx.strides(d)) : 1u;
     }
 
     indexing_dispatch(
@@ -1841,10 +1882,13 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Fall back to CPU if:
   // - Not sorting on last axis
-  // - Input is not float32 or int32 (radix sort only supports these)
-  // - Not contiguous (both bitonic and radix require contiguous data)
-  bool supported_dtype = (in.dtype() == float32) || (in.dtype() == int32);
-  if (sort_axis != in.ndim() - 1 || !supported_dtype || !in.flags().row_contiguous) {
+  // - Input is not float32 (bitonic sort uses float comparisons)
+  // - Not contiguous
+  // - Sort size > 128 (bitonic sort limit; radix sort disabled pending
+  // stability fix)
+  bool supported_dtype = (in.dtype() == float32);
+  if (sort_axis != in.ndim() - 1 || !supported_dtype ||
+      !in.flags().row_contiguous || sort_pow2 > 128) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
@@ -1951,7 +1995,8 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
     // Radix sort requires a temporary buffer for ping-pong between passes
     size_t temp_size = n * sizeof(uint32_t);
     auto temp_alloc = allocator::malloc(temp_size);
-    VkBuffer temp_buf = static_cast<vulkan::VulkanBuffer*>(temp_alloc.ptr())->buffer;
+    VkBuffer temp_buf =
+        static_cast<vulkan::VulkanBuffer*>(temp_alloc.ptr())->buffer;
 
     VkBuffer data_buf = vulkan::get_buffer(out);
 
@@ -1975,11 +2020,12 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
 
     // Radix sort push constants
     struct RadixPushConst {
-      uint32_t n;         // Total number of elements
-      uint32_t digit;     // Current digit (0-7 for 4-bit digits)
+      uint32_t n; // Total number of elements
+      uint32_t digit; // Current digit (0-7 for 4-bit digits)
       uint32_t ascending; // 1 = ascending, 0 = descending
-      uint32_t pass;      // 0 = first pass, 1 = second pass
+      uint32_t dtype; // 0 = float32, 1 = int32
     };
+    uint32_t dtype_flag = (in.dtype() == int32) ? 1u : 0u;
 
     // Perform 8 passes of radix sort (4-bit digits, 8 * 4 = 32 bits)
     for (uint32_t digit = 0; digit < 8; digit++) {
@@ -2006,20 +2052,22 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
       }
       vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
 
-      RadixPushConst pc{n, digit, 1u, even_pass ? 0u : 1u};
+      RadixPushConst pc{n, digit, 1u, dtype_flag};
       vkCmdPushConstants(
           cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
       vkCmdBindDescriptorSets(
           cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
 
-      // Dispatch with single workgroup (radix sort uses shared memory for counting)
+      // Dispatch with single workgroup (radix sort uses shared memory for
+      // counting)
       vkCmdDispatch(cmd, 1, 1, 1);
 
       // Barrier to ensure pass completes before next pass
       VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.dstAccessMask =
+          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
       vkCmdPipelineBarrier(
           cmd,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -2057,9 +2105,9 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
       // Use a simple copy dispatch (one element per thread)
       // We'll use the radix sort pipeline with a special "copy" mode
       // Actually, let's just use a simple manual copy here
-      // For simplicity, we'll dispatch a copy kernel or just do element-wise copy
-      // Since we don't have a copy kernel, let's just leave the result in the right buffer
-      // After 8 passes (even), result is in data_buf
+      // For simplicity, we'll dispatch a copy kernel or just do element-wise
+      // copy Since we don't have a copy kernel, let's just leave the result in
+      // the right buffer After 8 passes (even), result is in data_buf
     }
 
     // Free temp buffer after GPU finishes
@@ -2596,15 +2644,17 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& lhs_indices = inputs[2];
   const array& rhs_indices = inputs[3];
 
-  if (a_orig.dtype() != float32 && a_orig.dtype() != float16 && a_orig.dtype() != bfloat16) {
+  if (a_orig.dtype() != float32 && a_orig.dtype() != float16 &&
+      a_orig.dtype() != bfloat16) {
     dev.synchronize(s);
     eval_cpu(inputs, out);
     return;
   }
 
   auto& encoder = vulkan::get_command_encoder(s);
-  
-  // Unconditionally issue a barrier to ensure all previous compute tasks (like arange/broadcast) finish writing to buffers
+
+  // Unconditionally issue a barrier to ensure all previous compute tasks (like
+  // arange/broadcast) finish writing to buffers
   VkMemoryBarrier pre_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   pre_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
   pre_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2644,7 +2694,7 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    
+
     vkCmdPipelineBarrier(
         encoder.cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -2670,14 +2720,15 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (out.nbytes() > 0) {
       auto& encoder = vulkan::get_command_encoder(s);
       encoder.op_count++;
-      vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+      vkCmdFillBuffer(
+          encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
     }
     return;
   }
 
   encoder = vulkan::get_command_encoder(s);
   encoder.op_count++;
-  
+
   struct PushConst {
     uint32_t M;
     uint32_t N;
@@ -2691,22 +2742,49 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     uint32_t idx_b_ndim;
     uint32_t out_batch_ndim;
 
-    uint32_t shape_a_0; uint32_t shape_a_1; uint32_t shape_a_2; uint32_t shape_a_3;
-    uint32_t stride_a_0; uint32_t stride_a_1; uint32_t stride_a_2; uint32_t stride_a_3;
-    uint32_t shape_b_0; uint32_t shape_b_1; uint32_t shape_b_2; uint32_t shape_b_3;
-    uint32_t stride_b_0; uint32_t stride_b_1; uint32_t stride_b_2; uint32_t stride_b_3;
+    uint32_t shape_a_0;
+    uint32_t shape_a_1;
+    uint32_t shape_a_2;
+    uint32_t shape_a_3;
+    uint32_t stride_a_0;
+    uint32_t stride_a_1;
+    uint32_t stride_a_2;
+    uint32_t stride_a_3;
+    uint32_t shape_b_0;
+    uint32_t shape_b_1;
+    uint32_t shape_b_2;
+    uint32_t shape_b_3;
+    uint32_t stride_b_0;
+    uint32_t stride_b_1;
+    uint32_t stride_b_2;
+    uint32_t stride_b_3;
 
     uint32_t a_stride_row;
     uint32_t a_stride_col;
     uint32_t b_stride_row;
     uint32_t b_stride_col;
 
-    uint32_t shape_idx_a_0; uint32_t shape_idx_a_1; uint32_t shape_idx_a_2; uint32_t shape_idx_a_3;
-    uint32_t stride_idx_a_0; uint32_t stride_idx_a_1; uint32_t stride_idx_a_2; uint32_t stride_idx_a_3;
-    uint32_t shape_idx_b_0; uint32_t shape_idx_b_1; uint32_t shape_idx_b_2; uint32_t shape_idx_b_3;
-    uint32_t stride_idx_b_0; uint32_t stride_idx_b_1; uint32_t stride_idx_b_2; uint32_t stride_idx_b_3;
+    uint32_t shape_idx_a_0;
+    uint32_t shape_idx_a_1;
+    uint32_t shape_idx_a_2;
+    uint32_t shape_idx_a_3;
+    uint32_t stride_idx_a_0;
+    uint32_t stride_idx_a_1;
+    uint32_t stride_idx_a_2;
+    uint32_t stride_idx_a_3;
+    uint32_t shape_idx_b_0;
+    uint32_t shape_idx_b_1;
+    uint32_t shape_idx_b_2;
+    uint32_t shape_idx_b_3;
+    uint32_t stride_idx_b_0;
+    uint32_t stride_idx_b_1;
+    uint32_t stride_idx_b_2;
+    uint32_t stride_idx_b_3;
 
-    uint32_t shape_out_0; uint32_t shape_out_1; uint32_t shape_out_2; uint32_t shape_out_3;
+    uint32_t shape_out_0;
+    uint32_t shape_out_1;
+    uint32_t shape_out_2;
+    uint32_t shape_out_3;
   } pc{};
 
   uint32_t M = (a.ndim() >= 2) ? static_cast<uint32_t>(a.shape(-2)) : 1u;
@@ -2722,7 +2800,10 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
   VkPipeline pipeline = dev.get_pipeline(
-      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) && (K % 16 == 0) ? "gather_mm_coop" : "gather_mm",
+      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) &&
+              (K % 16 == 0)
+          ? "gather_mm_coop"
+          : "gather_mm",
       layout,
       ds_layout,
       5,
@@ -2765,18 +2846,26 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto batch_shape_B = get_batch_dims(b.shape());
   auto batch_strides_B = get_batch_dims(b.strides());
 
-  std::cout << "[GatherMM] A.shape = " << a.shape() << ", A.strides = " << a.strides() << "\n";
-  std::cout << "[GatherMM] B.shape = " << b.shape() << ", B.strides = " << b.strides() << "\n";
-  std::cout << "[GatherMM] lhs_indices.shape = " << lhs_indices.shape() << ", lhs_indices.size = " << lhs_indices.size() << ", lhs_indices.ndim = " << lhs_indices.ndim() << "\n";
-  std::cout << "[GatherMM] rhs_indices.shape = " << rhs_indices.shape() << ", rhs_indices.size = " << rhs_indices.size() << ", rhs_indices.ndim = " << rhs_indices.ndim() << "\n";
+  std::cout << "[GatherMM] A.shape = " << a.shape()
+            << ", A.strides = " << a.strides() << "\n";
+  std::cout << "[GatherMM] B.shape = " << b.shape()
+            << ", B.strides = " << b.strides() << "\n";
+  std::cout << "[GatherMM] lhs_indices.shape = " << lhs_indices.shape()
+            << ", lhs_indices.size = " << lhs_indices.size()
+            << ", lhs_indices.ndim = " << lhs_indices.ndim() << "\n";
+  std::cout << "[GatherMM] rhs_indices.shape = " << rhs_indices.shape()
+            << ", rhs_indices.size = " << rhs_indices.size()
+            << ", rhs_indices.ndim = " << rhs_indices.ndim() << "\n";
   std::cout << "[GatherMM] out.shape = " << out.shape() << "\n";
 
   pc.M = M;
   pc.N = N;
   pc.K = K;
 
-  pc.a_elem_bytes = a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize());
-  pc.b_elem_bytes = b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize());
+  pc.a_elem_bytes =
+      a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize());
+  pc.b_elem_bytes =
+      b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize());
 
   pc.a_batch_ndim = batch_shape_A.size();
   pc.b_batch_ndim = batch_shape_B.size();
@@ -2786,33 +2875,95 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   pc.out_batch_ndim = out.ndim() > 2 ? out.ndim() - 2 : 0;
   auto batch_shape_out = get_batch_dims(out.shape());
 
-  auto set_val = [](uint32_t& p_0, uint32_t& p_1, uint32_t& p_2, uint32_t& p_3,
-                    uint32_t limit, const auto& arr) {
-      p_0 = 0 < limit ? arr[0] : 1;
-      p_1 = 1 < limit ? arr[1] : 1;
-      p_2 = 2 < limit ? arr[2] : 1;
-      p_3 = 3 < limit ? arr[3] : 1;
-  };
-  
-  auto set_stride = [](uint32_t& p_0, uint32_t& p_1, uint32_t& p_2, uint32_t& p_3,
-                    uint32_t limit, const auto& arr) {
-      p_0 = 0 < limit ? arr[0] : 1;
-      p_1 = 1 < limit ? arr[1] : 1;
-      p_2 = 2 < limit ? arr[2] : 1;
-      p_3 = 3 < limit ? arr[3] : 1;
+  auto set_val = [](uint32_t& p_0,
+                    uint32_t& p_1,
+                    uint32_t& p_2,
+                    uint32_t& p_3,
+                    uint32_t limit,
+                    const auto& arr) {
+    p_0 = 0 < limit ? arr[0] : 1;
+    p_1 = 1 < limit ? arr[1] : 1;
+    p_2 = 2 < limit ? arr[2] : 1;
+    p_3 = 3 < limit ? arr[3] : 1;
   };
 
-  set_val(pc.shape_a_0, pc.shape_a_1, pc.shape_a_2, pc.shape_a_3, pc.a_batch_ndim, batch_shape_A);
-  set_stride(pc.stride_a_0, pc.stride_a_1, pc.stride_a_2, pc.stride_a_3, pc.a_batch_ndim, batch_strides_A);
-  set_val(pc.shape_b_0, pc.shape_b_1, pc.shape_b_2, pc.shape_b_3, pc.b_batch_ndim, batch_shape_B);
-  set_stride(pc.stride_b_0, pc.stride_b_1, pc.stride_b_2, pc.stride_b_3, pc.b_batch_ndim, batch_strides_B);
+  auto set_stride = [](uint32_t& p_0,
+                       uint32_t& p_1,
+                       uint32_t& p_2,
+                       uint32_t& p_3,
+                       uint32_t limit,
+                       const auto& arr) {
+    p_0 = 0 < limit ? arr[0] : 1;
+    p_1 = 1 < limit ? arr[1] : 1;
+    p_2 = 2 < limit ? arr[2] : 1;
+    p_3 = 3 < limit ? arr[3] : 1;
+  };
 
-  set_val(pc.shape_idx_a_0, pc.shape_idx_a_1, pc.shape_idx_a_2, pc.shape_idx_a_3, pc.idx_a_ndim, lhs_indices.shape());
-  set_stride(pc.stride_idx_a_0, pc.stride_idx_a_1, pc.stride_idx_a_2, pc.stride_idx_a_3, pc.idx_a_ndim, lhs_indices.strides());
-  set_val(pc.shape_idx_b_0, pc.shape_idx_b_1, pc.shape_idx_b_2, pc.shape_idx_b_3, pc.idx_b_ndim, rhs_indices.shape());
-  set_stride(pc.stride_idx_b_0, pc.stride_idx_b_1, pc.stride_idx_b_2, pc.stride_idx_b_3, pc.idx_b_ndim, rhs_indices.strides());
+  set_val(
+      pc.shape_a_0,
+      pc.shape_a_1,
+      pc.shape_a_2,
+      pc.shape_a_3,
+      pc.a_batch_ndim,
+      batch_shape_A);
+  set_stride(
+      pc.stride_a_0,
+      pc.stride_a_1,
+      pc.stride_a_2,
+      pc.stride_a_3,
+      pc.a_batch_ndim,
+      batch_strides_A);
+  set_val(
+      pc.shape_b_0,
+      pc.shape_b_1,
+      pc.shape_b_2,
+      pc.shape_b_3,
+      pc.b_batch_ndim,
+      batch_shape_B);
+  set_stride(
+      pc.stride_b_0,
+      pc.stride_b_1,
+      pc.stride_b_2,
+      pc.stride_b_3,
+      pc.b_batch_ndim,
+      batch_strides_B);
 
-  set_val(pc.shape_out_0, pc.shape_out_1, pc.shape_out_2, pc.shape_out_3, pc.out_batch_ndim, batch_shape_out);
+  set_val(
+      pc.shape_idx_a_0,
+      pc.shape_idx_a_1,
+      pc.shape_idx_a_2,
+      pc.shape_idx_a_3,
+      pc.idx_a_ndim,
+      lhs_indices.shape());
+  set_stride(
+      pc.stride_idx_a_0,
+      pc.stride_idx_a_1,
+      pc.stride_idx_a_2,
+      pc.stride_idx_a_3,
+      pc.idx_a_ndim,
+      lhs_indices.strides());
+  set_val(
+      pc.shape_idx_b_0,
+      pc.shape_idx_b_1,
+      pc.shape_idx_b_2,
+      pc.shape_idx_b_3,
+      pc.idx_b_ndim,
+      rhs_indices.shape());
+  set_stride(
+      pc.stride_idx_b_0,
+      pc.stride_idx_b_1,
+      pc.stride_idx_b_2,
+      pc.stride_idx_b_3,
+      pc.idx_b_ndim,
+      rhs_indices.strides());
+
+  set_val(
+      pc.shape_out_0,
+      pc.shape_out_1,
+      pc.shape_out_2,
+      pc.shape_out_3,
+      pc.out_batch_ndim,
+      batch_shape_out);
 
   pc.a_stride_row = a.ndim() > 1 ? a.strides()[a.ndim() - 2] : 0;
   pc.a_stride_col = a.ndim() > 0 ? a.strides()[a.ndim() - 1] : 1;
@@ -2830,10 +2981,12 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   uint32_t subgroup_size = dev.subgroup_size();
   uint32_t BN = (subgroup_size == 64) ? 32 : 16;
-  uint32_t BM = 256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
+  uint32_t BM =
+      256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
 
   // Grid
-  vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch_size_out);
+  vkCmdDispatch(
+      cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch_size_out);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

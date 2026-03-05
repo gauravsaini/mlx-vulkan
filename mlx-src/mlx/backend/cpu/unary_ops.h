@@ -44,6 +44,72 @@ DEFAULT_OP(ErfInv, erfinv)
 DEFAULT_OP(Exp, exp)
 DEFAULT_OP(Expm1, expm1)
 DEFAULT_OP(Floor, floor);
+
+struct IsInf {
+  template <int N, typename T>
+  Simd<bool, N> operator()(Simd<T, N> x) {
+    if constexpr (is_complex<T>) {
+      Simd<bool, N> result;
+      for (int i = 0; i < N; i++) result[i] = (*this)(x[i]);
+      return result;
+    }
+    return simd::isinf(x);
+  }
+  template <typename T>
+  bool operator()(T x) {
+    if constexpr (is_complex<T>) {
+      return std::isinf(x.real()) || std::isinf(x.imag());
+    } else {
+      return std::isinf(static_cast<float>(x));
+    }
+  }
+};
+
+struct IsNaN {
+  template <int N, typename T>
+  Simd<bool, N> operator()(Simd<T, N> x) {
+    if constexpr (is_complex<T>) {
+      Simd<bool, N> result;
+      for (int i = 0; i < N; i++) result[i] = (*this)(x[i]);
+      return result;
+    }
+    return simd::isnan(x);
+  }
+  template <typename T>
+  bool operator()(T x) {
+    if constexpr (is_complex<T>) {
+      return std::isnan(x.real()) || std::isnan(x.imag());
+    } else {
+      return std::isnan(static_cast<float>(x));
+    }
+  }
+};
+
+struct IsNegInf {
+  template <int N, typename T>
+  Simd<bool, N> operator()(Simd<T, N> x) {
+    if constexpr (is_complex<T>) {
+      Simd<bool, N> result;
+      for (int i = 0; i < N; i++) result[i] = (*this)(x[i]);
+      return result;
+    }
+    if constexpr (std::is_unsigned_v<T>) {
+      return Simd<bool, N>{false};
+    } else {
+      return simd::isneginf(x);
+    }
+  }
+  template <typename T>
+  bool operator()(T x) {
+    if constexpr (is_complex<T>) {
+      return (std::isinf(x.real()) && x.real() < 0) || (std::isinf(x.imag()) && x.imag() < 0);
+    } else {
+      float f = static_cast<float>(x);
+      return std::isinf(f) && f < 0;
+    }
+  }
+};
+
 DEFAULT_OP(Log, log);
 DEFAULT_OP(Log2, log2);
 DEFAULT_OP(Log10, log10);

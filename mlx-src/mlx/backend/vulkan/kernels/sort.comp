@@ -23,6 +23,7 @@ void main() {
     uint tid      = gl_LocalInvocationID.x;
 
     if (sort_idx >= params.n_sorts) return;
+
     // actual_stride = real sort dimension (may be < sort_size due to power-of-2 padding)
     uint actual_stride = params.n / params.n_sorts;
     uint base = sort_idx * actual_stride;

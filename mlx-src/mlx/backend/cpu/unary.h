@@ -278,4 +278,37 @@ void unary_int(const array& a, array& out, Op op, Stream stream) {
   });
 }
 
+template <typename Op>
+void unary_fp_to_bool(const array& a, array& out, Op op, Stream stream) {
+  set_unary_output_data(a, out);
+  auto& encoder = cpu::get_command_encoder(stream);
+  encoder.set_input_array(a);
+  encoder.set_output_array(out);
+  encoder.dispatch([a = array::unsafe_weak_copy(a),
+                    out = array::unsafe_weak_copy(out),
+                    op = op]() mutable {
+    switch (a.dtype()) {
+      case bfloat16:
+        unary_op<bfloat16_t, bool>(a, out, op);
+        break;
+      case float16:
+        unary_op<float16_t, bool>(a, out, op);
+        break;
+      case float32:
+        unary_op<float, bool>(a, out, op);
+        break;
+      case float64:
+        unary_op<double, bool>(a, out, op);
+        break;
+      case complex64:
+        unary_op<complex64_t, bool>(a, out, op);
+        break;
+      default:
+        std::ostringstream err;
+        err << "[unary_fp_to_bool] Does not support " << a.dtype();
+        throw std::runtime_error(err.str());
+    }
+  });
+}
+
 } // namespace mlx::core

@@ -2,25 +2,78 @@
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) readonly  buffer CondBuf { float cond_data[]; };
-layout(set = 0, binding = 1) readonly  buffer TrueBuf { float true_data[]; };
-layout(set = 0, binding = 2) readonly  buffer FalseBuf{ float false_data[];};
-layout(set = 0, binding = 3) writeonly buffer OutBuf  { float out_data[];  };
+// Condition is boolean (uint8_t), stored 4-per-word.
+layout(set = 0, binding = 0) readonly  buffer CondBuf  { uint  cond_words[];  };
+// True/false/out are raw uint32 words — we manually handle elem sizing.
+layout(set = 0, binding = 1) readonly  buffer TrueBuf  { uint  true_raw[];    };
+layout(set = 0, binding = 2) readonly  buffer FalseBuf { uint  false_raw[];   };
+layout(set = 0, binding = 3) writeonly buffer OutBuf   { uint  out_raw[];     };
 
 layout(push_constant) uniform Params {
     uint n;
-    uint cond_is_scalar;
-    uint true_is_scalar;
-    uint false_is_scalar;
+    uint cond_scalar;
+    uint true_scalar;
+    uint false_scalar;
+    uint true_elem_bytes;   // 2=f16, 3=bf16, 4=f32
+    uint false_elem_bytes;
+    uint out_elem_bytes;
 } params;
+
+// Read a float from a packed-uint buffer at logical element index i.
+float read_true(uint i) {
+    uint eb = params.true_elem_bytes;
+    if (eb == 4u) return uintBitsToFloat(true_raw[i]);
+    uint word = true_raw[i >> 1u];
+    if (eb == 3u) {
+        uint bits = (i & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        return uintBitsToFloat(bits << 16u);
+    }
+    vec2 h = unpackHalf2x16(word);
+    return (i & 1u) == 0u ? h.x : h.y;
+}
+
+float read_false(uint i) {
+    uint eb = params.false_elem_bytes;
+    if (eb == 4u) return uintBitsToFloat(false_raw[i]);
+    uint word = false_raw[i >> 1u];
+    if (eb == 3u) {
+        uint bits = (i & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);
+        return uintBitsToFloat(bits << 16u);
+    }
+    vec2 h = unpackHalf2x16(word);
+    return (i & 1u) == 0u ? h.x : h.y;
+}
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
 
-    float c = cond_data[params.cond_is_scalar  == 1u ? 0u : idx];
-    float t = true_data[params.true_is_scalar  == 1u ? 0u : idx];
-    float f = false_data[params.false_is_scalar == 1u ? 0u : idx];
+    // Read boolean condition: packed uint8, 4 per uint32 word
+    uint cond_idx = params.cond_scalar == 1u ? 0u : idx;
+    uint cond_word = cond_words[cond_idx >> 2u];
+    uint cond_byte = (cond_word >> ((cond_idx & 3u) * 8u)) & 0xFFu;
 
-    out_data[idx] = c != 0.0 ? t : f;
+    uint ti = params.true_scalar  == 1u ? 0u : idx;
+    uint fi = params.false_scalar == 1u ? 0u : idx;
+
+    float result = cond_byte != 0u ? read_true(ti) : read_false(fi);
+
+    uint ob = params.out_elem_bytes;
+    if (ob == 4u) {
+        out_raw[idx] = floatBitsToUint(result);
+    } else {
+        uint word_idx = idx >> 1u;
+        uint shift = (idx & 1u) * 16u;
+        uint mask = 0xFFFFu << shift;
+        uint bits;
+        if (ob == 3u) {
+            bits = floatBitsToUint(result) >> 16u;
+        } else {
+            vec2 tmp = vec2(result, 0.0);
+            bits = packHalf2x16(tmp) & 0xFFFFu;
+        }
+        // Note: non-atomic RMW on adjacent elements could race if 2 threads share a word.
+        // Use atomicOr to safely merge the two half-words.
+        atomicOr(out_raw[word_idx], (bits & 0xFFFFu) << shift);
+    }
 }

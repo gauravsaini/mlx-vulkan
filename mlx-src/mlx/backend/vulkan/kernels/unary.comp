@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "bf16.glsl"
@@ -39,12 +40,15 @@
 #define UNARY_DEGREES   31
 #define UNARY_RADIANS   32
 #define UNARY_LOGNOT    33  // logical NOT: 0→1, else→0 (for bool arrays)
+#define UNARY_ISINF     34
+#define UNARY_ISNAN     35
+#define UNARY_ISNEGINF  36
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-// Buffers as raw uint32 words; float16 is packed 2-per-word
 layout(set = 0, binding = 0) readonly  buffer InBuf   { uint in_data[]; };
 layout(set = 0, binding = 1) writeonly buffer OutBuf  { uint out_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBool { uint8_t out_bool[]; };
 
 layout(push_constant) uniform Params {
     uint n;                 // total number of elements
@@ -190,6 +194,9 @@ float compute_op(float val) {
         case UNARY_DEGREES: return val * (180.0 / 3.14159265358979323846);
         case UNARY_RADIANS: return val * (3.14159265358979323846 / 180.0);
         case UNARY_LOGNOT:  return (val == 0.0) ? 1.0 : 0.0;
+        case UNARY_ISINF:   return isinf(val) ? 1.0 : 0.0;
+        case UNARY_ISNAN:   return isnan(val) ? 1.0 : 0.0;
+        case UNARY_ISNEGINF: return (isinf(val) && val < 0.0) ? 1.0 : 0.0;
         default: return val;
     }
 }
@@ -197,6 +204,26 @@ float compute_op(float val) {
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
+
+    if (params.out_elem_bytes == 1u) {
+        float val;
+        if (params.input_elem_bytes == 1u) {
+            uint word = in_data[idx >> 2u];
+            uint byte_val = (word >> ((idx & 3u) * 8u)) & 0xFFu;
+            val = float(byte_val != 0u ? 1 : 0);
+        } else if (params.input_elem_bytes == 2u) {
+            uint word = in_data[idx >> 1u];
+            val = ((idx & 1u) == 0u) ? unpackHalf2x16(word).x : unpackHalf2x16(word).y;
+        } else if (params.input_elem_bytes == 3u) {
+            uint word = in_data[idx >> 1u];
+            val = ((idx & 1u) == 0u) ? unpackBfloat2x16(word).x : unpackBfloat2x16(word).y;
+        } else {
+            val = uintBitsToFloat(in_data[idx]);
+        }
+        float res = compute_op(val);
+        out_bool[idx] = uint8_t((res != 0.0) ? 1u : 0u);
+        return;
+    }
 
     if (params.input_elem_bytes == 1u) {
         // bool/int8 path: 4 elements packed per uint32 word

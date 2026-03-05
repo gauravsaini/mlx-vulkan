@@ -192,11 +192,18 @@ float op_float(float a, float b) {
         case BINARY_SUB:        return a - b;
         case BINARY_MUL:        return a * b;
         case BINARY_DIV:        return a / b;
-        case BINARY_MAX:        return max(a, b);
-        case BINARY_MIN:        return min(a, b);
+        case BINARY_MAX:        return (isnan(a) || isnan(b)) ? (0.0 / 0.0) : max(a, b);
+        case BINARY_MIN:        return (isnan(a) || isnan(b)) ? (0.0 / 0.0) : min(a, b);
         case BINARY_POW:        return pow(a, b);
         case BINARY_LOGADDEXP: {
+            if (isnan(a) || isnan(b)) return (0.0 / 0.0);
             float m = max(a, b);
+            if (isinf(m)) {
+                if (a == -uintBitsToFloat(0x7F800000u) && b == -uintBitsToFloat(0x7F800000u)) {
+                    return -uintBitsToFloat(0x7F800000u);
+                }
+                return m;  // Avoid NaN from exp(Inf - Inf)
+            }
             return m + log(exp(a - m) + exp(b - m));
         }
         case BINARY_ARCTAN2:    return atan(a, b);

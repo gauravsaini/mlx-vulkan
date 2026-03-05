@@ -7,6 +7,7 @@
 
 #include "mlx/backend/cpu/unary.h"
 #include "mlx/backend/cpu/unary_ops.h"
+#include "mlx/ops.h"
 #include "mlx/primitives.h"
 
 namespace mlx::core {
@@ -150,6 +151,36 @@ void Log1p::eval_cpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
   const auto& in = inputs[0];
   unary_fp(in, out, detail::Log1p(), stream());
+}
+
+void IsInf::eval_cpu(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 1);
+  auto& in = inputs[0];
+  if (issubdtype(in.dtype(), integer) || in.dtype() == bool_) {
+    out.set_data(allocator::malloc(out.nbytes())); std::memset(out.data<bool>(), 0, out.nbytes());
+  } else {
+    unary_fp_to_bool(in, out, detail::IsInf(), stream());
+  }
+}
+
+void IsNaN::eval_cpu(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 1);
+  auto& in = inputs[0];
+  if (issubdtype(in.dtype(), integer) || in.dtype() == bool_) {
+    out.set_data(allocator::malloc(out.nbytes())); std::memset(out.data<bool>(), 0, out.nbytes());
+  } else {
+    unary_fp_to_bool(in, out, detail::IsNaN(), stream());
+  }
+}
+
+void IsNegInf::eval_cpu(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 1);
+  auto& in = inputs[0];
+  if (issubdtype(in.dtype(), integer) || in.dtype() == bool_) {
+    out.set_data(allocator::malloc(out.nbytes())); std::memset(out.data<bool>(), 0, out.nbytes());
+  } else {
+    unary_fp_to_bool(in, out, detail::IsNegInf(), stream());
+  }
 }
 
 void LogicalNot::eval_cpu(const std::vector<array>& inputs, array& out) {

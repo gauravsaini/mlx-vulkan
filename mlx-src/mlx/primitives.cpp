@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iostream>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -2607,6 +2608,81 @@ std::vector<array> Less::vjp(
     vjps.push_back(zeros_like(primals[arg], stream()));
   }
   return vjps;
+}
+
+std::vector<array> IsNaN::jvp(
+    const std::vector<array>& primals,
+    const std::vector<array>& tangents,
+    const std::vector<int>& argnums) {
+  return {zeros(primals[0].shape(), bool_, stream())};
+}
+
+std::vector<array> IsNaN::vjp(
+    const std::vector<array>& primals,
+    const std::vector<array>& cotangents,
+    const std::vector<int>& argnums,
+    const std::vector<array>&) {
+  std::vector<array> vjps;
+  for (auto arg : argnums) {
+    vjps.push_back(zeros_like(primals[arg], stream()));
+  }
+  return vjps;
+}
+
+std::pair<std::vector<array>, std::vector<int>> IsNaN::vmap(
+    const std::vector<array>& inputs,
+    const std::vector<int>& axes) {
+  return {{isnan(inputs[0], stream())}, axes};
+}
+
+std::vector<array> IsInf::jvp(
+    const std::vector<array>& primals,
+    const std::vector<array>& tangents,
+    const std::vector<int>& argnums) {
+  return {zeros(primals[0].shape(), bool_, stream())};
+}
+
+std::vector<array> IsInf::vjp(
+    const std::vector<array>& primals,
+    const std::vector<array>& cotangents,
+    const std::vector<int>& argnums,
+    const std::vector<array>&) {
+  std::vector<array> vjps;
+  for (auto arg : argnums) {
+    vjps.push_back(zeros_like(primals[arg], stream()));
+  }
+  return vjps;
+}
+
+std::pair<std::vector<array>, std::vector<int>> IsInf::vmap(
+    const std::vector<array>& inputs,
+    const std::vector<int>& axes) {
+  return {{isinf(inputs[0], stream())}, axes};
+}
+
+std::vector<array> IsNegInf::jvp(
+    const std::vector<array>& primals,
+    const std::vector<array>& tangents,
+    const std::vector<int>& argnums) {
+  return {zeros(primals[0].shape(), bool_, stream())};
+}
+
+std::vector<array> IsNegInf::vjp(
+    const std::vector<array>& primals,
+    const std::vector<array>& cotangents,
+    const std::vector<int>& argnums,
+    const std::vector<array>&) {
+  std::vector<array> vjps;
+  for (auto arg : argnums) {
+    vjps.push_back(zeros_like(primals[arg], stream()));
+  }
+  return vjps;
+}
+
+std::pair<std::vector<array>, std::vector<int>> IsNegInf::vmap(
+    const std::vector<array>& inputs,
+    const std::vector<int>& axes) {
+  return {{isneginf(inputs[0], stream())}, axes};
 }
 
 std::vector<array> Less::jvp(

@@ -62,7 +62,7 @@ DEFAULT_BOOL_OP(NotEqual, operator!=)
 struct NaNEqual {
   template <int N, typename T>
   Simd<bool, N> operator()(Simd<T, N> x, Simd<T, N> y) {
-    return x == y || (isnan(x) && isnan(y));
+    return x == y || (simd::isnan(x) && simd::isnan(y));
   }
   template <typename T>
   bool operator()(T x, T y) {
@@ -73,11 +73,15 @@ struct NaNEqual {
 struct LogAddExp {
   template <int N, typename T>
   Simd<T, N> operator()(Simd<T, N> x, Simd<T, N> y) {
-    auto maxval = maximum(x, y);
-    auto minval = minimum(x, y);
-    auto mask = minval == -inf || maxval == inf;
-    auto out = maxval + log1p(exp(minval - maxval));
-    return select(mask, Simd<T, N>(maxval), Simd<T, N>(out));
+    if constexpr (is_complex<T>) {
+      return log(exp(x) + exp(y));
+    } else {
+      auto maxval = maximum(x, y);
+      auto minval = minimum(x, y);
+      auto mask = minval == -inf || maxval == inf;
+      auto out = maxval + log1p(exp(minval - maxval));
+      return select(mask, Simd<T, N>(maxval), Simd<T, N>(out));
+    }
   }
   BINARY_SINGLE()
 };

@@ -274,11 +274,11 @@ void Device::query_subgroup_size() {
     subgroup_size_ = 32;
   }
 
-  // Round 128 up to the nearest multiple of subgroup_size_, cap at 256.
-  // This gives a workgroup size that fills at least 2 subgroups but stays
-  // within typical shared-memory budgets.
+  // Round 256 up to the nearest multiple of subgroup_size_, cap at 256.
+  // This gives a workgroup size perfectly aligned for 16x16 native matmul tiles
+  // across all GPU backends.
   preferred_workgroup_size_ = std::min(
-      256u, ((128u + subgroup_size_ - 1u) / subgroup_size_) * subgroup_size_);
+      256u, ((256u + subgroup_size_ - 1u) / subgroup_size_) * subgroup_size_);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -345,7 +345,8 @@ void Device::create_logical_device() {
   if (has_ext("VK_KHR_cooperative_matrix")) {
     dev_extensions.push_back("VK_KHR_cooperative_matrix");
     has_cooperative_matrix_ = true;
-    fprintf(stderr, "[MLX Vulkan] Cooperative Matrix (Tensor Cores) available\n");
+    fprintf(
+        stderr, "[MLX Vulkan] Cooperative Matrix (Tensor Cores) available\n");
   }
 
   // Enable timeline semaphore feature
@@ -431,8 +432,8 @@ void Device::create_vma() {
 
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
-static constexpr uint32_t kPipelineCacheVersion =
-    16; // bumped: IndexPushConst extended for multi-axis gather (idx_ndim, idx_shape[4], idx_strides[4])
+static constexpr int kPipelineCacheVersion =
+    19; // bumped: fixed ternary.comp cond_data read stride issue
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");

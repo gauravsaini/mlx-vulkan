@@ -43,6 +43,7 @@ compile_shader(arange)
 compile_shader(indexing)
 compile_shader(scan)
 compile_shader(sort)
+compile_shader(radix_sort)
 compile_shader(normalization)
 compile_shader(rope)
 compile_shader(logsumexp)
@@ -50,6 +51,7 @@ compile_shader(random)
 compile_shader(quantized)
 compile_shader(conv)
 compile_shader(rbits)
+compile_shader(gather_mm)
 
 # Compile fft.comp into the various C++ dispatch names
 add_custom_command(
@@ -66,6 +68,13 @@ add_custom_command(
   DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
   VERBATIM)
 list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv)
+
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gather_mm.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gather_mm.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv)
 
 add_custom_command(
   OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv

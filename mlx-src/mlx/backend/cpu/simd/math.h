@@ -116,6 +116,17 @@ Simd<T, N> sincos(Simd<T, N> in) {
 }
 
 template <typename T, int N>
+Simd<bool, N> isinf(Simd<T, N> x) {
+  if constexpr (is_complex<T>) {
+    return std::isinf(x.value.real()) || std::isinf(x.value.imag());
+  } else {
+    Simd<T, N> inf_val = std::numeric_limits<T>::infinity();
+    return (x == inf_val) || (x == -inf_val);
+  }
+}
+
+
+template <typename T, int N>
 Simd<T, N> sin(Simd<T, N> x) {
   if constexpr (is_complex<T>) {
     return std::sin(x.value);
@@ -130,6 +141,17 @@ Simd<T, N> cos(Simd<T, N> x) {
     return std::cos(x.value);
   } else {
     return sincos<false>(x);
+  }
+}
+
+template <typename T, int N>
+Simd<bool, N> isneginf(Simd<T, N> x) {
+  if constexpr (is_complex<T>) {
+    return (std::isinf(x.value.real()) && x.value.real() < 0) ||
+           (std::isinf(x.value.imag()) && x.value.imag() < 0);
+  } else {
+    Simd<T, N> inf_val = std::numeric_limits<T>::infinity();
+    return (x == -inf_val);
   }
 }
 
