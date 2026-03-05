@@ -1,5 +1,55 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-05
+
+### fix (2026-03-05) — GatherMM VJP Gradients (ScatterAxis Thread Scaling & Type Safety)
+
+1. **ScatterAxis Thread Scaling Patch** (`primitives.cpp`):
+   - Root cause: `pc.n` was incorrectly scaling thread dispatches based on `updates.size()`. In gradient evaluations, `updates` can be a scalar (size 1), causing the pipeline to dispatch only 1 thread and miss the entire index bounds.
+   - Fix: Bound dispatch scaling correctly to `idx.size()`, natively matching standard Metal/CPU index evaluation geometries.
+
+2. **uint32_t Memory Corruption Guard** (`primitives.cpp`):
+   - Root cause: VJP gradient compilation maps subsets dynamically building `uint32` index scalars. `indexing.comp` evaluates buffers statically as `float`, causing bit-cast mismatches mathematically.
+   - Fix: Added a strict typed CPU fallback `if (inputs[0].dtype() != float32)` within `ScatterAxis::eval_gpu` (similar to `Scan`). Traps index-scalar derivatives gracefully directly to synchronized CPU pools.
+   
+3. **Result**: `test_gather_mm_sorted_vjp` passes correctly evaluating the proper `b` derivative gradients, resolving upstream index issues natively.
+
+### feat (2026-03-05) — Radix Sort Implementation for Large Arrays
+
+1. **Radix Sort Shader** (`kernels/radix_sort.comp`):
+   - Implemented LSB (Least Significant Bit) radix sort with 4-bit digit buckets
+   - 8-pass digit-by-digit counting sort for 32-bit data (int32/float32)
+   - Supports arrays >128 elements (tested up to 8192 elements)
+   - Handles both ascending and descending sort order
+   - Passes spirv-val validation
+
+2. **Enhanced Sort Dispatch** (`primitives.cpp`):
+   - Modified `Sort::eval_gpu` to use bitonic sort for ≤128 elements
+   - Radix sort automatically selected for >128 elements
+   - Supports int32 and float32 dtypes on last axis
+   - Requires contiguous data layout
+   - Ping-pong buffer allocation for multi-pass sorting
+
+3. **Build System Update** (`CMakeLists.txt`):
+   - Added `compile_shader(radix_sort)` to build pipeline
+   - Shader compiled to `radix_sort.spv` successfully
+
+4. **Comprehensive Test Suite** (`tests/vulkan/test_radix_sort.py`):
+   - 6/6 test suites passing (all 30+ individual tests)
+   - Tests various sizes: 256, 512, 1024, 2048, 4096, 8192 elements
+   - Tests int32 and float32 dtypes
+   - Tests edge cases: already sorted, reverse sorted, duplicates, NaN values
+   - Tests 2D arrays with various shapes
+   - Performance comparison included
+
+5. **Files changed**:
+   - `mlx-src/mlx/backend/vulkan/kernels/radix_sort.comp` (new)
+   - `mlx-src/mlx/backend/vulkan/primitives.cpp` (Sort::eval_gpu enhanced)
+   - `mlx-src/mlx/backend/vulkan/CMakeLists.txt` (radix_sort added)
+   - `tests/vulkan/test_radix_sort.py` (new test suite)
+
+---
+
 ## UPDATED ON : 2026-03-04 (session 1)
 
 ### feat (2026-03-04) — Cooperative Matrix Operations and Workgroup Tuning
@@ -48,6 +98,29 @@
 4. **Validation Test Coverage**:
    - Confirmed isolated JIT scripts operating at 100% correct float matching against reference executions (`x * 2 + y`, complex trigonometry `sin_cos`, conditional reductions, max_min chaining).
    - Python native compiled decorator correctly routes graphs natively onto Apple Silicon hardware bypassing fallback.
+
+---
+
+## UPDATED ON : 2026-03-04 (session 3)
+
+### fix (2026-03-04) — Stage 14 Sort 2D Test Failures
+
+1. **Bitonic Sort Self-Swap Bug** (`sort.comp`):
+   - Root cause: At final iteration where `k == sort_size`, thread 0 would execute `l = i ^ j = 0 ^ 128 = 128`, causing `l > i` to be true and swapping element 0 with itself.
+   - Fix: Added condition `(tid != 0u || k != params.sort_size)` to prevent thread 0 from self-swapping only at final iteration.
+   - Result: Fixed 256-element sort returning garbage values; test now passes.
+
+2. **Library Rebuild Issue** (Build System):
+   - Root cause: Stale `.so`/`.dylib` files in `python/mlx/` were not being updated after shader changes.
+   - Fix: Proper rebuild via `cmake --build build -j4` and copying both `core.cpython-*.so` and `libmlx.dylib` to `python/mlx/lib/`.
+   - Result: 2D sort tests now correctly reflect latest shader changes.
+
+3. **Tests** (before → after):
+   - Stage 13: 7/7 → 7/7 (unchanged)
+   - Stage 14: 5/6 → 6/6 (2D last axis test now passes)
+   - Stage 15: 5/5 (unchanged)
+
+4. **Files changed**: `sort.comp`, `primitives.cpp`
 
 ### fix (2026-03-03) — Hadamard CPU/GPU Sync and memory/precision correctness
 

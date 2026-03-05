@@ -1185,8 +1185,11 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
 
-  // Grid: (ceil(N/16), ceil(M/16), batch)
-  vkCmdDispatch(cmd, vulkan::div_ceil(N, 16), vulkan::div_ceil(M, 16), batch);
+  // Grid: dynamically computed from specialization caps
+  uint32_t subgroup_size = dev.subgroup_size();
+  uint32_t BN = (subgroup_size == 64) ? 32 : 16;
+  uint32_t BM = 256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
+  vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1623,6 +1626,17 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   //   axes_.size()==1, slice_sizes_[ax]==1 for the gathered axis
   // Covers 1D (ax=0) and ND cases via INDEX_GATHER_GEN.
   if (inputs.size() == 2 && axes_.size() == 1 && slice_sizes_[axes_[0]] == 1) {
+    const array& src = inputs[0];
+    const array& idx = inputs[1];
+    
+    // INDEX_GATHER_GEN mathematically hardcodes inner contiguous dimension sizes.
+    // If the source array is transposed or non-contiguous, we must fall back to CPU eval.
+    if (!src.flags().row_contiguous) {
+      vulkan::device(stream().device).synchronize(stream());
+      eval_cpu(inputs, out);
+      return;
+    }
+
     out.set_data(allocator::malloc(out.nbytes()));
     if (out.size() == 0)
       return;
@@ -1632,8 +1646,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     encoder.op_count++;
 
     uint32_t ax = static_cast<uint32_t>(axes_[0]);
-    const array& src = inputs[0];
-    const array& idx = inputs[1];
+    // ...
 
     // inner = product(src dims after the gather axis)
     uint32_t inner = 1;
@@ -1752,6 +1765,14 @@ void Scatter::eval_gpu(const std::vector<array>& inputs, array& out) {
 void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   // inputs: [src, indices, updates]
   // Copy src→out first, then scatter updates into it
+  // The indexing shader is currently hard-coded to use 32-bit floats.
+  // Fall back to CPU for other types.
+  if (inputs[0].dtype() != float32) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
   if (out.size() == 0)
     return;
@@ -1779,7 +1800,7 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   uint32_t op = (reduce_type_ == ScatterAxis::ReduceType::Sum) ? 2u : 1u;
 
   IndexPushConst pc{};
-  pc.n = static_cast<uint32_t>(updates.size());
+  pc.n = static_cast<uint32_t>(idx.size());
   pc.op = op;
   pc.idx_size = static_cast<uint32_t>(idx.size());
   pc.src_stride = src_stride;
@@ -1819,102 +1840,233 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
     sort_pow2 <<= 1;
 
   // Fall back to CPU if:
-  // - Sort dimension > 128 (shader only works with sort_size <= local_size_x)
   // - Not sorting on last axis
-  // - Input is not float32 (shader is hard-coded to use 32-bit float)
-  if (sort_pow2 > 128 || sort_axis != in.ndim() - 1 || in.dtype() != float32) {
+  // - Input is not float32 or int32 (radix sort only supports these)
+  // - Not contiguous (both bitonic and radix require contiguous data)
+  bool supported_dtype = (in.dtype() == float32) || (in.dtype() == int32);
+  if (sort_axis != in.ndim() - 1 || !supported_dtype || !in.flags().row_contiguous) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
   }
 
+  // Use bitonic sort for small arrays (<= 128), radix sort for larger
+  bool use_bitonic = (sort_pow2 <= 128);
+
   // Copy input to output (sort is in-place on output)
-  // Use General copy to handle non-contiguous (strided) inputs correctly
   out.set_data(allocator::malloc(out.nbytes()));
-  CopyType copy_type =
-      in.flags().row_contiguous ? CopyType::Vector : CopyType::General;
+  CopyType copy_type = CopyType::Vector; // We checked row_contiguous above
   copy_gpu_inplace(in, out, copy_type, stream());
 
   uint32_t n = static_cast<uint32_t>(out.size());
-  uint32_t n_sorts = n / sort_size;
-
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  VkBuffer data_buf = vulkan::get_buffer(out);
-
-  // Allocate dummy index buffer (sort shader requires both bindings)
-  auto idx_alloc = allocator::malloc(n_sorts * sort_size * sizeof(uint32_t));
-  VkBuffer idx_buf =
-      static_cast<vulkan::VulkanBuffer*>(idx_alloc.ptr())->buffer;
-
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline(
-      "sort",
-      layout,
-      ds_layout,
-      2,
-      20,
-      vulkan::get_default_specialization_info(dev));
-  if (pipeline == VK_NULL_HANDLE) {
-    allocator::free(idx_alloc);
-    vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
-  }
-
-  VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
-  VkDescriptorBufferInfo infos[2]{
-      {data_buf, 0, VK_WHOLE_SIZE}, {idx_buf, 0, VK_WHOLE_SIZE}};
-  VkWriteDescriptorSet writes[2]{};
-  for (int i = 0; i < 2; i++) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = ds;
-    writes[i].dstBinding = i;
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
-
-  struct PushConst {
-    uint32_t n;
-    uint32_t sort_size;
-    uint32_t n_sorts;
-    uint32_t ascending;
-    uint32_t with_index;
-  } pc{n, sort_pow2, n_sorts, 1u, 0u};
-
   VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(
-      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(
-      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
 
-  vkCmdDispatch(cmd, n_sorts, 1, 1);
+  if (use_bitonic) {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Bitonic Sort (for small arrays <= 128)
+    // ─────────────────────────────────────────────────────────────────────────
+    uint32_t n_sorts = n / sort_size;
 
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      1,
-      &barrier,
-      0,
-      nullptr,
-      0,
-      nullptr);
+    VkBuffer data_buf = vulkan::get_buffer(out);
 
-  // Free index buffer after GPU finishes
-  auto s = stream();
-  vulkan::device(s.device).add_completed_handler(
-      s, [idx_alloc]() mutable { allocator::free(idx_alloc); });
+    // Allocate dummy index buffer (sort shader requires both bindings)
+    auto idx_alloc = allocator::malloc(n_sorts * sort_size * sizeof(uint32_t));
+    VkBuffer idx_buf =
+        static_cast<vulkan::VulkanBuffer*>(idx_alloc.ptr())->buffer;
+
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout ds_layout;
+    VkPipeline pipeline = dev.get_pipeline(
+        "sort",
+        layout,
+        ds_layout,
+        2,
+        20,
+        vulkan::get_default_specialization_info(dev));
+    if (pipeline == VK_NULL_HANDLE) {
+      allocator::free(idx_alloc);
+      vulkan::device(stream().device).synchronize(stream());
+      eval_cpu(inputs, out);
+      return;
+    }
+
+    VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+    VkDescriptorBufferInfo infos[2]{
+        {data_buf, 0, VK_WHOLE_SIZE}, {idx_buf, 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet writes[2]{};
+    for (int i = 0; i < 2; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
+
+    struct BitonicPushConst {
+      uint32_t n;
+      uint32_t sort_size;
+      uint32_t n_sorts;
+      uint32_t ascending;
+      uint32_t with_index;
+    } pc{n, sort_pow2, n_sorts, 1u, 0u};
+
+    vkCmdPushConstants(
+        cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+    vkCmdDispatch(cmd, n_sorts, 1, 1);
+
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+
+    // Free index buffer after GPU finishes
+    auto s = stream();
+    vulkan::device(s.device).add_completed_handler(
+        s, [idx_alloc]() mutable { allocator::free(idx_alloc); });
+    return; // Exit after bitonic sort completes
+  } else {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Radix Sort (for larger arrays > 128)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Radix sort requires a temporary buffer for ping-pong between passes
+    size_t temp_size = n * sizeof(uint32_t);
+    auto temp_alloc = allocator::malloc(temp_size);
+    VkBuffer temp_buf = static_cast<vulkan::VulkanBuffer*>(temp_alloc.ptr())->buffer;
+
+    VkBuffer data_buf = vulkan::get_buffer(out);
+
+    // Get radix sort pipeline
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout ds_layout;
+    VkPipeline pipeline = dev.get_pipeline(
+        "radix_sort",
+        layout,
+        ds_layout,
+        3, // 3 bindings: in_data, out_data, temp_data
+        16, // push constant size
+        vulkan::get_default_specialization_info(dev));
+
+    if (pipeline == VK_NULL_HANDLE) {
+      allocator::free(temp_alloc);
+      vulkan::device(stream().device).synchronize(stream());
+      eval_cpu(inputs, out);
+      return;
+    }
+
+    // Radix sort push constants
+    struct RadixPushConst {
+      uint32_t n;         // Total number of elements
+      uint32_t digit;     // Current digit (0-7 for 4-bit digits)
+      uint32_t ascending; // 1 = ascending, 0 = descending
+      uint32_t pass;      // 0 = first pass, 1 = second pass
+    };
+
+    // Perform 8 passes of radix sort (4-bit digits, 8 * 4 = 32 bits)
+    for (uint32_t digit = 0; digit < 8; digit++) {
+      // On even passes: in_data -> out_data (using temp as output)
+      // On odd passes: temp -> out_data (using original buffer as output)
+      bool even_pass = (digit % 2 == 0);
+      VkBuffer in_buffer = even_pass ? data_buf : temp_buf;
+      VkBuffer out_buffer = even_pass ? temp_buf : data_buf;
+
+      VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+      VkDescriptorBufferInfo infos[3]{
+          {in_buffer, 0, VK_WHOLE_SIZE},
+          {out_buffer, 0, VK_WHOLE_SIZE},
+          {temp_buf, 0, VK_WHOLE_SIZE}};
+
+      VkWriteDescriptorSet writes[3]{};
+      for (int i = 0; i < 3; i++) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = ds;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[i].pBufferInfo = &infos[i];
+      }
+      vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
+
+      RadixPushConst pc{n, digit, 1u, even_pass ? 0u : 1u};
+      vkCmdPushConstants(
+          cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+      vkCmdBindDescriptorSets(
+          cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+      // Dispatch with single workgroup (radix sort uses shared memory for counting)
+      vkCmdDispatch(cmd, 1, 1, 1);
+
+      // Barrier to ensure pass completes before next pass
+      VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      vkCmdPipelineBarrier(
+          cmd,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0,
+          1,
+          &barrier,
+          0,
+          nullptr,
+          0,
+          nullptr);
+    }
+
+    // After 8 passes, final result is in data_buf (if even number of passes)
+    // If odd number of passes, we need to copy from temp to data
+    if (8 % 2 != 0) {
+      // Copy from temp_buf to data_buf
+      VkDescriptorSet copy_ds = dev.alloc_descriptor_set(stream(), ds_layout);
+      VkDescriptorBufferInfo copy_infos[3]{
+          {temp_buf, 0, VK_WHOLE_SIZE},
+          {data_buf, 0, VK_WHOLE_SIZE},
+          {temp_buf, 0, VK_WHOLE_SIZE}};
+
+      VkWriteDescriptorSet copy_writes[3]{};
+      for (int i = 0; i < 3; i++) {
+        copy_writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        copy_writes[i].dstSet = copy_ds;
+        copy_writes[i].dstBinding = i;
+        copy_writes[i].descriptorCount = 1;
+        copy_writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        copy_writes[i].pBufferInfo = &copy_infos[i];
+      }
+      vkUpdateDescriptorSets(dev.vk_device(), 3, copy_writes, 0, nullptr);
+
+      // Use a simple copy dispatch (one element per thread)
+      // We'll use the radix sort pipeline with a special "copy" mode
+      // Actually, let's just use a simple manual copy here
+      // For simplicity, we'll dispatch a copy kernel or just do element-wise copy
+      // Since we don't have a copy kernel, let's just leave the result in the right buffer
+      // After 8 passes (even), result is in data_buf
+    }
+
+    // Free temp buffer after GPU finishes
+    auto s = stream();
+    vulkan::device(s.device).add_completed_handler(
+        s, [temp_alloc]() mutable { allocator::free(temp_alloc); });
+  }
 }
 
 void ArgSort::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -2436,32 +2588,287 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 
 void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // Sparse gather + matmul (used in MoE routing).
-  // inputs[0]: A (lhs matrices), inputs[1]: B (rhs matrices)
-  // inputs[2]: lhs_indices, inputs[3]: rhs_indices
-  // A GPU implementation would use indexing.comp to gather then dispatch
-  // matmul.comp per gathered pair.  For now, fall back to eval_cpu().
-  throw std::runtime_error(
-      "[vulkan] GatherMM has no Vulkan GPU implementation. "
-      "Falling back to CPU eval.");
+  auto& s = stream();
+  auto& dev = vulkan::device(s.device);
+
+  const array& a_orig = inputs[0];
+  const array& b_orig = inputs[1];
+  const array& lhs_indices = inputs[2];
+  const array& rhs_indices = inputs[3];
+
+  if (a_orig.dtype() != float32 && a_orig.dtype() != float16 && a_orig.dtype() != bfloat16) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  
+  // Unconditionally issue a barrier to ensure all previous compute tasks (like arange/broadcast) finish writing to buffers
+  VkMemoryBarrier pre_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  pre_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  pre_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      encoder.cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      1,
+      &pre_barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  // Make contiguous copies if matrices are severely unaligned
+  array a_contig(a_orig.shape(), a_orig.dtype(), nullptr, {});
+  array b_contig(b_orig.shape(), b_orig.dtype(), nullptr, {});
+  if (!a_orig.flags().row_contiguous) {
+    a_contig.set_data(allocator::malloc(a_contig.nbytes()));
+    copy_gpu(a_orig, a_contig, CopyType::General, s);
+  } else {
+    a_contig = a_orig;
+  }
+  if (!b_orig.flags().row_contiguous) {
+    b_contig.set_data(allocator::malloc(b_contig.nbytes()));
+    copy_gpu(b_orig, b_contig, CopyType::General, s);
+  } else {
+    b_contig = b_orig;
+  }
+
+  const array& a = a_contig;
+  const array& b = b_contig;
+
+  // Add another barrier if copies occurred
+  if (!a_orig.flags().row_contiguous || !b_orig.flags().row_contiguous) {
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(
+        encoder.cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+  }
+
+  bool use_temp_out = out.dtype() != float32;
+  std::optional<array> temp_out;
+  if (use_temp_out) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0 || a.size() == 0 || b.size() == 0) {
+    if (out.nbytes() > 0) {
+      auto& encoder = vulkan::get_command_encoder(s);
+      encoder.op_count++;
+      vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+    }
+    return;
+  }
+
+  encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+  
+  struct PushConst {
+    uint32_t M;
+    uint32_t N;
+    uint32_t K;
+    uint32_t a_elem_bytes;
+    uint32_t b_elem_bytes;
+
+    uint32_t a_batch_ndim;
+    uint32_t b_batch_ndim;
+    uint32_t idx_a_ndim;
+    uint32_t idx_b_ndim;
+    uint32_t out_batch_ndim;
+
+    uint32_t shape_a_0; uint32_t shape_a_1; uint32_t shape_a_2; uint32_t shape_a_3;
+    uint32_t stride_a_0; uint32_t stride_a_1; uint32_t stride_a_2; uint32_t stride_a_3;
+    uint32_t shape_b_0; uint32_t shape_b_1; uint32_t shape_b_2; uint32_t shape_b_3;
+    uint32_t stride_b_0; uint32_t stride_b_1; uint32_t stride_b_2; uint32_t stride_b_3;
+
+    uint32_t a_stride_row;
+    uint32_t a_stride_col;
+    uint32_t b_stride_row;
+    uint32_t b_stride_col;
+
+    uint32_t shape_idx_a_0; uint32_t shape_idx_a_1; uint32_t shape_idx_a_2; uint32_t shape_idx_a_3;
+    uint32_t stride_idx_a_0; uint32_t stride_idx_a_1; uint32_t stride_idx_a_2; uint32_t stride_idx_a_3;
+    uint32_t shape_idx_b_0; uint32_t shape_idx_b_1; uint32_t shape_idx_b_2; uint32_t shape_idx_b_3;
+    uint32_t stride_idx_b_0; uint32_t stride_idx_b_1; uint32_t stride_idx_b_2; uint32_t stride_idx_b_3;
+
+    uint32_t shape_out_0; uint32_t shape_out_1; uint32_t shape_out_2; uint32_t shape_out_3;
+  } pc{};
+
+  uint32_t M = (a.ndim() >= 2) ? static_cast<uint32_t>(a.shape(-2)) : 1u;
+  uint32_t K = static_cast<uint32_t>(a.shape(-1));
+  uint32_t N = (b.ndim() >= 2) ? static_cast<uint32_t>(b.shape(-1)) : 1u;
+
+  VkBuffer a_buf = vulkan::get_buffer(a);
+  VkBuffer b_buf = vulkan::get_buffer(b);
+  VkBuffer idx_a_buf = vulkan::get_buffer(lhs_indices);
+  VkBuffer idx_b_buf = vulkan::get_buffer(rhs_indices);
+  VkBuffer c_buf = vulkan::get_buffer(use_temp_out ? *temp_out : out);
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline(
+      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) && (K % 16 == 0) ? "gather_mm_coop" : "gather_mm",
+      layout,
+      ds_layout,
+      5,
+      sizeof(PushConst), // Size of custom push const
+      vulkan::get_default_specialization_info(dev));
+  if (pipeline == VK_NULL_HANDLE) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
+  VkDescriptorBufferInfo a_info{a_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo b_info{b_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo idx_a_info{idx_a_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo idx_b_info{idx_b_buf, 0, VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo c_info{c_buf, 0, VK_WHOLE_SIZE};
+
+  VkWriteDescriptorSet writes[5]{};
+  for (int i = 0; i < 5; i++) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  }
+  writes[0].pBufferInfo = &a_info;
+  writes[1].pBufferInfo = &b_info;
+  writes[2].pBufferInfo = &idx_a_info;
+  writes[3].pBufferInfo = &idx_b_info;
+  writes[4].pBufferInfo = &c_info;
+  vkUpdateDescriptorSets(dev.vk_device(), 5, writes, 0, nullptr);
+
+  auto get_batch_dims = [](const auto& v) {
+    return decltype(v){v.begin(), v.end() - 2};
+  };
+
+  auto batch_shape_A = get_batch_dims(a.shape());
+  auto batch_strides_A = get_batch_dims(a.strides());
+  auto batch_shape_B = get_batch_dims(b.shape());
+  auto batch_strides_B = get_batch_dims(b.strides());
+
+  std::cout << "[GatherMM] A.shape = " << a.shape() << ", A.strides = " << a.strides() << "\n";
+  std::cout << "[GatherMM] B.shape = " << b.shape() << ", B.strides = " << b.strides() << "\n";
+  std::cout << "[GatherMM] lhs_indices.shape = " << lhs_indices.shape() << ", lhs_indices.size = " << lhs_indices.size() << ", lhs_indices.ndim = " << lhs_indices.ndim() << "\n";
+  std::cout << "[GatherMM] rhs_indices.shape = " << rhs_indices.shape() << ", rhs_indices.size = " << rhs_indices.size() << ", rhs_indices.ndim = " << rhs_indices.ndim() << "\n";
+  std::cout << "[GatherMM] out.shape = " << out.shape() << "\n";
+
+  pc.M = M;
+  pc.N = N;
+  pc.K = K;
+
+  pc.a_elem_bytes = a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize());
+  pc.b_elem_bytes = b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize());
+
+  pc.a_batch_ndim = batch_shape_A.size();
+  pc.b_batch_ndim = batch_shape_B.size();
+  pc.idx_a_ndim = lhs_indices.size() > 0 ? lhs_indices.ndim() : 0;
+  pc.idx_b_ndim = rhs_indices.size() > 0 ? rhs_indices.ndim() : 0;
+
+  pc.out_batch_ndim = out.ndim() > 2 ? out.ndim() - 2 : 0;
+  auto batch_shape_out = get_batch_dims(out.shape());
+
+  auto set_val = [](uint32_t& p_0, uint32_t& p_1, uint32_t& p_2, uint32_t& p_3,
+                    uint32_t limit, const auto& arr) {
+      p_0 = 0 < limit ? arr[0] : 1;
+      p_1 = 1 < limit ? arr[1] : 1;
+      p_2 = 2 < limit ? arr[2] : 1;
+      p_3 = 3 < limit ? arr[3] : 1;
+  };
+  
+  auto set_stride = [](uint32_t& p_0, uint32_t& p_1, uint32_t& p_2, uint32_t& p_3,
+                    uint32_t limit, const auto& arr) {
+      p_0 = 0 < limit ? arr[0] : 1;
+      p_1 = 1 < limit ? arr[1] : 1;
+      p_2 = 2 < limit ? arr[2] : 1;
+      p_3 = 3 < limit ? arr[3] : 1;
+  };
+
+  set_val(pc.shape_a_0, pc.shape_a_1, pc.shape_a_2, pc.shape_a_3, pc.a_batch_ndim, batch_shape_A);
+  set_stride(pc.stride_a_0, pc.stride_a_1, pc.stride_a_2, pc.stride_a_3, pc.a_batch_ndim, batch_strides_A);
+  set_val(pc.shape_b_0, pc.shape_b_1, pc.shape_b_2, pc.shape_b_3, pc.b_batch_ndim, batch_shape_B);
+  set_stride(pc.stride_b_0, pc.stride_b_1, pc.stride_b_2, pc.stride_b_3, pc.b_batch_ndim, batch_strides_B);
+
+  set_val(pc.shape_idx_a_0, pc.shape_idx_a_1, pc.shape_idx_a_2, pc.shape_idx_a_3, pc.idx_a_ndim, lhs_indices.shape());
+  set_stride(pc.stride_idx_a_0, pc.stride_idx_a_1, pc.stride_idx_a_2, pc.stride_idx_a_3, pc.idx_a_ndim, lhs_indices.strides());
+  set_val(pc.shape_idx_b_0, pc.shape_idx_b_1, pc.shape_idx_b_2, pc.shape_idx_b_3, pc.idx_b_ndim, rhs_indices.shape());
+  set_stride(pc.stride_idx_b_0, pc.stride_idx_b_1, pc.stride_idx_b_2, pc.stride_idx_b_3, pc.idx_b_ndim, rhs_indices.strides());
+
+  set_val(pc.shape_out_0, pc.shape_out_1, pc.shape_out_2, pc.shape_out_3, pc.out_batch_ndim, batch_shape_out);
+
+  pc.a_stride_row = a.ndim() > 1 ? a.strides()[a.ndim() - 2] : 0;
+  pc.a_stride_col = a.ndim() > 0 ? a.strides()[a.ndim() - 1] : 1;
+  pc.b_stride_row = b.ndim() > 1 ? b.strides()[b.ndim() - 2] : 0;
+  pc.b_stride_col = b.ndim() > 0 ? b.strides()[b.ndim() - 1] : 1;
+
+  uint32_t batch_size_out = out.size() / (M * N);
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+  uint32_t subgroup_size = dev.subgroup_size();
+  uint32_t BN = (subgroup_size == 64) ? 32 : 16;
+  uint32_t BM = 256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
+
+  // Grid
+  vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch_size_out);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  if (use_temp_out) {
+    copy_gpu(*temp_out, out, CopyType::General, s);
+  }
 }
 
 void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Gather + dequantize + matmul — no GPU implementation yet.
   // Requires indexing.comp (gather) + quantized.comp (dequant) + matmul.comp,
   // all pipelined.  CPU fallback is correct on unified memory (MoltenVK/iGPU).
-  throw std::runtime_error(
-      "[vulkan] GatherQMM has no Vulkan GPU implementation. "
-      "Falling back to CPU eval.");
+  vulkan::device(stream().device).synchronize(stream());
+  eval_cpu(inputs, out);
 }
 
 void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Segmented (variable-length batch) matmul.
   // CUDA backend also has no GPU implementation for this op.
   // eval.cpp catches this and calls eval_cpu() via the unified-memory path.
-  throw std::runtime_error(
-      "[vulkan] SegmentedMM has no Vulkan GPU implementation. "
-      "Falling back to CPU eval.");
+  vulkan::device(stream().device).synchronize(stream());
+  eval_cpu(inputs, out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

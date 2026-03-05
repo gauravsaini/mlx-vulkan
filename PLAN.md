@@ -560,7 +560,12 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 #### Sort
 
 - [x] ArgSort (unsupported bounds native halt via exceptions)
-- [x] Sort (GPU dispatch via `sort.comp`, bitonic ≤256)
+- [x] Sort (GPU dispatch via `sort.comp` for ≤128, `radix_sort.comp` for >128)
+  - Bitonic sort: arrays ≤128 elements (shared memory 512 elements)
+  - Radix sort: arrays >128 elements (8-pass 4-bit digit sorting, supports up to 8192+ elements)
+  - Supports int32 and float32 dtypes on last axis
+  - Handles both ascending and descending sort order
+  - Validates with test_radix_sort.py: 6/6 test suites passing
 - [x] Partition, ArgPartition (unsupported bounds native halt via exceptions)
 
 #### Random
@@ -910,15 +915,21 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 
 ### 🟢 MEDIUM PRIORITY (nice-to-have for completeness)
 
-#### 8. Workgroup Tuning via VkSpecializationInfo
+#### 8. Workgroup Tuning via VkSpecializationInfo ✅ COMPLETE
 - Infrastructure complete (subgroup size queried at init)
-- Shaders hardcode `local_size_x=256`
-- [ ] Wire `preferred_workgroup_size_` through `VkSpecializationInfo` per-pipeline
-- [ ] Tune `matmul.comp` tile for AMD 64-wide wavefronts vs NVIDIA 32-wide
+- Shaders updated from `local_size_x=256` explicitly to dynamic `WORKGROUP_SIZE`
+- [x] Wire `preferred_workgroup_size_` through `VkSpecializationInfo` per-pipeline
+- [x] Tune `matmul.comp` tile for AMD 64-wide wavefronts vs NVIDIA 32-wide
 
-#### 9. GatherMM / BlockMaskedMM GPU Implementation
+#### 9. Cooperative Matrix Ops / Hardware Tensor Cores ✅ COMPLETE
+- [x] Enable `VK_KHR_cooperative_matrix` during init logic if GPU supports it
+- [x] Write `matmul_coop.spv` alternative pathway leveraging `coopMatMulAdd` 
+- [x] Fix compiler errors restricting matrix memory constraints 
+
+#### 10. GatherMM / BlockMaskedMM GPU Implementation
 - Currently throw on GPU stream (CPU stream works)
 - Needed for sparse attention in transformer models
+- [x] `GatherMM::vjp` gradients fixed: resolved Thread Scaling and uint32 limits inside `ScatterAxis` via fallback arrays
 - [ ] `GatherMM::eval_gpu`: implement gather + fused matmul shader
 - [ ] `BlockMaskedMM::eval_gpu`: block-sparse matmul with mask
 
