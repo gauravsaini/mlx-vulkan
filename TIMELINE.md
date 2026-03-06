@@ -1,8 +1,61 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-07
+
+### fix (2026-03-07) — P2.6 Hadamard large-array GPU limit 2048→16384
+
+1. **Multi-pass Hadamard dispatch**:
+   - `hadamard.comp` already had both in-group (h_step=0) and cross-group (h_step>0) paths.
+   - `primitives.cpp` was sending only 12-byte push constant (missing h_step field), so cross-group path was dead code.
+   - Fixed `HadamardPC` struct to 4 fields / 16 bytes matching the shader layout exactly.
+   - Added multi-pass loop: Pass 1 = in-group WHT on 2048-element tiles; Passes 2+ = cross-group butterfly stages at h_step=2048,4096,... with scale applied only at last stage.
+   - Extended `can_gpu` limit from n≤2048 to n≤16384.
+
+2. **Side fixes**:
+   - Bumped `kPipelineCacheVersion` 21→22 (push constant size change).
+   - Fixed pre-existing `unary_ops.h` `LogicalNot` SINGLE() macro ambiguity that was breaking the full build.
+
+3. **Tests** (before → after):
+   - n=1024: PASS → PASS (no regression)
+   - n=2048: PASS → PASS (no regression)
+   - n=4096: CPU fallback → GPU PASS, max_err=0.000000
+   - n=8192: CPU fallback → GPU PASS, max_err=0.000000
+   - n=16384: CPU fallback → GPU PASS, max_err=0.000000
+
+4. **Files changed**:
+   - `mlx/backend/vulkan/kernels/hadamard.comp` (comment only)
+   - `mlx/backend/vulkan/primitives.cpp` (HadamardPC + dispatch logic)
+   - `mlx/backend/vulkan/device.cpp` (kPipelineCacheVersion 21→22)
+   - `mlx/backend/cpu/unary_ops.h` (LogicalNot SINGLE() ambiguity fix)
+
+---
+
 ## UPDATED ON : 2026-03-05 (session 3)
 
-### feat (2026-03-05) — P2 GPU Implementations: Scan Multi-pass & GatherMM SSBO Refactor
+### feat (2026-03-05) — P3 Infrastructure Gaps
+
+## Session 8: Debugging Vulkan Unary Ops & Infrastructure (2026-03-05)
+
+**Objective:** Complete P3 Infrastructure Gaps, including pipeline cache discipline, cooperative matrix safety, test suite segfault isolation, and fixing floating-point UnaryOp correctness bugs.
+
+**Accomplishments:**
+- ✅ **P3.1 Pipeline Cache Discipline**: Added a comprehensive audit block documenting `kPipelineCacheVersion` bumps to establish a clear policy for layout changes.
+- ✅ **P3.3/3.4 Cooperative Matrix Safety**: Ensured `matmul_coop.spv` is conditionally compiled on non-Apple platforms, and verified MoltenVK safely bypasses `has_cooperative_matrix_` paths natively.
+- ✅ **P3.5 Test Suite Segfaults**: Fixed a critical bug in `Device::commit` where detached threads accessed Vulkan structures during Python shutdown. Joined threads in `~Device` to prevent UAF.
+- ✅ **Unary Ops Floating-Point Precision Fix**: Discovered an egregious `-ffast-math`-style optimization bug in the MoltenVK/Apple Metal runtime wherein `isinf(val)` on unpacked `float16` generated code identical to `val == 0.0`. Fixed `isinf`, `isnan`, and `isneginf` using rigorous bit-manipulation of IEEE-754 signatures `((floatBitsToUint(val) & 0x7FFFFFFF) == 0x7F800000)`, bypassing the driver defect completely.
+
+**Outcome:**
+`test_ops.py` entire script runs cleanly on macOS / MoltenVK with exactly 0 segfaults and 0 numerical errors.
+
+**Files Changed:**
+- `mlx/backend/vulkan/device.h` & `device.cpp`
+- `mlx/backend/vulkan/CMakeLists.txt`
+- `mlx/backend/vulkan/kernels/unary.comp`
+- `mlx/backend/vulkan/primitives.cpp`
+
+---
+
+## Session 7: Vulkan Scan Multi-pass Logic & GatherMM Refactor (2026-03-05)
 
 **P2.1 — Scan > 1024 multi-pass GPU ✅**
 
