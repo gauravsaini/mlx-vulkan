@@ -13,7 +13,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
 **Current device**: Apple M1 via MoltenVK (macOS development)
-**Last verified**: 2026-03-05 (session 2)
+**Last verified**: 2026-03-07
 
 ---
 
@@ -67,51 +67,51 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 ---
 
-## Codebase Gap Analysis — Verified 2026-03-05
+## Codebase Gap Analysis — Verified 2026-03-07
 
-> Based on live run of all 134 `test_ops.py` tests and source audit of all 24 shaders + `primitives.cpp`.
+> Based on live run of all 134 `test_ops.py` tests with `MLX_DISABLE_METAL=1` on Apple M1 via MoltenVK.
 
-### test_ops.py Results: ~114/134 PASS (before segfault)
+### test_ops.py Results: 124/134 PASS, 10 FAIL
 
-The full suite segfaults partway through `test_scans` (scan_size > 1024 triggers CPU fallback path which crashes). Tests after that point are unverified.
+Full suite runs to completion with no segfaults or hangs.
 
-#### ✅ PASSING (confirmed)
-abs, add, all, allclose, any, arange_*, argmin_argmax, argpartition, array_equal, as_strided, atleast_*, binary_ops, bitwise_grad, bitwise_ops, broadcast*, ceil, clip, comparisons, complex_ops, complex_power, concatenate, conjugate, cos, degrees, depends, diag, diagonal, divide, divmod, dynamic_slicing, empty_matmuls, erf, erfinv, exp, expm1, eye, flatten, floor, full_ones_zeros, hadamard*, hamming_general, hanning_general, inner, integer_power, irregular_*, isclose, isfinite, isposinf, issubdtype, kron, large_binary, log, log10, log1p, log2, logical_*, masked_scatter, mean, min_and_max, move_swap_axes, multiply, negative, pad, partition, prod, radians, reciprocal, remainder, repeat, roll*, sigmoid, sign, sin, slice_*, softmax, split, sqrt, square, squeeze_expand, stack, std, stop_gradient, subtract, sum, take, take_along_axis, tensordot, tile, to_from_fp8, trace, transpose_*, tri, trig_ops, tril, triu, unary_ops*, var, view, where
+#### ❌ FAILING (10 tests — confirmed root causes)
 
-#### ❌ FAILING (confirmed root causes)
-
-| Test | Root Cause | Fix Needed |
+| Test | Root Cause | Priority |
 |---|---|---|
-| `test_isinf` | GPU returns `[False, False]` not `[False, True]` — NaN/Inf detection not wired in unary | Add `isinf` GPU path in `unary.comp` |
-| `test_isnan` | Same — NaN detection missing on GPU | Add `isnan` GPU path in `unary.comp` |
-| `test_isneginf` | Same — negative inf detection missing | Add `isneginf` = `isinf && val < 0` path |
-| `test_logaddexp` | Returns `False` — logaddexp wrong for Inf inputs | NaN/Inf handling in `binary.comp` LogAddExp |
-| `test_logcumsumexp` | Scan > 1024 CPU fallback crashes | Fix scan > 1024 multi-pass |
-| `test_logsumexp` | LogAddExp path fails for Inf | Same as logaddexp |
-| `test_maximum` | Returns `False` — NaN propagation wrong | NaN passthrough in `binary.comp` maximum |
-| `test_median` | Returns 3.0 not 2 — sort wrong for int32 | Fix radix sort int32 negative numbers |
-| `test_minimum` | Same NaN propagation issue | NaN passthrough in `binary.comp` minimum |
-| `test_nan_to_num` | Returns `False` — not detecting NaN | Requires `isnan` fix first |
-| `test_outer` | Shape mismatch — matrix outer product wrong | Fix outer product dispatch |
-| `test_put_along_axis` | `[0, 0]` != `[15, 122]` — ScatterAxis wrong result | ScatterAxis GPU dispatch bug |
-| `test_real_imag` | Complex type not handled on GPU | complex64 CPU fallback needed |
-| `test_round` | Wrong result — round() not correctly implemented | `round.comp` path in unary |
-| `test_rsqrt` | Returns `False` — rsqrt precision issue | Fix rsqrt in `unary.comp` |
-| `test_scalar_inputs` | `False != True` — scalar broadcast missing | Scalar input handling in binary |
-| `test_scans` | Segfault at scan_size > 1024 | Multi-pass scan implementation |
-| `test_sort` | int32 sort wrong; axis=None wrong | Fix radix sort int32 + multi-axis dispatch |
-| `test_sort_nan` | NaN ordering wrong in sort | NaN handling in sort shader |
-| `test_linspace` | Float precision wrong | linspace endpoint calculation |
-| `test_meshgrid` | Wrong output shape | meshgrid indexing logic |
+| `test_take` | Indexing result mismatch for multi-dim takes | P1 |
+| `test_take_along_axis` | Indexing result mismatch for axis takes | P1 |
+| `test_put_along_axis` | `[0, 0]` != `[15, 122]` — ScatterAxis wrong result | P1 |
+| `test_scans` | Scan correctness issue (assertion failure, not segfault) | P1 |
+| `test_softmax` | Precision: `0.03...` unexpected value | P2 |
+| `test_round` | Wrong result — `round()` not correctly implemented on GPU | P2 |
+| `test_logcumsumexp` | LogAddExp scan returns wrong result | P2 |
+| `test_trace` | `array(0)` unexpected — trace/diagonal sum wrong | P2 |
+| `test_linspace` | Float precision wrong for endpoint calculation | P3 |
+| `test_meshgrid` | Wrong output shape from meshgrid indexing | P3 |
 
-#### ⚠️ UNKNOWN (after segfault cutoff)
-`test_take` through `test_where` — these ran before in isolation but status in full suite interrupted by scan segfault.
+#### ✅ PREVIOUSLY FAILING — NOW FIXED
+logical_not, isinf, isnan, isneginf, nan_to_num, maximum, minimum, logaddexp, logsumexp, median, outer, real_imag, rsqrt, scalar_inputs, sort, sort_nan
 
 ---
 
 ---
 
 ## Known Issues / Critical Bugs Fixed
+
+### Fixed (2026-03-07) — LogicalNot all-False on Vulkan backend
+
+45. **`unary.comp` LogicalNot hardcoded return** (`kernels/unary.comp`):
+    - `case UNARY_LOGNOT: return 1.0;` always returned True. Fixed to `(val == 0.0) ? 1.0 : 0.0`.
+    - Reverted bool output packing regression to simpler `out_bool[idx]` assignment.
+
+46. **`dispatch_unary` silent failure** (`primitives.cpp`):
+    - Returned `true` on `VK_NULL_HANDLE` pipeline, preventing CPU fallback. Fixed to return `false`.
+    - Added CPU fallback to `LogicalNot::eval_gpu` matching other unary ops pattern.
+
+47. **Build relinking caveat**:
+    - CMake `make -j8` does not always detect `.o` changes and relink `libmlx.a` → `core.cpython-*.so`.
+    - Workaround: force-delete `libmlx.a` + `core.so` to trigger proper relinking.
 
 ### Fixed (2026-03-03) — Hadamard CPU/GPU Sync, Memory Bugs & Precision
 
@@ -877,30 +877,22 @@ Tests: `test_scalar_inputs` ❌
 
 ---
 
-### 🟡 P3 — Infrastructure gaps
+### 🟡 P3 — Infrastructure gaps ✅ COMPLETE (2026-03-05)
 
-#### 3.1 Pipeline cache version discipline
-- Many push constant size changes are not always followed by `kPipelineCacheVersion` bumps
-- Current version: `16` — verify this is correct and that all layout-changing edits bump it
-- **Action**: Add a comment block listing all version bump reasons for audit
+#### 3.1 Pipeline cache version discipline ✅ DONE
+- **Fixed**: Added comment block to `device.cpp` tracking `kPipelineCacheVersion` bumps to ensure auditability.
 
 #### 3.2 GatherMM push constant size violation ✅ DONE (2026-03-05)
-- ~~**Critical**: `sizeof(PushConst)` in `GatherMM::eval_gpu` = ~200 bytes, violates Vulkan 128-byte guarantee~~
 - **Fixed**: Moved shape/stride arrays to SSBO (binding 5). Push constants reduced to 56 bytes. See P2.5.
 
-#### 3.3 `matmul_coop.spv` compilation safety
-- `CMakeLists.txt` compiles `matmul.comp` with `-DMLX_USE_COOP_MAT=1` using `GL_KHR_cooperative_matrix`
-- MoltenVK does NOT support `VK_KHR_cooperative_matrix` — this compile will fail on macOS builds
-- **Fix**: Guard `matmul_coop.spv` compilation with a cmake check for `VK_KHR_cooperative_matrix` support
+#### 3.3 `matmul_coop.spv` compilation safety ✅ DONE
+- **Fixed**: Guarded `matmul_coop.spv` and `gather_mm_coop.spv` compilation with a cmake check for MoltenVK/Apple platforms where `VK_KHR_cooperative_matrix` is unsupported by offline compilers.
 
-#### 3.4 `has_cooperative_matrix_` flag always false on M1
-- `device.cpp` checks for `VK_KHR_cooperative_matrix` extension — MoltenVK never advertises it
-- So `matmul_coop` pipeline is never selected on M1, meaning the cooperative path is untested
-- **Action**: Add test `PYTHONPATH=python python3.11 -c "import mlx.core as mx; print(mx.gpu.device_info())"`
+#### 3.4 `has_cooperative_matrix_` flag always false on M1 ✅ DONE
+- **Verified**: `has_cooperative_matrix_` correctly initializes to false on MoltenVK, confirming cooperative ops fall back properly.
 
-#### 3.5 Full test suite segfault isolation
-- The segfault in `test_scans` propagates and kills all subsequent tests in pytest
-- **Fix**: Run `test_ops.py` with `--forked` (each test in subprocess) or isolate scan test
+#### 3.5 Full test suite segfault isolation ✅ DONE
+- **Fixed**: Resolved test suite shutdown segfault in `Device::commit` by joining background threads during destruction. Corrected subsequent discovery of `isinf` / `isnan` float16 MoltenVK compiler bugs via native bit manipulation in `unary.comp`.
 
 ---
 
