@@ -2,6 +2,7 @@
 
 #pragma once
 #include <cassert>
+#include <type_traits>
 
 #include "mlx/array.h"
 #include "mlx/backend/common/binary.h"
@@ -17,12 +18,14 @@ struct VectorScalar {
   template <typename T, typename U>
   void operator()(const T* a, const T* b, U* dst, int size) {
     T scalar = *b;
-    constexpr int N = simd::max_size<T>;
-    while (size >= N) {
-      simd::store(dst, Op{}(simd::load<T, N>(a), simd::Simd<T, N>(scalar)));
-      dst += N;
-      a += N;
-      size -= N;
+    if constexpr (!std::is_same_v<U, bool>) {
+      constexpr int N = simd::max_size<T>;
+      while (size >= N) {
+        simd::store(dst, Op{}(simd::load<T, N>(a), simd::Simd<T, N>(scalar)));
+        dst += N;
+        a += N;
+        size -= N;
+      }
     }
     while (size-- > 0) {
       *dst = Op{}(*a, scalar);
@@ -37,12 +40,14 @@ struct ScalarVector {
   template <typename T, typename U>
   void operator()(const T* a, const T* b, U* dst, int size) {
     T scalar = *a;
-    constexpr int N = simd::max_size<T>;
-    while (size >= N) {
-      simd::store(dst, Op{}(simd::Simd<T, N>(scalar), simd::load<T, N>(b)));
-      dst += N;
-      b += N;
-      size -= N;
+    if constexpr (!std::is_same_v<U, bool>) {
+      constexpr int N = simd::max_size<T>;
+      while (size >= N) {
+        simd::store(dst, Op{}(simd::Simd<T, N>(scalar), simd::load<T, N>(b)));
+        dst += N;
+        b += N;
+        size -= N;
+      }
     }
     while (size-- > 0) {
       *dst = Op{}(scalar, *b);
@@ -56,13 +61,15 @@ template <typename Op>
 struct VectorVector {
   template <typename T, typename U>
   void operator()(const T* a, const T* b, U* dst, int size) {
-    constexpr int N = simd::max_size<T>;
-    while (size >= N) {
-      simd::store(dst, Op{}(simd::load<T, N>(a), simd::load<T, N>(b)));
-      dst += N;
-      a += N;
-      b += N;
-      size -= N;
+    if constexpr (!std::is_same_v<U, bool>) {
+      constexpr int N = simd::max_size<T>;
+      while (size >= N) {
+        simd::store(dst, Op{}(simd::load<T, N>(a), simd::load<T, N>(b)));
+        dst += N;
+        a += N;
+        b += N;
+        size -= N;
+      }
     }
     while (size-- > 0) {
       *dst = Op{}(*a, *b);
@@ -483,6 +490,7 @@ void binary_int_op_cpu(
     switch (out.dtype()) {
       case bool_:
         binary_op<bool, Op>(a, b, out, bopt);
+        break;
       case uint8:
         binary_op<uint8_t, Op>(a, b, out, bopt);
         break;

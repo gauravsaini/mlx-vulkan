@@ -34,7 +34,8 @@ void eval(array& arr) {
   }
   auto& encoder = cpu::get_command_encoder(s);
   encoder.dispatch([buffers = std::move(buffers),
-                    temps = std::move(encoder.temporaries())]() {});
+                    temps = std::move(encoder.temporaries()),
+                    data_refs = std::move(encoder.data_references())]() {});
 }
 
 } // namespace mlx::core::cpu

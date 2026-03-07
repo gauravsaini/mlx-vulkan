@@ -40,8 +40,9 @@ inline void set_binary_op_output_data(
     array& out,
     BinaryOpType bopt,
     std::function<allocator::Buffer(size_t)> mallocfn = allocator::malloc) {
-  bool b_donatable = is_donatable(b, out);
-  bool a_donatable = is_donatable(a, out);
+  bool allow_donation = out.dtype() != bool_;
+  bool b_donatable = allow_donation && is_donatable(b, out);
+  bool a_donatable = allow_donation && is_donatable(a, out);
   switch (bopt) {
     case BinaryOpType::ScalarScalar:
       out.set_data(mallocfn(out.itemsize()), 1, a.strides(), a.flags());

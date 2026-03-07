@@ -194,38 +194,40 @@ nb::object to_scalar(mx::array& a) {
     nb::gil_scoped_release nogil;
     a.eval();
   }
+  mx::array value(a.shape(), a.dtype(), nullptr, {});
+  value.copy_shared_buffer(a);
   if (a.has_primitive() && !a.is_tracer()) {
     a.detach();
   }
-  switch (a.dtype()) {
+  switch (value.dtype()) {
     case mx::bool_:
-      return nb::cast(a.item<bool>());
+      return nb::cast(value.item<bool>());
     case mx::uint8:
-      return nb::cast(a.item<uint8_t>());
+      return nb::cast(value.item<uint8_t>());
     case mx::uint16:
-      return nb::cast(a.item<uint16_t>());
+      return nb::cast(value.item<uint16_t>());
     case mx::uint32:
-      return nb::cast(a.item<uint32_t>());
+      return nb::cast(value.item<uint32_t>());
     case mx::uint64:
-      return nb::cast(a.item<uint64_t>());
+      return nb::cast(value.item<uint64_t>());
     case mx::int8:
-      return nb::cast(a.item<int8_t>());
+      return nb::cast(value.item<int8_t>());
     case mx::int16:
-      return nb::cast(a.item<int16_t>());
+      return nb::cast(value.item<int16_t>());
     case mx::int32:
-      return nb::cast(a.item<int32_t>());
+      return nb::cast(value.item<int32_t>());
     case mx::int64:
-      return nb::cast(a.item<int64_t>());
+      return nb::cast(value.item<int64_t>());
     case mx::float16:
-      return nb::cast(static_cast<float>(a.item<mx::float16_t>()));
+      return nb::cast(static_cast<float>(value.item<mx::float16_t>()));
     case mx::float32:
-      return nb::cast(a.item<float>());
+      return nb::cast(value.item<float>());
     case mx::bfloat16:
-      return nb::cast(static_cast<float>(a.item<mx::bfloat16_t>()));
+      return nb::cast(static_cast<float>(value.item<mx::bfloat16_t>()));
     case mx::complex64:
-      return nb::cast(a.item<std::complex<float>>());
+      return nb::cast(value.item<std::complex<float>>());
     case mx::float64:
-      return nb::cast(a.item<double>());
+      return nb::cast(value.item<double>());
     default:
       throw nb::type_error("type cannot be converted to Python scalar.");
   }
@@ -254,38 +256,40 @@ nb::object tolist(mx::array& a) {
     nb::gil_scoped_release nogil;
     a.eval();
   }
+  mx::array value(a.shape(), a.dtype(), nullptr, {});
+  value.copy_shared_buffer(a);
   if (a.has_primitive() && !a.is_tracer()) {
     a.detach();
   }
-  switch (a.dtype()) {
+  switch (value.dtype()) {
     case mx::bool_:
-      return to_list<bool>(a, 0, 0);
+      return to_list<bool>(value, 0, 0);
     case mx::uint8:
-      return to_list<uint8_t>(a, 0, 0);
+      return to_list<uint8_t>(value, 0, 0);
     case mx::uint16:
-      return to_list<uint16_t>(a, 0, 0);
+      return to_list<uint16_t>(value, 0, 0);
     case mx::uint32:
-      return to_list<uint32_t>(a, 0, 0);
+      return to_list<uint32_t>(value, 0, 0);
     case mx::uint64:
-      return to_list<uint64_t>(a, 0, 0);
+      return to_list<uint64_t>(value, 0, 0);
     case mx::int8:
-      return to_list<int8_t>(a, 0, 0);
+      return to_list<int8_t>(value, 0, 0);
     case mx::int16:
-      return to_list<int16_t>(a, 0, 0);
+      return to_list<int16_t>(value, 0, 0);
     case mx::int32:
-      return to_list<int32_t>(a, 0, 0);
+      return to_list<int32_t>(value, 0, 0);
     case mx::int64:
-      return to_list<int64_t>(a, 0, 0);
+      return to_list<int64_t>(value, 0, 0);
     case mx::float16:
-      return to_list<mx::float16_t, float>(a, 0, 0);
+      return to_list<mx::float16_t, float>(value, 0, 0);
     case mx::float32:
-      return to_list<float>(a, 0, 0);
+      return to_list<float>(value, 0, 0);
     case mx::bfloat16:
-      return to_list<mx::bfloat16_t, float>(a, 0, 0);
+      return to_list<mx::bfloat16_t, float>(value, 0, 0);
     case mx::float64:
-      return to_list<double>(a, 0, 0);
+      return to_list<double>(value, 0, 0);
     case mx::complex64:
-      return to_list<std::complex<float>>(a, 0, 0);
+      return to_list<std::complex<float>>(value, 0, 0);
     default:
       throw nb::type_error("data type cannot be converted to Python list.");
   }
