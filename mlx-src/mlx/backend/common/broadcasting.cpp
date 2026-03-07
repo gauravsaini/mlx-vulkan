@@ -16,6 +16,7 @@ void broadcast(const array& in, array& out) {
   }
   auto flags = in.flags();
   if (out.size() > in.size()) {
+    flags.contiguous = false;
     flags.row_contiguous = flags.col_contiguous = false;
   }
   out.copy_shared_buffer(in, strides, flags, in.data_size());

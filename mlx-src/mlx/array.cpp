@@ -273,66 +273,15 @@ array::ArrayDesc::ArrayDesc(
 }
 
 array::ArrayDesc::~ArrayDesc() {
-  // When an array description is destroyed it will delete a bunch of arrays
-  // that may also destroy their corresponding descriptions and so on and so
-  // forth.
-  //
-  // This calls recursively the destructor and can result in stack overflow, we
-  // instead put them in a vector and destroy them one at a time resulting in a
-  // max stack depth of 2.
-  if (inputs.empty()) {
-    return;
+  // Break sibling cycles explicitly and then let shared_ptr ownership release
+  // the input graph naturally. The previous manual recursive reaper was
+  // corrupting shared subgraphs when multiple live roots were collected
+  // together.
+  for (auto& s : siblings) {
+    s.array_desc_ = nullptr;
   }
-
-  std::vector<std::shared_ptr<ArrayDesc>> for_deletion;
-
-  auto append_deletable_inputs = [&for_deletion](ArrayDesc& ad) {
-    std::unordered_map<std::uintptr_t, array> input_map;
-    for (array& a : ad.inputs) {
-      if (a.array_desc_) {
-        input_map.insert({a.id(), a});
-        for (auto& s : a.siblings()) {
-          input_map.insert({s.id(), s});
-        }
-      }
-    }
-    ad.inputs.clear();
-    for (auto& [_, a] : input_map) {
-      bool is_deletable =
-          (a.array_desc_.use_count() <= a.siblings().size() + 1);
-      // An array with siblings is deletable only if all of its siblings
-      // are deletable
-      for (auto& s : a.siblings()) {
-        if (!is_deletable) {
-          break;
-        }
-        int is_input = (input_map.find(s.id()) != input_map.end());
-        is_deletable &=
-            s.array_desc_.use_count() <= a.siblings().size() + is_input;
-      }
-      if (is_deletable) {
-        for_deletion.push_back(std::move(a.array_desc_));
-      }
-    }
-  };
-
-  append_deletable_inputs(*this);
-
-  while (!for_deletion.empty()) {
-    // top is going to be deleted at the end of the block *after* the arrays
-    // with inputs have been moved into the vector
-    auto top = std::move(for_deletion.back());
-    for_deletion.pop_back();
-    append_deletable_inputs(*top);
-
-    // Clear out possible siblings to break circular references
-    for (auto& s : top->siblings) {
-      // Set to null here to avoid descending into top-level
-      // array destructor for siblings
-      s.array_desc_ = nullptr;
-    }
-    top->siblings.clear();
-  }
+  siblings.clear();
+  inputs.clear();
 }
 
 array::ArrayIterator::ArrayIterator(const array& arr, int idx)

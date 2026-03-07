@@ -11,7 +11,7 @@ inline void set_unary_output_data(
     const array& in,
     array& out,
     std::function<allocator::Buffer(size_t)> mallocfn = allocator::malloc) {
-  if (in.flags().contiguous) {
+  if (in.flags().contiguous && in.data_size() == in.size()) {
     if (is_donatable(in, out)) {
       out.copy_shared_buffer(in);
     } else {
