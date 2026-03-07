@@ -114,7 +114,20 @@ DEFAULT_OP(Log, log);
 DEFAULT_OP(Log2, log2);
 DEFAULT_OP(Log10, log10);
 DEFAULT_OP(Log1p, log1p);
-DEFAULT_OP(LogicalNot, operator!)
+struct LogicalNot {
+  template <typename T>
+  bool operator()(T x) {
+    if constexpr (is_complex<T>) {
+      return x.real() == 0 && x.imag() == 0;
+    } else {
+      return !x;
+    }
+  }
+  template <typename T, int N>
+  Simd<bool, N> operator()(Simd<T, N> x) {
+    return !x;
+  }
+};
 DEFAULT_OP(Negative, operator-)
 DEFAULT_OP(Round, rint);
 DEFAULT_OP(Sin, sin)

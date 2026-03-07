@@ -1,0 +1,10 @@
+#version 450
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(set = 0, binding = 0) readonly buffer InBuf8 { uint8_t in_data_8[]; };
+layout(set = 0, binding = 1) writeonly buffer OutBuf8 { uint8_t out_data_8[]; };
+
+void main() {
+    out_data_8[0] = in_data_8[0];
+}

@@ -755,10 +755,10 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 | ID | Issue | File | Root Cause |
 |---|---|---|---|
-| S1 | `test_scans` segfaults at scan_size > 1024 | `primitives.cpp` | CPU fallback path in `Scan::eval_gpu` leaves encoder in bad state when called within pytest subprocess |
-| S2 | Full `test_ops.py` always segfaults partway | MoltenVK | Likely leaked descriptor set or dangling VkBuffer after scan CPU fallback — needs LLDB investigation |
+| S1 | `test_scans` segfaults / bus error | `cpu/scan.cpp` & CPU fallbacks | CPU `Scan` correctly executes synchronously on unified memory, but subsequent downstream ops (e.g. `Gather`) crash with bus errors when reading the returned memory out of `Scan::eval_cpu`. Active investigation on memory format / allocator interaction. |
+| S2 | Full test suite stability | multi | Depends on S1. Use-after-free issues in `Gather` / `ScatterAxis` fallbacks (unsafe lambda closure captures) were identified and removed, fixing `test_take_along_axis` random crashes. |
 
-**Fix S1 first**: Either implement multi-pass scan GPU, or make the CPU fallback path fully safe (synchronize stream cleanly, never touch the encoder after).
+**Fix S1 first**: Isolating why `Scan::eval_cpu` output reading (by `Gather`) segfaults when axes=2 is chosen. Wait for memory analysis.
 
 ---
 
@@ -800,11 +800,11 @@ Tests: `test_sort_nan` ✅
 
 - For float bitonic sort in `sort.comp`, `isnan(fi)` intercepts NaNs and swaps them with `uintBitsToFloat(0x7F800000u)` `POS_INF` so they are safely dropped to the end.
 
-#### 1.6 ScatterAxis wrong result for `put_along_axis`
-Tests: `test_put_along_axis` ❌, returns `[0, 0]` instead of `[15, 122]`
+#### 1.6 ScatterAxis wrong result for `put_along_axis` ✅ DONE (2026-03-08)
+Tests: `test_put_along_axis` ✅
 
-- `ScatterAxis::eval_gpu` has a known bug in thread count dispatch: `pc.n = idx.size()` still not matching actual scatter semantics correctly for multi-row cases
-- **Fix**: Step through `put_along_axis` → `ScatterAxis` dispatch carefully; verify index iteration logic in `indexing.comp` for the scatter path
+- `ScatterAxis` dispatch in `indexing.comp` was treating `src_outer_stride == 1u` (element-wise mode) incorrectly by sharing index reads across channels unnecessarily.
+- **Fix**: Updated `INDEX_SCATTER` and `INDEX_SCATTER_ADD` in `indexing.comp` to respect `src_outer_stride == 1u` properly, mirroring the logic fix from `GatherAxis`.
 
 #### 1.7 `rsqrt` precision
 Tests: `test_rsqrt` ❌

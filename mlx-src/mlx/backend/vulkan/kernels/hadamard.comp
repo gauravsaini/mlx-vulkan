@@ -11,7 +11,9 @@
 //   scale by params.scale at the end
 //
 // Constraints:
-//   - n must be a power of 2, n <= 2048 (shared memory limit: 2048 floats)
+//   - n must be a power of 2
+//   - h_step == 0: in-group mode, n <= 2048 (shared memory: 2048 floats per workgroup)
+//   - h_step  > 0: cross-group mode, one butterfly stage at stride h_step (n can be large)
 //   - One workgroup handles one segment of n elements (batch_size segments total)
 //   - local_size_x = 256; each thread handles n/256 butterfly pairs per step
 
@@ -24,12 +26,40 @@ layout(std430, set = 0, binding = 1) buffer       DstBuf { float dst[]; };
 shared float smem[2048];
 
 layout(push_constant) uniform Params {
-    uint  n;           // transform size (power of 2, <= 2048)
+    uint  n;           // transform size (power of 2; <= 2048 for in-group mode)
     uint  batch_size;  // number of independent n-element segments
     float scale;       // multiply every output element by this (e.g. 1/sqrt(n))
+    uint  h_step;      // if > 0, performs a single disjoint global memory pass using h_step as stride
 } params;
 
 void main() {
+    if (params.h_step > 0) {
+        uint global_idx = gl_GlobalInvocationID.x;
+        uint half_n = params.n >> 1u;
+        uint total_pairs = params.batch_size * half_n;
+        
+        if (global_idx >= total_pairs) return;
+        
+        uint batch_idx = global_idx / half_n;
+        uint i         = global_idx % half_n;
+        
+        uint base_idx = batch_idx * params.n;
+        uint h = params.h_step;
+        
+        uint k = i & (h - 1u);
+        uint j = base_idx + ((i - k) << 1u) + k;
+        
+        float x = src[j];
+        float y = src[j + h];
+        
+        float factor = (h == half_n) ? params.scale : 1.0;
+        
+        dst[j]     = (x + y) * factor;
+        dst[j + h] = (x - y) * factor;
+        
+        return;
+    }
+
     uint batch_idx = gl_WorkGroupID.x;   // which segment
     uint tid       = gl_LocalInvocationID.x; // thread id in [0, 255]
 

@@ -447,7 +447,7 @@ void Device::create_vma() {
 // v22 (2026-03-07): hadamard push constant 12→16 bytes (added h_step field)
 // v17 (2026-03-04): radix_sort.comp added for >128 element arrays
 // v16 (2026-03-03): arange/binary_two/binary dtype fields extended (v10->v12/14/16)
-static constexpr int kPipelineCacheVersion = 24;
+static constexpr int kPipelineCacheVersion = 25;
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");

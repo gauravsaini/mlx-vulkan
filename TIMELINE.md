@@ -1,5 +1,22 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-08
+
+### fix (2026-03-08) — Indexing Operations CPU Fallback Safety & ScatterAxis Correctness
+
+1. **ScatterAxis Correctness (`indexing.comp`)**:
+   - Fixed `INDEX_SCATTER` and `INDEX_SCATTER_ADD` shader logic to correctly handle the element-wise indexing path when `src_outer_stride == 1u`. This matches the geometry correction previously applied to `GatherAxis`.
+   - Resolved `test_put_along_axis` AssertionError returning wrong values.
+
+2. **CPU Fallback Memory Safety (`primitives.cpp`)**:
+   - Discovered that unified memory CPU fallbacks for `Gather`, `GatherAxis`, and `ScatterAxis` were capturing temporary array instances by reference inside asynchronous lambdas. These buffers were destroyed when `eval_gpu` returned before the callback executed on the stream.
+   - Fixed by removing the `fallback_cpu` lambda wrappers and directly invoking `eval_cpu` inline, matching the pattern used by `linalg` delegates. MoltenVK `cpu::CommandEncoder` implicitly traps GPU streams and executes them synchronously safely.
+
+3. **In Progress — `test_scans` bus error isolation**:
+   - Traced `test_scans` crash (exit code 139) to a memory corruption event occurring strictly when reading the output array of `Scan::eval_cpu` inside a subsequent operation (like `Gather`).
+   
+---
+
 ## UPDATED ON : 2026-03-07
 
 ### feat (2026-03-07) — GatherMM / BlockMaskedMM Vulkan GPU implementation

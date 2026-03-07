@@ -1744,11 +1744,30 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     // than falling back to CPU. This avoids CPU/GPU stream race conditions when
     // mx.take dispatches transposed intermediates.
     array src_contig(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
+    array idx_contig(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
+    bool src_copied = false;
+    bool idx_copied = false;
     const array* src_ptr = &inputs[0];
+    const array* idx_ptr = &inputs[1];
     if (!inputs[0].flags().row_contiguous) {
       src_contig.set_data(allocator::malloc(src_contig.nbytes()));
       copy_gpu(inputs[0], src_contig, CopyType::General, stream());
       src_ptr = &src_contig;
+      src_copied = true;
+      // Add memory barrier to ensure copy completes before gather reads
+      auto& enc = vulkan::get_command_encoder(stream());
+      VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(enc.cmd,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, 1, &b, 0, nullptr, 0, nullptr);
+    }
+    if (!inputs[1].flags().row_contiguous) {
+      idx_contig.set_data(allocator::malloc(idx_contig.nbytes()));
+      copy_gpu(inputs[1], idx_contig, CopyType::General, stream());
+      idx_ptr = &idx_contig;
+      idx_copied = true;
       // Add memory barrier to ensure copy completes before gather reads
       auto& enc = vulkan::get_command_encoder(stream());
       VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -1759,7 +1778,12 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
           0, 1, &b, 0, nullptr, 0, nullptr);
     }
     const array& src = *src_ptr;
-    const array& idx = inputs[1];
+    const array& idx = *idx_ptr;
+    if (idx.ndim() > 4) {
+      vulkan::device(stream().device).synchronize(stream());
+      eval_cpu(inputs, out);
+      return;
+    }
 
     out.set_data(allocator::malloc(out.nbytes()));
     if (out.size() == 0)
@@ -1814,6 +1838,12 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
         vulkan::get_buffer(out),
         pc,
         out.size());
+    if (src_copied) {
+      dev.add_temporary(stream(), src);
+    }
+    if (idx_copied) {
+      dev.add_temporary(stream(), idx);
+    }
     return;
   }
 
@@ -1841,19 +1871,23 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Make contiguous copies of src and idx if needed (strides would confuse the
   // shader)
   array src_storage(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
+  bool src_copied = false;
   bool copied = false;
   if (!inputs[0].flags().row_contiguous) {
     src_storage.set_data(allocator::malloc(src_storage.nbytes()));
     copy_gpu(inputs[0], src_storage, CopyType::General, stream());
     copied = true;
+    src_copied = true;
   } else {
     src_storage = inputs[0];
   }
   array idx_storage(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
+  bool idx_copied = false;
   if (!inputs[1].flags().row_contiguous) {
     idx_storage.set_data(allocator::malloc(idx_storage.nbytes()));
     copy_gpu(inputs[1], idx_storage, CopyType::General, stream());
     copied = true;
+    idx_copied = true;
   } else {
     idx_storage = inputs[1];
   }
@@ -1909,6 +1943,12 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
       vulkan::get_buffer(out),
       pc,
       out.size());
+  if (src_copied) {
+    dev.add_temporary(stream(), src_storage);
+  }
+  if (idx_copied) {
+    dev.add_temporary(stream(), idx_storage);
+  }
 }
 
 // General Scatter: multi-axis → CPU fallback
@@ -1954,6 +1994,8 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array* updates_ptr = &inputs[2];
   array idx_contig(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
   array updates_contig(inputs[2].shape(), inputs[2].dtype(), nullptr, {});
+  bool idx_copied = false;
+  bool updates_copied = false;
 
   if (!inputs[1].flags().row_contiguous) {
     idx_contig = array(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
@@ -1961,6 +2003,7 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
     copy_gpu(inputs[1], idx_contig, CopyType::General, stream());
     idx_ptr = &idx_contig;
     copied = true;
+    idx_copied = true;
   }
   if (!inputs[2].flags().row_contiguous) {
     updates_contig = array(inputs[2].shape(), inputs[2].dtype(), nullptr, {});
@@ -1968,6 +2011,7 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
     copy_gpu(inputs[2], updates_contig, CopyType::General, stream());
     updates_ptr = &updates_contig;
     copied = true;
+    updates_copied = true;
   }
 
   if (copied) {
@@ -2014,6 +2058,12 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
       vulkan::get_buffer(out),
       pc,
       updates.size());
+  if (idx_copied) {
+    dev.add_temporary(stream(), idx_contig);
+  }
+  if (updates_copied) {
+    dev.add_temporary(stream(), updates_contig);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

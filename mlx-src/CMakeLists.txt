@@ -443,3 +443,5 @@ install(FILES ${MLX_CMAKE_BUILD_CONFIG} ${MLX_CMAKE_BUILD_VERSION_CONFIG}
 
 install(DIRECTORY ${CMAKE_MODULE_PATH}/
         DESTINATION ${MLX_CMAKE_INSTALL_MODULE_DIR})
+add_executable(check_logical_not check_logical_not.cpp)
+target_link_libraries(check_logical_not PRIVATE mlx)

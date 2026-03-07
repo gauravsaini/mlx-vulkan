@@ -34,7 +34,15 @@ void main() {
     // We keep the original value in s_data and use a separate key for compare.
     const uint POS_INF_FLOAT = 0x7F800000u; // IEEE 754 +Infinity
     const uint MAX_INT32 = 0x7FFFFFFFu;
-    const uint PAD_VAL = (params.type_is_int == 1u) ? MAX_INT32 : POS_INF_FLOAT;
+    const uint MAX_UINT32 = 0xFFFFFFFFu;
+    uint PAD_VAL;
+    if (params.type_is_int == 2u) {
+        PAD_VAL = MAX_UINT32;
+    } else if (params.type_is_int == 1u) {
+        PAD_VAL = MAX_INT32;
+    } else {
+        PAD_VAL = POS_INF_FLOAT;
+    }
 
     if (tid < params.sort_size) {
         uint v = (tid < actual_stride) ? data[base + tid] : PAD_VAL;
@@ -54,7 +62,11 @@ void main() {
                 bool ascending_dir = ((i & k) == 0) == (params.ascending == 1u);
                 
                 bool swap = false;
-                if (params.type_is_int == 1u) {
+                if (params.type_is_int == 2u) {
+                    uint ki = s_data[i];
+                    uint kl = s_data[l];
+                    swap = (ki > kl) == ascending_dir;
+                } else if (params.type_is_int == 1u) {
                     int ki = int(s_data[i]);
                     int kl = int(s_data[l]);
                     swap = (ki > kl) == ascending_dir;

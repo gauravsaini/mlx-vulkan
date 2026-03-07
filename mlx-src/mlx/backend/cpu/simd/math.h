@@ -3,6 +3,7 @@
 #pragma once
 
 #include "mlx/backend/cpu/simd/type.h"
+#include "mlx/types/limits.h"
 
 namespace mlx::core::simd {
 
@@ -125,7 +126,6 @@ Simd<bool, N> isinf(Simd<T, N> x) {
   }
 }
 
-
 template <typename T, int N>
 Simd<T, N> sin(Simd<T, N> x) {
   if constexpr (is_complex<T>) {
@@ -148,7 +148,7 @@ template <typename T, int N>
 Simd<bool, N> isneginf(Simd<T, N> x) {
   if constexpr (is_complex<T>) {
     return (std::isinf(x.value.real()) && x.value.real() < 0) ||
-           (std::isinf(x.value.imag()) && x.value.imag() < 0);
+        (std::isinf(x.value.imag()) && x.value.imag() < 0);
   } else {
     Simd<T, N> inf_val = std::numeric_limits<T>::infinity();
     return (x == -inf_val);

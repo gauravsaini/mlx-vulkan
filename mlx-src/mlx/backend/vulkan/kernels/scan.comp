@@ -41,7 +41,7 @@ float identity_val() {
     if (params.op == SCAN_MUL)      return 1.0;
     if (params.op == SCAN_MAX)      return -3.402823466e+38;
     if (params.op == SCAN_MIN)      return  3.402823466e+38;
-    if (params.op == SCAN_LOGADDEXP) return -3.402823466e+38; // -inf identity for log-sum-exp
+    if (params.op == SCAN_LOGADDEXP) return -1.0 / 0.0; // true -inf identity for log-sum-exp
     return 0.0; // SCAN_ADD
 }
 
@@ -52,6 +52,8 @@ float combine(float a, float b) {
     if (params.op == SCAN_LOGADDEXP) {
         // log(exp(a) + exp(b)) = max(a,b) + log1p(exp(-|a-b|))
         float hi = max(a, b);
+        // Guard: if hi is -inf, both a and b are -inf → result is -inf
+        if (isinf(hi) && hi < 0.0) return -1.0 / 0.0;
         float lo = min(a, b);
         return hi + log(1.0 + exp(lo - hi));
     }

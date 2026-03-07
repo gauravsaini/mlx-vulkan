@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -128,6 +129,7 @@ class Device {
   std::mutex mutex_;
   std::unordered_map<int, CommandEncoder> encoders_;
   std::unordered_map<std::string, PipelineCacheEntry> pipeline_map_;
+  std::vector<std::thread> commit_threads_;
 
 #ifdef MLX_VULKAN_VALIDATION
   VkDebugUtilsMessengerEXT debug_messenger_{VK_NULL_HANDLE};

@@ -80,7 +80,7 @@ DEFINE_NEON_UNARY_OP(rint, vrndnq_f16)
 
 inline Simd<float16_t, N> operator!(Simd<float16_t, N> v) {
   auto out = vceqzq_f16(v.value);
-  return Simd<uint16_t, N>(*(uint16_t*)&out);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 
 inline Simd<float16_t, N> operator-(Simd<float16_t, N> v) {
@@ -98,17 +98,17 @@ DEFINE_NEON_BINARY_OP(operator/, vdivq_f16)
   template <typename T>                                  \
   Simd<bool, N> operator Op(Simd<float16_t, N> a, T b) { \
     auto out = op(a.value, Simd<float16_t, N>(b).value); \
-    return Simd<uint16_t, N>(*(uint16_t*)(&out));        \
+    return load<uint16_t, N>((uint16_t*)&out);           \
   }                                                      \
   template <typename T>                                  \
   Simd<bool, N> operator Op(T a, Simd<float16_t, N> b) { \
     auto out = op(Simd<float16_t, N>(a).value, b.value); \
-    return Simd<uint16_t, N>(*(uint16_t*)(&out));        \
+    return load<uint16_t, N>((uint16_t*)&out);           \
   }                                                      \
   inline Simd<bool, N> operator Op(                      \
       Simd<float16_t, N> a, Simd<float16_t, N> b) {      \
     auto out = op(a.value, b.value);                     \
-    return Simd<uint16_t, N>(*(uint16_t*)(&out));        \
+    return load<uint16_t, N>((uint16_t*)&out);           \
   }
 
 DEFINE_NEON_COMPARISON(==, vceqq_f16)
@@ -132,28 +132,34 @@ inline Simd<bool, N> operator!=(Simd<float16_t, N> a, Simd<float16_t, N> b) {
 inline Simd<float16_t, N> operator||(
     Simd<float16_t, N> a,
     Simd<float16_t, N> b) {
-  return Simd<uint16_t, N>((a != 0) || (b != 0));
+  auto out = (a != 0) || (b != 0);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 template <typename T>
 Simd<float16_t, N> operator||(Simd<float16_t, N> a, T b) {
-  return Simd<uint16_t, N>((a != 0) || (b != 0));
+  auto out = (a != 0) || (b != 0);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 template <typename T>
 Simd<float16_t, N> operator||(T a, Simd<float16_t, N> b) {
-  return Simd<uint16_t, N>((a != 0) || (b != 0));
+  auto out = (a != 0) || (b != 0);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 inline Simd<float16_t, N> operator&&(
     Simd<float16_t, N> a,
     Simd<float16_t, N> b) {
-  return Simd<uint16_t, N>((a != 0) && (b != 0));
+  auto out = (a != 0) && (b != 0);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 template <typename T>
 Simd<float16_t, N> operator&&(Simd<float16_t, N> a, T b) {
-  return Simd<uint16_t, N>((a != 0) && (b != 0));
+  auto out = (a != 0) && (b != 0);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 template <typename T>
 Simd<float16_t, N> operator&&(T a, Simd<float16_t, N> b) {
-  return Simd<uint16_t, N>((a != 0) && (b != 0));
+  auto out = (a != 0) && (b != 0);
+  return load<uint16_t, N>((uint16_t*)&out);
 }
 
 template <>

@@ -27,7 +27,9 @@ shared uint s_prefix[16];
 // For float32: flip sign bit so negatives sort before positives (IEEE 754 trick)
 // For int32: flip sign bit (two's complement → unsigned for correct ordering)
 uint to_key(uint raw) {
-    if (params.dtype == 0u) {
+    if (params.dtype == 2u) {
+        return raw;
+    } else if (params.dtype == 0u) {
         // Float32: if negative (sign bit set), flip all bits; else flip just sign bit
         uint mask = uint(-int(raw >> 31u)) | 0x80000000u;
         return raw ^ mask;
@@ -39,7 +41,9 @@ uint to_key(uint raw) {
 
 // Convert sort key back to raw bits (inverse of to_key)
 uint from_key(uint key) {
-    if (params.dtype == 0u) {
+    if (params.dtype == 2u) {
+        return key;
+    } else if (params.dtype == 0u) {
         // Float32: inverse of to_key
         uint mask = uint(-int(~key >> 31u)) | 0x80000000u;
         return key ^ mask;

@@ -174,10 +174,7 @@ float compute_op(float val) {
         case UNARY_ARCTANH: return 0.5 * log((1.0 + val) / (1.0 - val));
         case UNARY_CEIL:    return ceil(val);
         case UNARY_FLOOR:   return floor(val);
-        case UNARY_ROUND:
-            // MLX CPU uses "round half away from zero" (C standard / Python round for .5).
-            // sign(val) * floor(abs(val) + 0.5) achieves this for all finite values.
-            return sign(val) * floor(abs(val) + 0.5);
+        case UNARY_ROUND:   return roundEven(val);
         case UNARY_ERF:     return erf_approx(val);
         case UNARY_ERFINV:  return erfinv_approx(val);
         case UNARY_SIGMOID: return 1.0 / (1.0 + exp(-val));

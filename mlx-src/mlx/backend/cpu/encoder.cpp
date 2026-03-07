@@ -6,9 +6,13 @@ namespace mlx::core::cpu {
 
 CommandEncoder& get_command_encoder(Stream stream) {
   static std::unordered_map<int, CommandEncoder> encoder_map;
-  auto it = encoder_map.find(stream.index);
+  // Key combines device type (0=cpu, 1=gpu) and stream index so that
+  // GPU-stream fallback callers get a separate encoder from CPU-stream callers
+  // (same stream index can exist for both CPU and GPU streams).
+  int key = (stream.device.type == Device::DeviceType::gpu ? 100000 : 0) + stream.index;
+  auto it = encoder_map.find(key);
   if (it == encoder_map.end()) {
-    it = encoder_map.emplace(stream.index, stream).first;
+    it = encoder_map.emplace(key, stream).first;
   }
   return it->second;
 }

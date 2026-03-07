@@ -10,6 +10,8 @@
 #define COPY_VECTOR          1
 #define COPY_GENERAL         2
 #define COPY_GENERAL_GENERAL 3
+#define COPY_ENCODE_SORT_KEY 4
+#define COPY_DECODE_SORT_KEY 5
 
 // Data type constants (must match Dtype enum ordering in mlx/dtype.h)
 #define DTYPE_BOOL      0
@@ -72,6 +74,112 @@ uint strided_offset_dst(uint idx) {
         tmp /= shape_d;
     }
     return offset;
+}
+
+uint read_as_sort_key(uint src_idx) {
+    uint src_dtype = params.src_dtype;
+    uint raw = 0u;
+    bool is_float = false;
+    bool is_signed = false;
+
+    if (src_dtype == DTYPE_BOOL || src_dtype == DTYPE_UINT8) {
+        raw = uint(src8[src_idx]);
+    } else if (src_dtype == DTYPE_INT8) {
+        raw = uint(src8[src_idx]);
+        is_signed = true;
+    } else if (src_dtype == DTYPE_INT32) {
+        raw = src_data[src_idx];
+        is_signed = true;
+    } else if (src_dtype == DTYPE_UINT32) {
+        raw = src_data[src_idx];
+    } else if (src_dtype == DTYPE_UINT16) {
+        uint word = src_data[src_idx / 2u];
+        raw = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    } else if (src_dtype == DTYPE_INT16) {
+        uint word = src_data[src_idx / 2u];
+        raw = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        is_signed = true;
+    } else if (src_dtype == DTYPE_FLOAT16) {
+        uint word = src_data[src_idx / 2u];
+        uint half_val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        raw = floatBitsToUint(unpackHalf2x16(half_val).x);
+        is_float = true;
+    } else if (src_dtype == DTYPE_BFLOAT16) {
+        uint word = src_data[src_idx / 2u];
+        uint half_val = ((src_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        raw = floatBitsToUint(unpackBfloat2x16(half_val).x);
+        is_float = true;
+    } else if (src_dtype == DTYPE_FLOAT32) {
+        raw = src_data[src_idx];
+        is_float = true;
+    }
+
+    if (is_float) {
+        uint mask = uint(-int(raw >> 31u)) | 0x80000000u;
+        return raw ^ mask;
+    } else if (is_signed) {
+        if (src_dtype == DTYPE_INT8) {
+            raw = uint(int(raw << 24u) >> 24);
+        } else if (src_dtype == DTYPE_INT16) {
+            raw = uint(int(raw << 16u) >> 16);
+        }
+        return raw ^ 0x80000000u;
+    } else {
+        return raw;
+    }
+}
+
+void write_from_sort_key(uint dst_idx, uint key) {
+    uint dst_dtype = params.dst_dtype;
+    bool is_float = false;
+    bool is_signed = false;
+
+    if (dst_dtype == DTYPE_FLOAT32 || dst_dtype == DTYPE_FLOAT16 || dst_dtype == DTYPE_BFLOAT16) {
+        is_float = true;
+    } else if (dst_dtype == DTYPE_INT32 || dst_dtype == DTYPE_INT16 || dst_dtype == DTYPE_INT8) {
+        is_signed = true;
+    }
+
+    uint raw = key;
+    if (is_float) {
+        uint mask = uint(-int(~key >> 31u)) | 0x80000000u;
+        raw ^= mask;
+        float val = uintBitsToFloat(raw);
+        if (dst_dtype == DTYPE_FLOAT32) {
+            dst_data[dst_idx] = raw;
+        } else if (dst_dtype == DTYPE_FLOAT16 || dst_dtype == DTYPE_BFLOAT16) {
+            uint word_idx = dst_idx / 2u;
+            uint half_val = (dst_dtype == DTYPE_BFLOAT16)
+                ? (packBfloat2x16(vec2(val, 0.0)) & 0xFFFFu)
+                : (packHalf2x16(vec2(val, 0.0)) & 0xFFFFu);
+            if ((dst_idx & 1u) == 0u) {
+                atomicAnd(dst_data[word_idx], 0xFFFF0000u);
+                atomicOr(dst_data[word_idx], half_val);
+            } else {
+                atomicAnd(dst_data[word_idx], 0x0000FFFFu);
+                atomicOr(dst_data[word_idx], half_val << 16u);
+            }
+        }
+    } else {
+        if (is_signed) {
+            raw ^= 0x80000000u;
+        }
+        if (dst_dtype == DTYPE_INT32 || dst_dtype == DTYPE_UINT32) {
+            dst_data[dst_idx] = raw;
+        } else if (dst_dtype == DTYPE_INT16 || dst_dtype == DTYPE_UINT16) {
+            uint word_idx = dst_idx / 2u;
+            uint int_val = raw & 0xFFFFu;
+            if ((dst_idx & 1u) == 0u) {
+                atomicAnd(dst_data[word_idx], 0xFFFF0000u);
+                atomicOr(dst_data[word_idx], int_val);
+            } else {
+                atomicAnd(dst_data[word_idx], 0x0000FFFFu);
+                atomicOr(dst_data[word_idx], int_val << 16u);
+            }
+        } else if (dst_dtype == DTYPE_INT8 || dst_dtype == DTYPE_UINT8 || dst_dtype == DTYPE_BOOL) {
+            dst8[dst_idx] = uint8_t(raw & 0xFFu);
+        }
+    }
 }
 
 // Read a float64-equivalent value from source at element index src_idx
@@ -219,7 +327,15 @@ void main() {
     uint src_idx = 0u;
     uint dst_idx = 0u;
 
-    if (params.copy_type == COPY_SCALAR) {
+    if (params.copy_type == COPY_ENCODE_SORT_KEY) {
+        src_idx = idx + params.src_offset;
+        dst_idx = idx + params.dst_offset;
+        dst_data[dst_idx] = read_as_sort_key(src_idx);
+    } else if (params.copy_type == COPY_DECODE_SORT_KEY) {
+        src_idx = idx + params.src_offset;
+        dst_idx = idx + params.dst_offset;
+        write_from_sort_key(dst_idx, src_data[src_idx]);
+    } else if (params.copy_type == COPY_SCALAR) {
         src_idx = params.src_offset;
         dst_idx = idx + params.dst_offset;
     } else if (params.copy_type == COPY_VECTOR) {
@@ -233,11 +349,13 @@ void main() {
         dst_idx = strided_offset_dst(idx) + params.dst_offset;
     }
 
-    // If types differ, do conversion; otherwise raw copy
-    if (params.src_dtype != params.dst_dtype) {
-        float val = read_as_float(src_idx);
-        write_float(dst_idx, val);
-    } else {
-        raw_copy(src_idx, dst_idx);
+    // Process only standard copy types through the float conversion logic
+    if (params.copy_type <= COPY_GENERAL_GENERAL) {
+        if (params.src_dtype != params.dst_dtype) {
+            float val = read_as_float(src_idx);
+            write_float(dst_idx, val);
+        } else {
+            raw_copy(src_idx, dst_idx);
+        }
     }
 }

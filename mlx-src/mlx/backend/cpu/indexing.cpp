@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iostream>
 
 #include "mlx/allocator.h"
 #include "mlx/primitives.h"
@@ -685,6 +686,25 @@ void ScatterAxis::eval_cpu(const std::vector<array>& inputs, array& out) {
   auto& src = inputs[0];
   auto& idx = inputs[1];
   auto& updates = inputs[2];
+
+  std::cout << "[DEBUG] ScatterAxis::eval_cpu called.\n";
+  std::cout << "  idx.size=" << idx.size() << " idx.shape=[";
+  for(auto s : idx.shape()) std::cout << s << " ";
+  std::cout << "] idx.strides=[";
+  for(auto s : idx.strides()) std::cout << s << " ";
+  std::cout << "]\n";
+  std::cout << "  upd.size=" << updates.size() << " upd.shape=[";
+  for(auto s : updates.shape()) std::cout << s << " ";
+  std::cout << "] upd.strides=[";
+  for(auto s : updates.strides()) std::cout << s << " ";
+  std::cout << "]\n";
+  
+  // Read first few values of indices if small enough
+  if (idx.size() > 0 && idx.itemsize() == 4) {
+      if (idx.dtype() == int32) std::cout << "  idx[0] = " << idx.data<int32_t>()[0] << "\n";
+  } else if (idx.size() > 0 && idx.itemsize() == 8) {
+      if (idx.dtype() == int64) std::cout << "  idx[0] = " << idx.data<int64_t>()[0] << "\n";
+  }
 
   // Copy src into out (copy allocates memory for out)
   auto ctype =
