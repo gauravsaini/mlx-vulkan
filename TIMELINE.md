@@ -2,6 +2,38 @@
 
 ## UPDATED ON : 2026-03-07
 
+### feat (2026-03-07) — GatherMM / BlockMaskedMM Vulkan GPU implementation
+
+1. **`BlockMaskedMM::eval_gpu` implemented** (`primitives.cpp`):
+   - Replaced throw stub with Vulkan dispatch path using new `block_masked_mm` compute shader.
+   - Added mask-aware fused matmul execution with support for output mask and operand masks.
+   - Added robust fallback guards (unsupported dtype/shape) to synchronized CPU eval.
+   - Added contiguous-copy handling and temporary lifetime tracking for copied buffers.
+
+2. **`block_masked_mm.comp` shader added** (`kernels/block_masked_mm.comp`):
+   - Implements tiled matmul with block-level lhs/rhs/out mask application.
+   - Supports float32/float16/bfloat16 inputs and mask-type decoding.
+
+3. **`GatherMM::eval_gpu` hardened** (`primitives.cpp`):
+   - Added strict input validation and fallback for unsupported index/dimension cases.
+   - Added contiguous-copy handling for A/B and index buffers, including non-zero offset arrays.
+   - Fixed dispatch tile mapping to match shader’s fixed 16x16 tile geometry.
+   - Added temporary tracking for copied inputs and optional temp output buffer.
+
+4. **Build wiring** (`mlx/backend/vulkan/CMakeLists.txt`):
+   - Added `compile_shader(block_masked_mm)` so SPIR-V is generated with other Vulkan kernels.
+
+5. **Stage 21 test update** (`tests/vulkan/test_stage21_advanced_mm.py`):
+   - Replaced old throw/fallback expectations with GPU numerical correctness checks for:
+     - `GatherMM` GPU vs numpy reference
+     - `BlockMaskedMM` GPU vs numpy reference (bool and float masks)
+   - Retains segmented_mm CPU/GPU-stream fallback coverage.
+
+6. **Docs sync**:
+   - Updated `PLAN.md` task/item status for section 10 (GatherMM / BlockMaskedMM GPU implementation).
+
+---
+
 ### fix (2026-03-07) — LogicalNot returning all-False on Vulkan backend
 
 1. **Shader `compute_op` bug** (`kernels/unary.comp`):
@@ -965,4 +997,3 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
 2. **Tests**: test_scans no longer segfaults (fails on pre-existing reverse/inclusive logic).
 
 3. **Files changed**: `primitives.cpp`
-

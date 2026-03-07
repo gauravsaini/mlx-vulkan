@@ -12,6 +12,7 @@
 #include "mlx/backend/vulkan/utils.h"
 #include "mlx/distributed/primitives.h"
 #include "mlx/fast_primitives.h"
+#include "mlx/ops.h"
 
 #include <iostream>
 #include <optional>
@@ -1280,8 +1281,7 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Grid: dynamically computed from specialization caps
   uint32_t subgroup_size = dev.subgroup_size();
   uint32_t BN = (subgroup_size == 64) ? 32 : 16;
-  uint32_t BM =
-      256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
+  uint32_t BM = 256 / BN;
   vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -1321,7 +1321,15 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
     temp_out->set_data(allocator::malloc(temp_out->nbytes()));
   }
 
-  const array& raw_in = use_temp ? *temp_in : inputs[0];
+  const array* temp_in_ptr = use_temp ? &(*temp_in) : &inputs[0];
+  array contig(temp_in_ptr->shape(), temp_in_ptr->dtype(), nullptr, {});
+  if (!temp_in_ptr->flags().row_contiguous) {
+    contig.set_data(allocator::malloc(contig.nbytes()));
+    copy_gpu(*temp_in_ptr, contig, CopyType::General, stream());
+    temp_in_ptr = &contig;
+  }
+  const array& raw_in = *temp_in_ptr;
+
   const array& raw_out = use_temp ? *temp_out : out;
 
   out.set_data(allocator::malloc(out.nbytes()));
@@ -1372,8 +1380,8 @@ void Softmax::eval_gpu(const std::vector<array>& inputs, array& out) {
   writes[1].pBufferInfo = &out_info;
   vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
 
-  uint32_t axis_size = static_cast<uint32_t>(inputs[0].shape(-1));
-  uint32_t n_rows = static_cast<uint32_t>(inputs[0].size() / axis_size);
+  uint32_t axis_size = static_cast<uint32_t>(raw_in.shape(-1));
+  uint32_t n_rows = static_cast<uint32_t>(raw_in.size() / axis_size);
 
   struct PushConst {
     uint32_t n;
@@ -1717,11 +1725,22 @@ static void indexing_dispatch(
 }
 
 void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // The indexing shader only supports 32-bit types.
+  bool supported_type = (inputs[0].itemsize() == 4);
+  for (int i = 1; i < inputs.size(); i++) {
+    if (inputs[i].itemsize() != 4) supported_type = false;
+  }
+  if (!supported_type) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   // Handle single-axis gather (mx.take(src, indices, axis=ax)):
   //   axes_.size()==1, slice_sizes_[ax]==1 for the gathered axis
   // Covers 1D (ax=0) and ND cases via INDEX_GATHER_GEN.
   if (inputs.size() == 2 && axes_.size() == 1 && slice_sizes_[axes_[0]] == 1) {
-    // If src is transposed/non-contiguous, make a contiguous GPU copy rather
+    // if src is transposed/non-contiguous, make a contiguous GPU copy rather
     // than falling back to CPU. This avoids CPU/GPU stream race conditions when
     // mx.take dispatches transposed intermediates.
     array src_contig(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
@@ -1759,6 +1778,11 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     for (int d = ax + 1; d < (int)src.ndim(); d++)
       inner *= src.shape(d);
 
+    // outer_size = product(src dims before the gather axis)
+    uint32_t outer_size = 1;
+    for (int d = 0; d < (int)ax; d++)
+      outer_size *= src.shape(d);
+
     uint32_t d_ax = static_cast<uint32_t>(src.shape(ax));
     IndexPushConst pc{};
     pc.n = static_cast<uint32_t>(out.size());
@@ -1771,14 +1795,14 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     pc.dst_offset = static_cast<uint32_t>(out.offset() * out.itemsize());
     pc.src_ax_size = d_ax;
     pc.inner = inner;
-    pc.src_outer_stride = d_ax * inner;
+    pc.src_outer_stride = outer_size; // outer_size for INDEX_GATHER_GEN decomposition
     // Multi-axis gather: set index tensor metadata for ND indexing
     pc.idx_ndim = static_cast<uint32_t>(idx.ndim());
     for (int d = 0; d < 4; d++) {
       pc.idx_shape[d] =
           (d < idx.ndim()) ? static_cast<uint32_t>(idx.shape(d)) : 1u;
       pc.idx_strides[d] =
-          (d < idx.ndim()) ? static_cast<uint32_t>(idx.strides(d)) : 1u;
+          (d < idx.ndim()) ? static_cast<uint32_t>(idx.strides(d)) : 0u;
     }
 
     indexing_dispatch(
@@ -1799,6 +1823,17 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 // GatherAxis: simple axis-indexed gather → GPU dispatch
 void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
+  // The indexing shader only supports 32-bit types.
+  bool supported_type = (inputs[0].itemsize() == 4);
+  for (int i = 1; i < inputs.size(); i++) {
+    if (inputs[i].itemsize() != 4) supported_type = false;
+  }
+  if (!supported_type) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
   if (out.size() == 0)
     return;
@@ -1806,9 +1841,11 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Make contiguous copies of src and idx if needed (strides would confuse the
   // shader)
   array src_storage(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
+  bool copied = false;
   if (!inputs[0].flags().row_contiguous) {
     src_storage.set_data(allocator::malloc(src_storage.nbytes()));
     copy_gpu(inputs[0], src_storage, CopyType::General, stream());
+    copied = true;
   } else {
     src_storage = inputs[0];
   }
@@ -1816,6 +1853,7 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (!inputs[1].flags().row_contiguous) {
     idx_storage.set_data(allocator::malloc(idx_storage.nbytes()));
     copy_gpu(inputs[1], idx_storage, CopyType::General, stream());
+    copied = true;
   } else {
     idx_storage = inputs[1];
   }
@@ -1823,6 +1861,15 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& encoder = vulkan::get_command_encoder(stream());
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
+
+  if (copied) {
+    VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(encoder.cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &b, 0, nullptr, 0, nullptr);
+  }
 
   const array& src = src_storage;
   const array& idx = idx_storage;
@@ -1877,7 +1924,11 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   // Copy src→out first, then scatter updates into it
   // The indexing shader is currently hard-coded to use 32-bit floats.
   // Fall back to CPU for other types.
-  if (inputs[0].dtype() != float32) {
+  bool supported_type = (inputs[0].dtype() == float32);
+  for (int i = 1; i < inputs.size(); i++) {
+    if (inputs[i].itemsize() != 4) supported_type = false;
+  }
+  if (!supported_type) {
     vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, out);
     return;
@@ -1887,7 +1938,10 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (out.size() == 0)
     return;
 
-  copy_gpu_inplace(inputs[0], out, CopyType::Vector, stream());
+  bool copied = false;
+  auto ctype = inputs[0].flags().row_contiguous ? CopyType::Vector : CopyType::General;
+  copy_gpu_inplace(inputs[0], out, ctype, stream());
+  copied = true;
 
   if (inputs.size() < 3 || inputs[2].size() == 0)
     return;
@@ -1896,8 +1950,37 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  const array& idx = inputs[1];
-  const array& updates = inputs[2];
+  const array* idx_ptr = &inputs[1];
+  const array* updates_ptr = &inputs[2];
+  array idx_contig(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
+  array updates_contig(inputs[2].shape(), inputs[2].dtype(), nullptr, {});
+
+  if (!inputs[1].flags().row_contiguous) {
+    idx_contig = array(inputs[1].shape(), inputs[1].dtype(), nullptr, {});
+    idx_contig.set_data(allocator::malloc(idx_contig.nbytes()));
+    copy_gpu(inputs[1], idx_contig, CopyType::General, stream());
+    idx_ptr = &idx_contig;
+    copied = true;
+  }
+  if (!inputs[2].flags().row_contiguous) {
+    updates_contig = array(inputs[2].shape(), inputs[2].dtype(), nullptr, {});
+    updates_contig.set_data(allocator::malloc(updates_contig.nbytes()));
+    copy_gpu(inputs[2], updates_contig, CopyType::General, stream());
+    updates_ptr = &updates_contig;
+    copied = true;
+  }
+
+  if (copied) {
+    VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(encoder.cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &b, 0, nullptr, 0, nullptr);
+  }
+
+  const array& idx = *idx_ptr;
+  const array& updates = *updates_ptr;
 
   uint32_t src_stride = 1;
   for (int i = axis_ + 1; i < updates.ndim(); i++)
@@ -1920,7 +2003,7 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   pc.dst_offset = static_cast<uint32_t>(out.offset() * out.itemsize());
   pc.src_ax_size =
       static_cast<uint32_t>(out.shape(axis_)); // axis size for neg-idx wrap
-  // inner / src_outer_stride unused — leave as 0
+  pc.src_outer_stride = 1u; // ScatterAxis is always element-wise
 
   indexing_dispatch(
       dev,
@@ -2498,10 +2581,8 @@ void Scan::eval_gpu(const std::vector<array>& inputs, array& out) {
 
           VkDescriptorSet ds3 = dev.alloc_descriptor_set(stream(), ds_layout);
           VkDescriptorBufferInfo infos3[4]{
-              {out_buf,
-               0,
-               VK_WHOLE_SIZE}, // Read from out_buf (partially scanned)
-              {out_buf, 0, VK_WHOLE_SIZE}, // Write back to out_buf
+              {in_buf, 0, VK_WHOLE_SIZE}, // Read from ORIGINAL input
+              {out_buf, 0, VK_WHOLE_SIZE}, // Write to out_buf
               {totals_buf, 0, VK_WHOLE_SIZE}, // dummy
               {totals_buf, 0, VK_WHOLE_SIZE} // Reading from totals prefix
           };
@@ -2921,47 +3002,359 @@ void Compiled::eval_gpu(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Matmul variants — CPU fallback stubs
+// Matmul variants.
 
 //
-// BlockMaskedMM, GatherMM, SegmentedMM: all are UnaryPrimitive (single output).
-// The Vulkan eval.cpp catch block intercepts exceptions containing "has no
-// Vulkan" and routes them to eval_cpu() via unified-memory access (MoltenVK).
-// This means throwing from eval_gpu with that substring enables transparent
-// CPU fallback. Users can also explicitly use mx.stream(mx.cpu).
-//
-// GatherQMM: quantized variant, similarly complex — kept as NO_GPU.
+// BlockMaskedMM and GatherMM have native Vulkan implementations below.
+// GatherQMM and SegmentedMM still fall back to CPU.
 // ─────────────────────────────────────────────────────────────────────────────
 
 void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // Block-sparse masked matmul.  The Metal implementation requires dedicated
-  // block-sparse kernels.  CUDA also has no GPU implementation for this op.
-  // eval.cpp will catch this and call eval_cpu() via the unified-memory path.
-  throw std::runtime_error(
-      "[vulkan] BlockMaskedMM has no Vulkan GPU implementation. "
-      "Falling back to CPU eval.");
-}
+  if (inputs.size() < 2) {
+    throw std::invalid_argument("[BlockMaskedMM::eval_gpu] expected >= 2 inputs");
+  }
 
-void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& dev = vulkan::device(s.device);
-
   const array& a_orig = inputs[0];
   const array& b_orig = inputs[1];
-  const array& lhs_indices = inputs[2];
-  const array& rhs_indices = inputs[3];
 
-  if (a_orig.dtype() != float32 && a_orig.dtype() != float16 &&
-      a_orig.dtype() != bfloat16) {
+  bool has_out_mask = (inputs.size() == 3 || inputs.size() == 5);
+  bool has_op_mask = (inputs.size() > 3);
+
+  auto float_supported = [](Dtype dt) {
+    return dt == float32 || dt == float16 || dt == bfloat16;
+  };
+  auto mask_type_id = [](Dtype dt) -> uint32_t {
+    switch (dt) {
+      case float32:
+        return 2u;
+      case float16:
+        return 3u;
+      case bfloat16:
+        return 4u;
+      default:
+        return UINT32_MAX;
+    }
+  };
+
+  if (!float_supported(a_orig.dtype()) || !float_supported(b_orig.dtype())) {
     dev.synchronize(s);
     eval_cpu(inputs, out);
     return;
   }
 
-  auto& encoder = vulkan::get_command_encoder(s);
+  uint32_t M = static_cast<uint32_t>(a_orig.shape(-2));
+  uint32_t K = static_cast<uint32_t>(a_orig.shape(-1));
+  uint32_t N = static_cast<uint32_t>(b_orig.shape(-1));
+  uint32_t batch = (M == 0 || N == 0) ? 0u
+                                       : static_cast<uint32_t>(out.size() / (M * N));
+  uint32_t block = static_cast<uint32_t>(block_size_);
 
-  // Unconditionally issue a barrier to ensure all previous compute tasks (like
-  // arange/broadcast) finish writing to buffers
+  if (block == 0) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0 || a_orig.size() == 0 || b_orig.size() == 0) {
+    return;
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+  if (K == 0 && out.nbytes() > 0) {
+    vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+    return;
+  }
+
+  auto ensure_contiguous =
+      [&](const array& src, std::optional<Dtype> dst_dtype = std::nullopt)
+      -> std::pair<array, bool> {
+    auto target_dtype = dst_dtype.value_or(src.dtype());
+    bool copy_needed =
+        src.offset() != 0 || !src.flags().row_contiguous || src.dtype() != target_dtype;
+    if (!copy_needed) {
+      return {src, false};
+    }
+    array tmp(src.shape(), target_dtype, nullptr, {});
+    tmp.set_data(allocator::malloc(tmp.nbytes()));
+    copy_gpu(src, tmp, CopyType::General, s);
+    return {tmp, true};
+  };
+
+  auto [a_contig, a_copied] = ensure_contiguous(a_orig);
+  auto [b_contig, b_copied] = ensure_contiguous(b_orig);
+  const array& a = a_contig;
+  const array& b = b_contig;
+
+  uint32_t tm = (M + block - 1) / block;
+  uint32_t tn = (N + block - 1) / block;
+  uint32_t tk = (K + block - 1) / block;
+
+  std::optional<array> lhs_mask_contig;
+  std::optional<array> rhs_mask_contig;
+  std::optional<array> out_mask_contig;
+  bool lhs_mask_copied = false;
+  bool rhs_mask_copied = false;
+  bool out_mask_copied = false;
+
+  if (has_out_mask) {
+    Dtype out_mask_dtype =
+        (inputs[2].dtype() == bool_) ? float32 : inputs[2].dtype();
+    auto [m, copied] = ensure_contiguous(inputs[2], out_mask_dtype);
+    if (m.ndim() < 2 || static_cast<uint32_t>(m.shape(-2)) != tm ||
+        static_cast<uint32_t>(m.shape(-1)) != tn) {
+      dev.synchronize(s);
+      eval_cpu(inputs, out);
+      return;
+    }
+    out_mask_copied = copied;
+    out_mask_contig = std::move(m);
+  }
+
+  if (has_op_mask) {
+    Dtype lhs_mask_dtype = (inputs[inputs.size() - 2].dtype() == bool_)
+        ? float32
+        : inputs[inputs.size() - 2].dtype();
+    Dtype rhs_mask_dtype = (inputs[inputs.size() - 1].dtype() == bool_)
+        ? float32
+        : inputs[inputs.size() - 1].dtype();
+    auto [lhs, lhs_cop] =
+        ensure_contiguous(inputs[inputs.size() - 2], lhs_mask_dtype);
+    auto [rhs, rhs_cop] =
+        ensure_contiguous(inputs[inputs.size() - 1], rhs_mask_dtype);
+    if (lhs.ndim() < 2 || rhs.ndim() < 2 ||
+        static_cast<uint32_t>(lhs.shape(-2)) != tm ||
+        static_cast<uint32_t>(lhs.shape(-1)) != tk ||
+        static_cast<uint32_t>(rhs.shape(-2)) != tk ||
+        static_cast<uint32_t>(rhs.shape(-1)) != tn) {
+      dev.synchronize(s);
+      eval_cpu(inputs, out);
+      return;
+    }
+    lhs_mask_copied = lhs_cop;
+    rhs_mask_copied = rhs_cop;
+    lhs_mask_contig = std::move(lhs);
+    rhs_mask_contig = std::move(rhs);
+  }
+
+  uint32_t lhs_mask_type =
+      lhs_mask_contig.has_value() ? mask_type_id(lhs_mask_contig->dtype()) : 0u;
+  uint32_t rhs_mask_type =
+      rhs_mask_contig.has_value() ? mask_type_id(rhs_mask_contig->dtype()) : 0u;
+  uint32_t out_mask_type =
+      out_mask_contig.has_value() ? mask_type_id(out_mask_contig->dtype()) : 0u;
+  if (lhs_mask_type == UINT32_MAX || rhs_mask_type == UINT32_MAX ||
+      out_mask_type == UINT32_MAX) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  bool use_temp_out = out.dtype() != float32;
+  std::optional<array> temp_out;
+  if (use_temp_out) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+
+  VkBuffer a_buf = vulkan::get_buffer(a);
+  VkBuffer b_buf = vulkan::get_buffer(b);
+  VkBuffer c_buf = vulkan::get_buffer(use_temp_out ? *temp_out : out);
+  VkBuffer lhs_mask_buf =
+      lhs_mask_contig.has_value() ? vulkan::get_buffer(*lhs_mask_contig) : a_buf;
+  VkBuffer rhs_mask_buf =
+      rhs_mask_contig.has_value() ? vulkan::get_buffer(*rhs_mask_contig) : b_buf;
+  VkBuffer out_mask_buf =
+      out_mask_contig.has_value() ? vulkan::get_buffer(*out_mask_contig) : c_buf;
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  struct PushConst {
+    uint32_t M;
+    uint32_t N;
+    uint32_t K;
+    uint32_t batch;
+    uint32_t block_size;
+    uint32_t tm;
+    uint32_t tn;
+    uint32_t tk;
+    uint32_t a_elem_bytes;
+    uint32_t b_elem_bytes;
+    uint32_t lhs_mask_type;
+    uint32_t rhs_mask_type;
+    uint32_t out_mask_type;
+  } pc{
+      M,
+      N,
+      K,
+      batch,
+      block,
+      tm,
+      tn,
+      tk,
+      a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize()),
+      b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize()),
+      lhs_mask_type,
+      rhs_mask_type,
+      out_mask_type};
+
+  VkPipeline pipeline = dev.get_pipeline(
+      "block_masked_mm",
+      layout,
+      ds_layout,
+      6,
+      sizeof(pc),
+      vulkan::get_default_specialization_info(dev));
+  if (pipeline == VK_NULL_HANDLE) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
+  VkDescriptorBufferInfo infos[6]{
+      {a_buf, 0, VK_WHOLE_SIZE},
+      {b_buf, 0, VK_WHOLE_SIZE},
+      {c_buf, 0, VK_WHOLE_SIZE},
+      {lhs_mask_buf, 0, VK_WHOLE_SIZE},
+      {rhs_mask_buf, 0, VK_WHOLE_SIZE},
+      {out_mask_buf, 0, VK_WHOLE_SIZE}};
+  VkWriteDescriptorSet writes[6]{};
+  for (int i = 0; i < 6; i++) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+  }
+  vkUpdateDescriptorSets(dev.vk_device(), 6, writes, 0, nullptr);
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+  uint32_t subgroup_size = dev.subgroup_size();
+  uint32_t BN = (subgroup_size == 64) ? 32 : 16;
+  uint32_t BM = 256 / BN;
+  vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  if (use_temp_out) {
+    copy_gpu(*temp_out, out, CopyType::General, s);
+    dev.add_temporary(s, *temp_out);
+  }
+
+  if (a_copied) {
+    dev.add_temporary(s, a);
+  }
+  if (b_copied) {
+    dev.add_temporary(s, b);
+  }
+  if (lhs_mask_copied && lhs_mask_contig.has_value()) {
+    dev.add_temporary(s, *lhs_mask_contig);
+  }
+  if (rhs_mask_copied && rhs_mask_contig.has_value()) {
+    dev.add_temporary(s, *rhs_mask_contig);
+  }
+  if (out_mask_copied && out_mask_contig.has_value()) {
+    dev.add_temporary(s, *out_mask_contig);
+  }
+}
+
+void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (inputs.size() != 4) {
+    throw std::invalid_argument("[GatherMM::eval_gpu] expected 4 inputs");
+  }
+
+  auto& s = stream();
+  auto& dev = vulkan::device(s.device);
+
+  const array& a_orig = inputs[0];
+  const array& b_orig = inputs[1];
+  const array& lhs_indices_orig = inputs[2];
+  const array& rhs_indices_orig = inputs[3];
+
+  auto float_supported = [](Dtype dt) {
+    return dt == float32 || dt == float16 || dt == bfloat16;
+  };
+  if (!float_supported(a_orig.dtype()) || !float_supported(b_orig.dtype()) ||
+      lhs_indices_orig.dtype() != uint32 || rhs_indices_orig.dtype() != uint32) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
+  uint32_t M = (a_orig.ndim() >= 2) ? static_cast<uint32_t>(a_orig.shape(-2)) : 1u;
+  uint32_t K = static_cast<uint32_t>(a_orig.shape(-1));
+  uint32_t N = (b_orig.ndim() >= 2) ? static_cast<uint32_t>(b_orig.shape(-1)) : 1u;
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0 || a_orig.size() == 0 || b_orig.size() == 0) {
+    return;
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+  if (K == 0 && out.nbytes() > 0) {
+    vkCmdFillBuffer(encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
+    return;
+  }
+
+  auto ensure_contiguous = [&](const array& src) -> std::pair<array, bool> {
+    if (src.offset() == 0 && src.flags().row_contiguous) {
+      return {src, false};
+    }
+    array tmp(src.shape(), src.dtype(), nullptr, {});
+    tmp.set_data(allocator::malloc(tmp.nbytes()));
+    copy_gpu(src, tmp, CopyType::General, s);
+    return {tmp, true};
+  };
+
+  auto [a_contig, a_copied] = ensure_contiguous(a_orig);
+  auto [b_contig, b_copied] = ensure_contiguous(b_orig);
+  auto [lhs_idx_contig, lhs_idx_copied] = ensure_contiguous(lhs_indices_orig);
+  auto [rhs_idx_contig, rhs_idx_copied] = ensure_contiguous(rhs_indices_orig);
+  const array& a = a_contig;
+  const array& b = b_contig;
+  const array& lhs_indices = lhs_idx_contig;
+  const array& rhs_indices = rhs_idx_contig;
+
+  uint32_t a_batch_ndim = (a.ndim() > 2) ? static_cast<uint32_t>(a.ndim() - 2) : 0u;
+  uint32_t b_batch_ndim = (b.ndim() > 2) ? static_cast<uint32_t>(b.ndim() - 2) : 0u;
+  uint32_t idx_a_ndim =
+      lhs_indices.size() > 0 ? static_cast<uint32_t>(lhs_indices.ndim()) : 0u;
+  uint32_t idx_b_ndim =
+      rhs_indices.size() > 0 ? static_cast<uint32_t>(rhs_indices.ndim()) : 0u;
+  uint32_t out_batch_ndim = (out.ndim() > 2) ? static_cast<uint32_t>(out.ndim() - 2) : 0u;
+
+  if (a_batch_ndim > 4 || b_batch_ndim > 4 || idx_a_ndim > 4 || idx_b_ndim > 4 ||
+      out_batch_ndim > 4) {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+    return;
+  }
+
   VkMemoryBarrier pre_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   pre_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
   pre_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2977,64 +3370,12 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
       0,
       nullptr);
 
-  // Make contiguous copies if matrices are severely unaligned
-  array a_contig(a_orig.shape(), a_orig.dtype(), nullptr, {});
-  array b_contig(b_orig.shape(), b_orig.dtype(), nullptr, {});
-  if (!a_orig.flags().row_contiguous) {
-    a_contig.set_data(allocator::malloc(a_contig.nbytes()));
-    copy_gpu(a_orig, a_contig, CopyType::General, s);
-  } else {
-    a_contig = a_orig;
-  }
-  if (!b_orig.flags().row_contiguous) {
-    b_contig.set_data(allocator::malloc(b_contig.nbytes()));
-    copy_gpu(b_orig, b_contig, CopyType::General, s);
-  } else {
-    b_contig = b_orig;
-  }
-
-  const array& a = a_contig;
-  const array& b = b_contig;
-
-  // Add another barrier if copies occurred
-  if (!a_orig.flags().row_contiguous || !b_orig.flags().row_contiguous) {
-    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    vkCmdPipelineBarrier(
-        encoder.cmd,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0,
-        1,
-        &barrier,
-        0,
-        nullptr,
-        0,
-        nullptr);
-  }
-
   bool use_temp_out = out.dtype() != float32;
   std::optional<array> temp_out;
   if (use_temp_out) {
     temp_out = array(out.shape(), float32, nullptr, {});
     temp_out->set_data(allocator::malloc(temp_out->nbytes()));
   }
-
-  out.set_data(allocator::malloc(out.nbytes()));
-  if (out.size() == 0 || a.size() == 0 || b.size() == 0) {
-    if (out.nbytes() > 0) {
-      auto& encoder = vulkan::get_command_encoder(s);
-      encoder.op_count++;
-      vkCmdFillBuffer(
-          encoder.cmd, vulkan::get_buffer(out), 0, VK_WHOLE_SIZE, 0);
-    }
-    return;
-  }
-
-  encoder = vulkan::get_command_encoder(s);
-  encoder.op_count++;
 
   struct PushConst {
     uint32_t M;
@@ -3061,10 +3402,6 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   //         shape_idx_a[4], stride_idx_a[4], shape_idx_b[4], stride_idx_b[4],
   //         shape_out[4] = 36 uint32 values
   uint32_t ss_data[36] = {};
-
-  uint32_t M = (a.ndim() >= 2) ? static_cast<uint32_t>(a.shape(-2)) : 1u;
-  uint32_t K = static_cast<uint32_t>(a.shape(-1));
-  uint32_t N = (b.ndim() >= 2) ? static_cast<uint32_t>(b.shape(-1)) : 1u;
 
   VkBuffer a_buf = vulkan::get_buffer(a);
   VkBuffer b_buf = vulkan::get_buffer(b);
@@ -3109,12 +3446,11 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto batch_shape_B = get_batch_dims(b.shape());
   auto batch_strides_B = get_batch_dims(b.strides());
 
-  pc.a_batch_ndim = batch_shape_A.size();
-  pc.b_batch_ndim = batch_shape_B.size();
-  pc.idx_a_ndim = lhs_indices.size() > 0 ? lhs_indices.ndim() : 0;
-  pc.idx_b_ndim = rhs_indices.size() > 0 ? rhs_indices.ndim() : 0;
-
-  pc.out_batch_ndim = out.ndim() > 2 ? out.ndim() - 2 : 0;
+  pc.a_batch_ndim = a_batch_ndim;
+  pc.b_batch_ndim = b_batch_ndim;
+  pc.idx_a_ndim = idx_a_ndim;
+  pc.idx_b_ndim = idx_b_ndim;
+  pc.out_batch_ndim = out_batch_ndim;
 
   pc.a_stride_row = a.ndim() > 1 ? a.strides()[a.ndim() - 2] : 0;
   pc.a_stride_col = a.ndim() > 0 ? a.strides()[a.ndim() - 1] : 1;
@@ -3188,10 +3524,8 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
 
-  uint32_t subgroup_size = dev.subgroup_size();
-  uint32_t BN = (subgroup_size == 64) ? 32 : 16;
-  uint32_t BM =
-      256 / BN; // Enforce 256 threads strictly for 16x16 tile allocations
+  constexpr uint32_t BN = 16;
+  constexpr uint32_t BM = 16;
 
   // Grid
   vkCmdDispatch(
@@ -3218,6 +3552,19 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   if (use_temp_out) {
     copy_gpu(*temp_out, out, CopyType::General, s);
+    dev.add_temporary(s, *temp_out);
+  }
+  if (a_copied) {
+    dev.add_temporary(s, a);
+  }
+  if (b_copied) {
+    dev.add_temporary(s, b);
+  }
+  if (lhs_idx_copied) {
+    dev.add_temporary(s, lhs_indices);
+  }
+  if (rhs_idx_copied) {
+    dev.add_temporary(s, rhs_indices);
   }
 }
 

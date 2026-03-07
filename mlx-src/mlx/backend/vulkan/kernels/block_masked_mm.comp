@@ -1,0 +1,229 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "bf16.glsl"
+
+layout(constant_id = 0) const uint WORKGROUP_SIZE = 256;
+layout(constant_id = 1) const uint SUBGROUP_SIZE = 32;
+
+const uint BN = (SUBGROUP_SIZE == 64) ? 32 : 16;
+const uint BM = WORKGROUP_SIZE / BN;
+const uint BK = 16;
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer MatA { uint a_raw[]; };
+layout(set = 0, binding = 1) readonly  buffer MatB { uint b_raw[]; };
+layout(set = 0, binding = 2) writeonly buffer MatC { float c_data[]; };
+layout(set = 0, binding = 3) readonly  buffer LhsMask { uint lhs_raw[]; };
+layout(set = 0, binding = 4) readonly  buffer RhsMask { uint rhs_raw[]; };
+layout(set = 0, binding = 5) readonly  buffer OutMask { uint out_raw[]; };
+
+layout(push_constant) uniform Params {
+    uint M;
+    uint N;
+    uint K;
+    uint batch;
+    uint block_size;
+    uint tm;
+    uint tn;
+    uint tk;
+    uint a_elem_bytes;
+    uint b_elem_bytes;
+    uint lhs_mask_type;
+    uint rhs_mask_type;
+    uint out_mask_type;
+} params;
+
+// mask_type:
+//   0 = none (all ones)
+//   1 = bool (uint8 packed into uint words)
+//   2 = float32
+//   3 = float16
+//   4 = bfloat16
+
+float read_a(uint idx) {
+    if (params.a_elem_bytes == 4u) {
+        return uintBitsToFloat(a_raw[idx]);
+    } else if (params.a_elem_bytes == 2u) {
+        uint word = a_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackHalf2x16(half_val).x;
+    } else if (params.a_elem_bytes == 3u) {
+        uint word = a_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackBfloat2x16(half_val).x;
+    }
+    return 0.0;
+}
+
+float read_b(uint idx) {
+    if (params.b_elem_bytes == 4u) {
+        return uintBitsToFloat(b_raw[idx]);
+    } else if (params.b_elem_bytes == 2u) {
+        uint word = b_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackHalf2x16(half_val).x;
+    } else if (params.b_elem_bytes == 3u) {
+        uint word = b_raw[idx >> 1u];
+        uint half_val = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return unpackBfloat2x16(half_val).x;
+    }
+    return 0.0;
+}
+
+float decode_mask_from_words(uint type, uint idx, uint raw_value, uint shift_bits) {
+    if (type == 1u) {
+        return (float(((raw_value >> shift_bits) & 0xFFu) != 0u));
+    } else if (type == 2u) {
+        return uintBitsToFloat(raw_value);
+    } else if (type == 3u) {
+        uint half_val = ((idx & 1u) == 0u) ? (raw_value & 0xFFFFu) : (raw_value >> 16u);
+        return unpackHalf2x16(half_val).x;
+    } else if (type == 4u) {
+        uint half_val = ((idx & 1u) == 0u) ? (raw_value & 0xFFFFu) : (raw_value >> 16u);
+        return unpackBfloat2x16(half_val).x;
+    }
+    return 1.0;
+}
+
+float read_lhs_mask(uint idx) {
+    if (params.lhs_mask_type == 0u) {
+        return 1.0;
+    }
+    if (params.lhs_mask_type == 1u) {
+        uint word = lhs_raw[idx >> 2u];
+        uint shift = (idx & 3u) * 8u;
+        return decode_mask_from_words(params.lhs_mask_type, idx, word, shift);
+    } else if (params.lhs_mask_type == 2u) {
+        return decode_mask_from_words(params.lhs_mask_type, idx, lhs_raw[idx], 0u);
+    } else {
+        uint word = lhs_raw[idx >> 1u];
+        return decode_mask_from_words(params.lhs_mask_type, idx, word, 0u);
+    }
+}
+
+float read_rhs_mask(uint idx) {
+    if (params.rhs_mask_type == 0u) {
+        return 1.0;
+    }
+    if (params.rhs_mask_type == 1u) {
+        uint word = rhs_raw[idx >> 2u];
+        uint shift = (idx & 3u) * 8u;
+        return decode_mask_from_words(params.rhs_mask_type, idx, word, shift);
+    } else if (params.rhs_mask_type == 2u) {
+        return decode_mask_from_words(params.rhs_mask_type, idx, rhs_raw[idx], 0u);
+    } else {
+        uint word = rhs_raw[idx >> 1u];
+        return decode_mask_from_words(params.rhs_mask_type, idx, word, 0u);
+    }
+}
+
+float read_out_mask(uint idx) {
+    if (params.out_mask_type == 0u) {
+        return 1.0;
+    }
+    if (params.out_mask_type == 1u) {
+        uint word = out_raw[idx >> 2u];
+        uint shift = (idx & 3u) * 8u;
+        return decode_mask_from_words(params.out_mask_type, idx, word, shift);
+    } else if (params.out_mask_type == 2u) {
+        return decode_mask_from_words(params.out_mask_type, idx, out_raw[idx], 0u);
+    } else {
+        uint word = out_raw[idx >> 1u];
+        return decode_mask_from_words(params.out_mask_type, idx, word, 0u);
+    }
+}
+
+shared float tile_a[BM][BK];
+shared float tile_b[BK][BN];
+
+void main() {
+    uint batch_idx = gl_GlobalInvocationID.z;
+    if (batch_idx >= params.batch) {
+        return;
+    }
+
+    uint block_row = gl_WorkGroupID.y;
+    uint block_col = gl_WorkGroupID.x;
+
+    uint tid = gl_LocalInvocationID.x;
+    uint local_row = tid / BN;
+    uint local_col = tid % BN;
+
+    uint row = block_row * BM + local_row;
+    uint col = block_col * BN + local_col;
+
+    uint a_base = batch_idx * (params.M * params.K);
+    uint b_base = batch_idx * (params.K * params.N);
+    uint c_base = batch_idx * (params.M * params.N);
+
+    float sum = 0.0;
+    uint num_tiles = (params.K + BK - 1u) / BK;
+
+    for (uint t = 0u; t < num_tiles; t++) {
+        uint a_col = t * BK + local_col;
+        uint b_row = t * BK + local_row;
+
+        tile_a[local_row][local_col] =
+            (row < params.M && a_col < params.K)
+                ? read_a(a_base + row * params.K + a_col)
+                : 0.0;
+        tile_b[local_row][local_col] =
+            (b_row < params.K && col < params.N)
+                ? read_b(b_base + b_row * params.N + col)
+                : 0.0;
+
+        barrier();
+        memoryBarrierShared();
+
+        uint lhs_block_row = row / params.block_size;
+        uint rhs_block_col = col / params.block_size;
+        uint lhs_batch_base = batch_idx * (params.tm * params.tk);
+        uint rhs_batch_base = batch_idx * (params.tk * params.tn);
+
+        for (uint k = 0u; k < BK; k++) {
+            uint global_k = t * BK + k;
+
+            float lhs_scale = 1.0;
+            if (params.lhs_mask_type != 0u) {
+                if (row < params.M && global_k < params.K) {
+                    uint lhs_block_k = global_k / params.block_size;
+                    uint idx = lhs_batch_base + lhs_block_row * params.tk + lhs_block_k;
+                    lhs_scale = read_lhs_mask(idx);
+                } else {
+                    lhs_scale = 0.0;
+                }
+            }
+
+            float rhs_scale = 1.0;
+            if (params.rhs_mask_type != 0u) {
+                if (col < params.N && global_k < params.K) {
+                    uint rhs_block_k = global_k / params.block_size;
+                    uint idx = rhs_batch_base + rhs_block_k * params.tn + rhs_block_col;
+                    rhs_scale = read_rhs_mask(idx);
+                } else {
+                    rhs_scale = 0.0;
+                }
+            }
+
+            sum += (tile_a[local_row][k] * lhs_scale) *
+                (tile_b[k][local_col] * rhs_scale);
+        }
+
+        barrier();
+        memoryBarrierShared();
+    }
+
+    if (row < params.M && col < params.N) {
+        if (params.out_mask_type != 0u) {
+            uint out_block_row = row / params.block_size;
+            uint out_block_col = col / params.block_size;
+            uint out_batch_base = batch_idx * (params.tm * params.tn);
+            uint out_idx = out_batch_base + out_block_row * params.tn + out_block_col;
+            sum *= read_out_mask(out_idx);
+        }
+        c_data[c_base + row * params.N + col] = sum;
+    }
+}

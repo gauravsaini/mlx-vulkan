@@ -52,6 +52,7 @@ compile_shader(quantized)
 compile_shader(conv)
 compile_shader(rbits)
 compile_shader(gather_mm)
+compile_shader(block_masked_mm)
 
 # Compile fft.comp into the various C++ dispatch names
 add_custom_command(
@@ -62,19 +63,35 @@ add_custom_command(
 list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_stockham.spv)
 
 # Compile matmul.comp into matmul_coop.spv using cooperative matrix extension
-add_custom_command(
-  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv
-  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
-  VERBATIM)
-list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv)
+# Only compile on non-Apple platforms since MoltenVK doesn't support VK_KHR_cooperative_matrix
+if(NOT APPLE)
+  add_custom_command(
+    OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv
+    COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
+    VERBATIM)
+  list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv)
 
-add_custom_command(
-  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv
-  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gather_mm.comp
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gather_mm.comp
-  VERBATIM)
-list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv)
+  add_custom_command(
+    OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv
+    COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gather_mm.comp
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/gather_mm.comp
+    VERBATIM)
+  list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv)
+else()
+  # Create empty dummy files to satisfy the vulkan_shaders ALL DEPENDS target without breaking build
+  add_custom_command(
+    OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv
+    COMMAND ${CMAKE_COMMAND} -E touch ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv
+    VERBATIM)
+  list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv)
+  
+  add_custom_command(
+    OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv
+    COMMAND ${CMAKE_COMMAND} -E touch ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv
+    VERBATIM)
+  list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/gather_mm_coop.spv)
+endif()
 
 add_custom_command(
   OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_rader.spv

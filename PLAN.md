@@ -581,8 +581,8 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 #### Linear Algebra
 
 - [x] AddMM (A + alpha \* B @ C)
-- [x] BlockMaskedMM — descriptive error on GPU stream; CPU stream (`mx.stream(mx.cpu)`) works ✅
-- [x] GatherMM — descriptive error on GPU stream; CPU stream works ✅
+- [x] BlockMaskedMM — Vulkan GPU implementation enabled (`eval_gpu` + `block_masked_mm.comp`) ✅
+- [x] GatherMM — Vulkan GPU implementation enabled (`eval_gpu` + `gather_mm.comp`) ✅
 - [x] GatherQMM — descriptive error on GPU stream (replaced NO_GPU stub) ✅
 - [x] SegmentedMM — descriptive error on GPU stream; CPU stream works ✅
 - [x] Matmul — verified ✅
@@ -951,8 +951,8 @@ These stages timeout after 20s. A hang blocks the entire test suite.
 3. **Stage 12 (NN Ops)** — `test_stage12_nn_ops.py` hangs. Likely same class of issue.
 4. **Stage 17 FFT** — `test_stage17_fft.py` hangs. Previously passed (3/3 in Feb) — regression.
 5. **Stage 18 Concat** — `test_stage18_concat.py` hangs. Concatenate/strided copy issue.
-6. **Stage 21 Advanced MM** — `test_stage21_advanced_mm.py` hangs. GatherMM/BlockMaskedMM throws
-   should not hang — investigate if the test itself is polling indefinitely.
+6. **Stage 21 Advanced MM** — `test_stage21_advanced_mm.py` updated for GPU numerical checks
+   (`GatherMM` + `BlockMaskedMM`) and segmented_mm fallback behavior.
 
 #### High Priority — Failing Stages (runs, wrong results)
 7. **Stage 14 Sort** — 0/2 FAIL. Bitonic sort regression; previously 6/6 in Feb.
@@ -960,8 +960,8 @@ These stages timeout after 20s. A hang blocks the entire test suite.
 9. **Stage 17 AddMM/Conv/RBits** — 0/2 FAIL. AddMM or Conv dispatch broken.
 
 #### Medium Priority — Completed, not yet fully wired
-10. **GatherMM / BlockMaskedMM / SegmentedMM on GPU stream** — Currently throw (CPU stream works).
-    GPU implementation requires dedicated sparse/gather+matmul shader pipeline.
+10. **GatherMM / BlockMaskedMM on GPU stream** — Implemented on Vulkan (`eval_gpu` paths + shader dispatch).
+    `SegmentedMM` remains CPU fallback on GPU stream.
 11. **GatherQMM GPU** — Currently throws gracefully; would need gather→dequant→matmul pipeline.
 
 #### Low Priority / Future
@@ -1160,11 +1160,11 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 - [x] Fix compiler errors restricting matrix memory constraints 
 
 #### 10. GatherMM / BlockMaskedMM GPU Implementation
-- Currently throw on GPU stream (CPU stream works)
+- GPU stream implementations now present for both ops
 - Needed for sparse attention in transformer models
 - [x] `GatherMM::vjp` gradients fixed: resolved Thread Scaling and uint32 limits inside `ScatterAxis` via fallback arrays
-- [ ] `GatherMM::eval_gpu`: implement gather + fused matmul shader
-- [ ] `BlockMaskedMM::eval_gpu`: block-sparse matmul with mask
+- [x] `GatherMM::eval_gpu`: gather + fused matmul shader path
+- [x] `BlockMaskedMM::eval_gpu`: block-sparse matmul with mask
 
 #### 10. mx.compile() GPU Fusion (JIT Kernel Fusion)
 - Currently: CPU fallback; individual sub-ops dispatch to GPU separately
