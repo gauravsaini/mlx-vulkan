@@ -2,6 +2,53 @@
 
 ## UPDATED ON : 2026-03-08
 
+### wip (2026-03-08) — Vulkan-build CPU fallback: broadcast predicate/allclose lifetime investigation
+
+1. **Stability work completed**:
+   - Hardened Vulkan-build CPU fallback import/runtime path so CPU execution works cleanly when Vulkan init is unavailable.
+   - Added CPU-backed `Event` behavior for CPU streams in the Vulkan build.
+   - Fixed Python ndarray export lifetime by moving shape/stride metadata ownership into a capsule-backed heap owner.
+   - Fixed CPU bool-output unary SIMD path to avoid invalid vectorized writes on predicate ops.
+
+2. **Concrete broadcast/unary learning**:
+   - Isolated a real metadata/output bug in CPU unary fallback for broadcasted inputs:
+     - broadcasted arrays were still being treated as compact enough for unary output reuse,
+     - which under-allocated predicate outputs for shapes like `broadcast_to(..., (3,3,3))`.
+   - Tightened unary output allocation logic so compact reuse only happens when `data_size == size`.
+   - Marked expanded broadcasts as non-contiguous in `backend/common/broadcasting.cpp` to avoid unsafe fast-path assumptions downstream.
+
+3. **Graph/lifetime learning**:
+   - The old `ArrayDesc` recursive reaper was too aggressive for shared subgraphs.
+   - Replaced it with conservative sibling-cycle breaking plus normal `shared_ptr` release.
+   - This removed one class of `allclose` / shared-subgraph cleanup crashes, but did not fully eliminate pytest teardown failures.
+
+4. **Fallback allocator containment**:
+   - Added CPU fallback allocation canaries (header/footer) and a bounded deferred-free quarantine in the Vulkan allocator bridge.
+   - This materially improved several direct repros involving:
+     - `broadcast_to` + `isposinf` / `isneginf`
+     - `meshgrid` + predicate + `allclose`
+     - immediate destruction of temporary predicate results
+
+5. **Current validation status**:
+   - Standalone Python repros that previously crashed now run cleanly in many direct cases, including:
+     - deleting a predicate result and reusing the broadcast input,
+     - `meshgrid` / predicate / `allclose` standalone scripts.
+   - Targeted functional pytest subset passes numerically:
+     - `test_allclose`
+     - `test_isinf`
+     - `test_isneginf`
+     - `test_meshgrid`
+   - Remaining blocker:
+     - pytest process cleanup still segfaults during GC after that subset finishes.
+
+6. **Key takeaway / next step**:
+   - The remaining failure is no longer the core math path; it is a teardown/lifetime issue specific to long-lived objects surviving until pytest cleanup.
+   - Next step is to isolate the surviving GC crash under pytest-style object retention and then either:
+     - remove the last bad destructor/free path, or
+     - make the fallback allocator lifetime model deterministic enough that pytest cleanup cannot trip it.
+
+---
+
 ### fix (2026-03-08) — CPU Scan fallback stabilization (`test_scans` crash path)
 
 1. **`cpu/scan.cpp` hardening**:
