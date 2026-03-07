@@ -7,6 +7,7 @@
 //   allocator::allocator() → returns the singleton VulkanAllocator
 
 #include "mlx/backend/vulkan/allocator.h"
+#include "mlx/backend/gpu/device_info.h"
 #include "mlx/backend/vulkan/device.h"
 #include "mlx/backend/vulkan/utils.h"
 #include "mlx/memory.h"
@@ -14,6 +15,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <deque>
 #include <sstream>
 #include <stdexcept>
 
@@ -325,18 +327,183 @@ VulkanAllocator& allocator() {
 } // namespace vulkan
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Global allocator:: namespace — bridge to the Vulkan implementation
+// CPU fallback allocator for hosts where Vulkan is unavailable
+//
+// The Vulkan build still needs plain host allocations for CPU arrays and for
+// environments where vkCreateInstance fails. Keep this local so the Vulkan
+// backend can degrade cleanly without linking the no_gpu backend.
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace allocator {
 
+#ifdef __APPLE__
+#include "mlx/backend/no_gpu/apple_memory.h"
+#elif defined(__linux__)
+#include "mlx/backend/no_gpu/linux_memory.h"
+#else
+namespace {
+size_t get_host_memory_size() {
+  return 0;
+}
+} // namespace
+#endif
+
+namespace {
+
+size_t cpu_memory_size() {
+#if defined(__APPLE__) || defined(__linux__)
+  return get_memory_size();
+#else
+  return get_host_memory_size();
+#endif
+}
+
+struct CpuAllocHeader {
+  static constexpr uint64_t kMagic = 0x4d4c5843564b414cULL; // "MLXCVKAL"
+  uint64_t magic{kMagic};
+  size_t size{0};
+};
+
+constexpr uint64_t kCpuAllocFooterMagic = 0x464f4f5445524d58ULL; // "FOOTERMX"
+
+CpuAllocHeader* cpu_header(void* ptr) {
+  return static_cast<CpuAllocHeader*>(ptr);
+}
+
+const CpuAllocHeader* cpu_header(const void* ptr) {
+  return static_cast<const CpuAllocHeader*>(ptr);
+}
+
+class CommonAllocator : public Allocator {
+ public:
+  Buffer malloc(size_t size) override {
+    void* ptr =
+        std::malloc(size + sizeof(CpuAllocHeader) + sizeof(kCpuAllocFooterMagic));
+    if (ptr != nullptr) {
+      auto* header = cpu_header(ptr);
+      header->magic = CpuAllocHeader::kMagic;
+      header->size = size;
+      auto* footer = reinterpret_cast<uint64_t*>(
+          static_cast<char*>(ptr) + sizeof(CpuAllocHeader) + size);
+      *footer = kCpuAllocFooterMagic;
+    }
+    std::unique_lock lk(mutex_);
+    active_memory_ += size;
+    peak_memory_ = std::max(active_memory_, peak_memory_);
+    return Buffer{ptr};
+  }
+
+  void free(Buffer buffer) override {
+    auto sz = size(buffer);
+    std::unique_lock lk(mutex_);
+    active_memory_ -= sz;
+    retired_.push_back(buffer.ptr());
+    retired_bytes_ += sz;
+    while (retired_bytes_ > retired_limit_ && !retired_.empty()) {
+      auto* ptr = retired_.front();
+      retired_bytes_ -= cpu_header(ptr)->size;
+      std::free(ptr);
+      retired_.pop_front();
+    }
+  }
+
+  size_t size(Buffer buffer) const override {
+    if (buffer.ptr() == nullptr) {
+      return 0;
+    }
+    auto* header = cpu_header(buffer.ptr());
+    if (header->magic != CpuAllocHeader::kMagic) {
+      std::fprintf(
+          stderr,
+          "[CommonAllocator] Corrupted CPU allocation header at %p\n",
+          buffer.ptr());
+      std::abort();
+    }
+    auto* footer = reinterpret_cast<const uint64_t*>(
+        static_cast<const char*>(buffer.ptr()) + sizeof(CpuAllocHeader) +
+        header->size);
+    if (*footer != kCpuAllocFooterMagic) {
+      std::fprintf(
+          stderr,
+          "[CommonAllocator] Corrupted CPU allocation footer at %p (size=%zu)\n",
+          buffer.ptr(),
+          header->size);
+      std::abort();
+    }
+    return header->size;
+  }
+
+  size_t get_active_memory() const {
+    return active_memory_;
+  }
+
+  size_t get_peak_memory() const {
+    return peak_memory_;
+  }
+
+  void reset_peak_memory() {
+    std::unique_lock lk(mutex_);
+    peak_memory_ = 0;
+  }
+
+  size_t get_memory_limit() const {
+    return memory_limit_;
+  }
+
+  size_t set_memory_limit(size_t limit) {
+    std::unique_lock lk(mutex_);
+    std::swap(memory_limit_, limit);
+    return limit;
+  }
+
+ private:
+  CommonAllocator() : memory_limit_(0.8 * cpu_memory_size()) {
+    if (memory_limit_ == 0) {
+      memory_limit_ = 1UL << 33;
+    }
+  }
+
+  friend CommonAllocator& common_allocator();
+
+  size_t memory_limit_;
+  size_t active_memory_{0};
+  size_t peak_memory_{0};
+  size_t retired_bytes_{0};
+  const size_t retired_limit_{64ULL << 20};
+  std::deque<void*> retired_;
+  mutable std::mutex mutex_;
+};
+
+CommonAllocator& common_allocator() {
+  static CommonAllocator allocator_;
+  return allocator_;
+}
+
+bool use_cpu_allocator() {
+  return !gpu::is_available();
+}
+
+} // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Global allocator:: namespace — bridge to the active implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
 Allocator& allocator() {
+  if (use_cpu_allocator()) {
+    return common_allocator();
+  }
   return vulkan::allocator();
 }
 
 void* Buffer::raw_ptr() {
   if (!ptr_)
     return nullptr;
+
+  if (use_cpu_allocator()) {
+    return cpu_header(ptr_) + 1;
+  }
+
   auto* vk_buf = static_cast<vulkan::VulkanBuffer*>(ptr_);
 
   // Zero-sized buffers have no backing memory
@@ -395,36 +562,62 @@ void* Buffer::raw_ptr() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 size_t get_active_memory() {
+  if (allocator::use_cpu_allocator()) {
+    return allocator::common_allocator().get_active_memory();
+  }
   return vulkan::allocator().get_active_memory();
 }
 
 size_t get_peak_memory() {
+  if (allocator::use_cpu_allocator()) {
+    return allocator::common_allocator().get_peak_memory();
+  }
   return vulkan::allocator().get_peak_memory();
 }
 
 void reset_peak_memory() {
+  if (allocator::use_cpu_allocator()) {
+    allocator::common_allocator().reset_peak_memory();
+    return;
+  }
   vulkan::allocator().reset_peak_memory();
 }
 
 size_t set_memory_limit(size_t limit) {
+  if (allocator::use_cpu_allocator()) {
+    return allocator::common_allocator().set_memory_limit(limit);
+  }
   return vulkan::allocator().set_memory_limit(limit);
 }
 
 size_t get_memory_limit() {
+  if (allocator::use_cpu_allocator()) {
+    return allocator::common_allocator().get_memory_limit();
+  }
   return vulkan::allocator().get_memory_limit();
 }
 
 size_t get_cache_memory() {
+  if (allocator::use_cpu_allocator()) {
+    return 0;
+  }
   return vulkan::allocator().get_cache_memory();
 }
 
 size_t set_cache_limit(size_t limit) {
+  if (allocator::use_cpu_allocator()) {
+    (void)limit;
+    return 0;
+  }
   // No buffer cache in initial Vulkan implementation
   (void)limit;
   return 0;
 }
 
 void clear_cache() {
+  if (allocator::use_cpu_allocator()) {
+    return;
+  }
   vulkan::allocator().clear_cache();
 }
 

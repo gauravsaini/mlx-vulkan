@@ -2,41 +2,77 @@
 // MLX Vulkan Backend - Event (timeline semaphore) implementation
 
 #include "mlx/event.h"
+#include "mlx/backend/gpu/device_info.h"
 #include "mlx/backend/vulkan/device.h"
 #include "mlx/backend/vulkan/event.h"
 #include "mlx/scheduler.h"
 
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 
 namespace mlx::core {
 
 namespace {
 
+struct CpuEventState {
+  uint64_t signal_value{0};
+  std::mutex mtx;
+  std::condition_variable cv;
+};
+
 struct VulkanEventState {
   vulkan::VulkanEvent vk_event;
   uint64_t signal_value{0};
 };
 
+bool use_cpu_event(const Stream& stream) {
+  return stream.device == Device::cpu || !gpu::is_available();
+}
+
 } // anonymous namespace
 
 Event::Event(Stream stream) : stream_(stream) {
-  auto* state = new VulkanEventState{};
-  event_ = std::shared_ptr<void>(
-      state, [](void* ptr) { delete static_cast<VulkanEventState*>(ptr); });
+  if (use_cpu_event(stream)) {
+    event_ = std::shared_ptr<void>(
+        new CpuEventState{},
+        [](void* ptr) { delete static_cast<CpuEventState*>(ptr); });
+  } else {
+    event_ = std::shared_ptr<void>(
+        new VulkanEventState{},
+        [](void* ptr) { delete static_cast<VulkanEventState*>(ptr); });
+  }
 }
 
 void Event::wait() {
   if (!valid())
     return;
-  auto* state = static_cast<VulkanEventState*>(event_.get());
-  state->vk_event.wait(state->signal_value);
+  if (use_cpu_event(stream_)) {
+    auto* state = static_cast<CpuEventState*>(event_.get());
+    std::unique_lock<std::mutex> lk(state->mtx);
+    if (state->signal_value >= value_) {
+      return;
+    }
+    state->cv.wait(lk, [state, value = value_] {
+      return state->signal_value >= value;
+    });
+  } else {
+    auto* state = static_cast<VulkanEventState*>(event_.get());
+    state->vk_event.wait(state->signal_value);
+  }
 }
 
 void Event::wait(Stream stream) {
   if (!valid())
     return;
-  if (stream.device == Device::cpu) {
+  if (use_cpu_event(stream_)) {
+    if (stream.device == Device::cpu) {
+      scheduler::enqueue(stream, [*this]() mutable { wait(); });
+    } else {
+      wait();
+    }
+  } else if (stream.device == Device::cpu) {
     scheduler::enqueue(stream, [*this]() mutable { wait(); });
   } else {
     // MoltenVK does not support GPU-side timeline semaphore waits in
@@ -51,39 +87,62 @@ void Event::wait(Stream stream) {
 void Event::signal(Stream stream) {
   if (!valid())
     return;
-  auto* state = static_cast<VulkanEventState*>(event_.get());
-  state->signal_value = value_;
-
-  if (stream.device == Device::gpu) {
-    // Signal the timeline semaphore via completion handler after GPU work
-    // finishes. add_completed_handler fires from the background thread after
-    // vkWaitForFences.
-    vulkan::device(stream.device)
-        .add_completed_handler(
-            stream, [event_ = event_, val = value_]() mutable {
-              auto* s = static_cast<VulkanEventState*>(event_.get());
-              s->vk_event.signal(val);
-            });
+  if (use_cpu_event(stream_)) {
+    auto notify = [event_ = event_, val = value_]() mutable {
+      auto* state = static_cast<CpuEventState*>(event_.get());
+      {
+        std::lock_guard<std::mutex> lk(state->mtx);
+        state->signal_value = val;
+      }
+      state->cv.notify_all();
+    };
+    if (stream.device == Device::gpu && gpu::is_available()) {
+      vulkan::device(stream.device)
+          .add_completed_handler(stream, std::move(notify));
+    } else {
+      scheduler::enqueue(stream, std::move(notify));
+    }
   } else {
-    scheduler::enqueue(stream, [event_ = event_, val = value_]() mutable {
-      auto* s = static_cast<VulkanEventState*>(event_.get());
-      s->vk_event.signal(val);
-    });
+    auto* state = static_cast<VulkanEventState*>(event_.get());
+    state->signal_value = value_;
+
+    if (stream.device == Device::gpu) {
+      // Signal the timeline semaphore via completion handler after GPU work
+      // finishes. add_completed_handler fires from the background thread after
+      // vkWaitForFences.
+      vulkan::device(stream.device)
+          .add_completed_handler(
+              stream, [event_ = event_, val = value_]() mutable {
+                auto* s = static_cast<VulkanEventState*>(event_.get());
+                s->vk_event.signal(val);
+              });
+    } else {
+      scheduler::enqueue(stream, [event_ = event_, val = value_]() mutable {
+        auto* s = static_cast<VulkanEventState*>(event_.get());
+        s->vk_event.signal(val);
+      });
+    }
   }
 }
 
 bool Event::is_signaled() const {
   if (!valid())
     return false;
-  auto* state = static_cast<VulkanEventState*>(event_.get());
-  auto& dev = vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
-  uint64_t current_value = 0;
-  VkResult res = vkGetSemaphoreCounterValue(
-      dev.vk_device(), state->vk_event.semaphore(), &current_value);
-  if (res != VK_SUCCESS) {
-    return false;
+  if (use_cpu_event(stream_)) {
+    auto* state = static_cast<CpuEventState*>(event_.get());
+    std::lock_guard<std::mutex> lk(state->mtx);
+    return state->signal_value >= value_;
+  } else {
+    auto* state = static_cast<VulkanEventState*>(event_.get());
+    auto& dev = vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
+    uint64_t current_value = 0;
+    VkResult res = vkGetSemaphoreCounterValue(
+        dev.vk_device(), state->vk_event.semaphore(), &current_value);
+    if (res != VK_SUCCESS) {
+      return false;
+    }
+    return current_value >= state->signal_value;
   }
-  return current_value >= state->signal_value;
 }
 
 } // namespace mlx::core

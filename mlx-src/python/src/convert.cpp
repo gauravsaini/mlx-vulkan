@@ -108,19 +108,36 @@ mx::array nd_array_to_mlx(
 
 template <typename T, typename... NDParams>
 nb::ndarray<NDParams...> mlx_to_nd_array_impl(
-    mx::array a,
+    const mx::array& a,
     std::optional<nb::dlpack::dtype> t = {}) {
+  struct NdArrayOwner {
+    explicit NdArrayOwner(const mx::array& input) : array(input) {}
+    mx::array array;
+    std::vector<size_t> shape;
+    std::vector<int64_t> strides;
+  };
+
+  auto owner = std::make_unique<NdArrayOwner>(a);
   {
     nb::gil_scoped_release nogil;
-    a.eval();
+    owner->array.eval();
   }
-  std::vector<size_t> shape(a.shape().begin(), a.shape().end());
+  if (owner->array.has_primitive() && !owner->array.is_tracer()) {
+    owner->array.detach();
+  }
+  owner->shape.assign(owner->array.shape().begin(), owner->array.shape().end());
+  owner->strides.assign(
+      owner->array.strides().begin(), owner->array.strides().end());
+  auto* owner_ptr = owner.get();
+  auto capsule = nb::capsule(
+      owner.release(),
+      [](void* ptr) noexcept { delete static_cast<NdArrayOwner*>(ptr); });
   return nb::ndarray<NDParams...>(
-      a.data<T>(),
-      a.ndim(),
-      shape.data(),
-      /* owner= */ nb::none(),
-      a.strides().data(),
+      owner_ptr->array.template data<T>(),
+      owner_ptr->array.ndim(),
+      owner_ptr->shape.data(),
+      capsule,
+      owner_ptr->strides.data(),
       t.value_or(nb::dtype<T>()));
 }
 
@@ -176,6 +193,9 @@ nb::object to_scalar(mx::array& a) {
   {
     nb::gil_scoped_release nogil;
     a.eval();
+  }
+  if (a.has_primitive() && !a.is_tracer()) {
+    a.detach();
   }
   switch (a.dtype()) {
     case mx::bool_:
@@ -233,6 +253,9 @@ nb::object tolist(mx::array& a) {
   {
     nb::gil_scoped_release nogil;
     a.eval();
+  }
+  if (a.has_primitive() && !a.is_tracer()) {
+    a.detach();
   }
   switch (a.dtype()) {
     case mx::bool_:

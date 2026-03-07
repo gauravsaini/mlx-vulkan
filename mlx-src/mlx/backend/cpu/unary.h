@@ -22,7 +22,7 @@ void unary_op(const array& a, array& out, Op) {
   const T* src = a.data<T>();
   U* dst = out.data<U>();
   auto ndim = a.ndim();
-  if (a.flags().contiguous) {
+  if (a.flags().contiguous && !std::is_same_v<U, bool>) {
     auto size = a.data_size();
     constexpr int N = std::min(simd::max_size<T>, simd::max_size<U>);
     while (size >= N) {

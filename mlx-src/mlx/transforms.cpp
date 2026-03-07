@@ -321,7 +321,11 @@ void eval(std::vector<array> outputs) {
     return;
   }
 
-  eval_impl(std::move(outputs), false).wait();
+  auto synchronizer = eval_impl(std::move(outputs), false);
+  auto stream = synchronizer.event().valid() ? synchronizer.event().stream()
+                                             : default_stream(default_device());
+  synchronizer.wait();
+  synchronize(stream);
 }
 
 std::pair<std::vector<array>, std::vector<array>> vjp(

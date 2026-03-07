@@ -80,8 +80,11 @@ void init_device(nb::module_& m) {
       )pbdoc");
   m.def(
       "device_info",
-      &mx::device_info,
-      nb::arg("d") = mx::default_device(),
+      [](nb::object d) -> const auto& {
+        return d.is_none() ? mx::device_info(mx::default_device())
+                           : mx::device_info(nb::cast<mx::Device>(d));
+      },
+      nb::arg("d") = nb::none(),
       R"pbdoc(
       Get information about a device.
 
@@ -90,7 +93,8 @@ void init_device(nb::module_& m) {
       ``architecture``, and ``total_memory`` (or ``memory_size``).
 
       Args:
-          d (Device): The device to query (defaults to the default device).
+          d (Device, optional): The device to query (defaults to the default
+            device).
 
       Returns:
           dict: Device information.
