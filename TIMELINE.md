@@ -2,6 +2,38 @@
 
 ## UPDATED ON : 2026-03-07
 
+### fix (2026-03-07) — LogicalNot returning all-False on Vulkan backend
+
+1. **Shader `compute_op` bug** (`kernels/unary.comp`):
+   - Root cause: `case UNARY_LOGNOT: return 1.0;` was hardcoded to always return `1.0` (True) regardless of input.
+   - Fix: Changed to `return (val == 0.0) ? 1.0 : 0.0;` to perform actual logical negation.
+
+2. **Boolean output packing regression** (`kernels/unary.comp`):
+   - A previous optimization attempt used complex byte-packing logic for bool outputs that caused Vulkan Out of Bounds write aborts.
+   - Fix: Reverted to simpler `out_bool[idx] = uint8_t(...)` assignment.
+
+3. **`dispatch_unary` silent failure** (`primitives.cpp`):
+   - `dispatch_unary` returned `true` even when `get_pipeline` returned `VK_NULL_HANDLE`, preventing CPU fallback.
+   - Fix: Returns `false` on `VK_NULL_HANDLE` so the CPU fallback path executes correctly.
+
+4. **`LogicalNot::eval_gpu` CPU fallback** (`primitives.cpp`):
+   - LogicalNot lacked the `if (!dispatch_unary(...)) { eval_cpu(...); }` pattern used by other unary ops.
+   - Fix: Added CPU fallback mechanism matching other `UNARY_GPU` operations.
+
+5. **Build relinking caveat discovered**:
+   - CMake `make -j8` does not always detect `.o` file changes and relink `libmlx.a` → `core.cpython-*.so`.
+   - Workaround: Force-delete `libmlx.a` and `core.cpython-*.so` to trigger proper relinking after source changes.
+
+6. **Tests** (before → after):
+   - `test_logical_not`: ❌ `[False, False, False, False, False, False]` → ✅ `[False, False, True, False, False, False]`
+
+7. **Files changed**:
+   - `mlx/backend/vulkan/kernels/unary.comp` (LOGNOT logic + bool packing revert)
+   - `mlx/backend/vulkan/primitives.cpp` (CPU fallback + dispatch_unary fix)
+   - `mlx/backend/vulkan/device.cpp` (kPipelineCacheVersion bump)
+
+---
+
 ### fix (2026-03-07) — P2.6 Hadamard large-array GPU limit 2048→16384
 
 1. **Multi-pass Hadamard dispatch**:

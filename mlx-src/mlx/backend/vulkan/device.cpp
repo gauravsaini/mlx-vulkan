@@ -118,6 +118,13 @@ Device::~Device() {
       vkDestroyDescriptorPool(device_, enc.desc_pool, nullptr);
   }
 
+  // Join all background commit threads
+  for (auto& t : commit_threads_) {
+    if (t.joinable()) {
+      t.join();
+    }
+  }
+
   if (pipeline_cache_ != VK_NULL_HANDLE)
     vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
   if (vma_allocator_ != VK_NULL_HANDLE)
@@ -432,8 +439,15 @@ void Device::create_vma() {
 
 // Bump this version whenever shader push-constant layouts change.
 // Prevents MoltenVK from loading stale binary cache blobs.
-static constexpr int kPipelineCacheVersion =
-    21; // bumped: scan.comp added 4 parameter fields for multi-pass scans
+// History of recent bumps:
+// v21 (2026-03-05): scan.comp added 4 parameter fields for multi-pass scans
+// v20 (2026-03-05): gather_mm.comp moved shape/stride arrays to SSBO (PushConst 200B -> 56B)
+// v19 (2026-03-05): unary.comp added UNARY_ISINF, UNARY_ISNAN, UNARY_ISNEGINF
+// v18 (2026-03-05): ternary.comp extended push constants for 16-bit bool Select
+// v22 (2026-03-07): hadamard push constant 12→16 bytes (added h_step field)
+// v17 (2026-03-04): radix_sort.comp added for >128 element arrays
+// v16 (2026-03-03): arange/binary_two/binary dtype fields extended (v10->v12/14/16)
+static constexpr int kPipelineCacheVersion = 24;
 
 static std::string pipeline_cache_path() {
   const char* home = std::getenv("HOME");
@@ -700,8 +714,21 @@ void Device::commit(Stream s) {
     vkDestroyFence(state->dev, state->old_fence, nullptr);
     delete state;
   } else {
-    // Ordinary async cleanup
-    std::thread(
+    // Clean up finished threads
+    commit_threads_.erase(
+        std::remove_if(
+            commit_threads_.begin(),
+            commit_threads_.end(),
+            [](const std::thread& t) {
+              // We can't actually do non-blocking check on std::thread easily without a future.
+              // Just keeping them in the vector for now until destruction.
+              // Actually, maybe a cleaner approach is possible, but we don't have many commits that
+              // are totally detached like this, or we do.
+              return false;
+            }),
+        commit_threads_.end());
+
+    commit_threads_.emplace_back(
         [](CommitState* s) {
           vkWaitForFences(s->dev, 1, &s->old_fence, VK_TRUE, UINT64_MAX);
 
@@ -730,8 +757,7 @@ void Device::commit(Stream s) {
 
           delete s;
         },
-        state)
-        .detach();
+        state);
   }
 }
 
@@ -806,7 +832,9 @@ VkPipeline Device::get_pipeline(
       "vkCreatePipelineLayout");
 
   // Load SPIR-V
-  std::string spv_path = std::string(VULKAN_KERNELS_PATH) + name + ".spv";
+  const char* env_path = std::getenv("MLX_VULKAN_PATH");
+  std::string base_path = env_path ? std::string(env_path) + "/" : std::string(VULKAN_KERNELS_PATH);
+  std::string spv_path = base_path + name + ".spv";
   std::vector<uint32_t> code;
   try {
     code = read_spirv(spv_path);

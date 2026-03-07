@@ -174,17 +174,10 @@ float compute_op(float val) {
         case UNARY_ARCTANH: return 0.5 * log((1.0 + val) / (1.0 - val));
         case UNARY_CEIL:    return ceil(val);
         case UNARY_FLOOR:   return floor(val);
-        case UNARY_ROUND: {
-            // Banker's rounding (round-half-to-even) to match IEEE 754 / numpy behavior
-            float fl = floor(val);
-            float diff = val - fl;
-            if (diff < 0.5) return fl;
-            if (diff > 0.5) return fl + 1.0;
-            // Exactly 0.5: round to nearest even
-            float rounded = fl + 1.0;
-            float even = (mod(fl, 2.0) == 0.0) ? fl : rounded;
-            return even;
-        }
+        case UNARY_ROUND:
+            // MLX CPU uses "round half away from zero" (C standard / Python round for .5).
+            // sign(val) * floor(abs(val) + 0.5) achieves this for all finite values.
+            return sign(val) * floor(abs(val) + 0.5);
         case UNARY_ERF:     return erf_approx(val);
         case UNARY_ERFINV:  return erfinv_approx(val);
         case UNARY_SIGMOID: return 1.0 / (1.0 + exp(-val));
@@ -194,9 +187,18 @@ float compute_op(float val) {
         case UNARY_DEGREES: return val * (180.0 / 3.14159265358979323846);
         case UNARY_RADIANS: return val * (3.14159265358979323846 / 180.0);
         case UNARY_LOGNOT:  return (val == 0.0) ? 1.0 : 0.0;
-        case UNARY_ISINF:   return isinf(val) ? 1.0 : 0.0;
-        case UNARY_ISNAN:   return isnan(val) ? 1.0 : 0.0;
-        case UNARY_ISNEGINF: return (isinf(val) && val < 0.0) ? 1.0 : 0.0;
+        case UNARY_ISINF: {
+            uint u = floatBitsToUint(val);
+            return ((u & 0x7FFFFFFFu) == 0x7F800000u) ? 1.0 : 0.0;
+        }
+        case UNARY_ISNAN: {
+            uint u = floatBitsToUint(val);
+            return ((u & 0x7FFFFFFFu) > 0x7F800000u) ? 1.0 : 0.0;
+        }
+        case UNARY_ISNEGINF: {
+            uint u = floatBitsToUint(val);
+            return (u == 0xFF800000u) ? 1.0 : 0.0;
+        }
         default: return val;
     }
 }

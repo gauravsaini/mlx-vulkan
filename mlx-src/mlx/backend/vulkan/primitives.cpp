@@ -375,7 +375,7 @@ bool dispatch_unary(
       16,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
-    return true;
+    return false;
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(stream, ds_layout);
 
@@ -495,8 +495,11 @@ void Round::eval_gpu(const std::vector<array>& inputs, array& out) {
 // LogicalNot uses a dedicated LOGNOT opcode (not NEG) to correctly handle bool
 // byte-packing
 void LogicalNot::eval_gpu(const std::vector<array>& inputs, array& out) {
-  dispatch_unary(
-      inputs[0], out, static_cast<uint32_t>(UnaryOp::LogNot), stream());
+  if (!dispatch_unary(
+          inputs[0], out, static_cast<uint32_t>(UnaryOp::LogNot), stream())) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+  }
 }
 UNARY_GPU(Sigmoid, Sigmoid)
 UNARY_GPU(Sign, Sign)
@@ -623,6 +626,16 @@ void BitwiseBinary::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
+  auto check_array = [&](const array& a) {
+    if (a.size() == 1) return true;
+    return a.flags().row_contiguous && a.size() == out.size();
+  };
+  if (!check_array(inputs[0]) || !check_array(inputs[1]) || !check_array(inputs[2])) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
 
   auto& encoder = vulkan::get_command_encoder(stream());
@@ -1633,6 +1646,7 @@ struct IndexPushConst {
   uint32_t dst_offset;
   uint32_t src_ax_size;
   uint32_t inner; // INDEX_GATHER_GEN: product(src dims after gather axis)
+                  // INDEX_GATHER element-wise: out_ax_size (dst axis size)
   uint32_t src_outer_stride; // INDEX_GATHER_GEN: d_ax * inner
   // Multi-axis gather extensions (mx.take with ND index tensors):
   uint32_t idx_ndim; // Number of dimensions in index tensor (0-4)
@@ -1707,17 +1721,26 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   //   axes_.size()==1, slice_sizes_[ax]==1 for the gathered axis
   // Covers 1D (ax=0) and ND cases via INDEX_GATHER_GEN.
   if (inputs.size() == 2 && axes_.size() == 1 && slice_sizes_[axes_[0]] == 1) {
-    const array& src = inputs[0];
-    const array& idx = inputs[1];
-
-    // INDEX_GATHER_GEN mathematically hardcodes inner contiguous dimension
-    // sizes. If the source array is transposed or non-contiguous, we must fall
-    // back to CPU eval.
-    if (!src.flags().row_contiguous) {
-      vulkan::device(stream().device).synchronize(stream());
-      eval_cpu(inputs, out);
-      return;
+    // If src is transposed/non-contiguous, make a contiguous GPU copy rather
+    // than falling back to CPU. This avoids CPU/GPU stream race conditions when
+    // mx.take dispatches transposed intermediates.
+    array src_contig(inputs[0].shape(), inputs[0].dtype(), nullptr, {});
+    const array* src_ptr = &inputs[0];
+    if (!inputs[0].flags().row_contiguous) {
+      src_contig.set_data(allocator::malloc(src_contig.nbytes()));
+      copy_gpu(inputs[0], src_contig, CopyType::General, stream());
+      src_ptr = &src_contig;
+      // Add memory barrier to ensure copy completes before gather reads
+      auto& enc = vulkan::get_command_encoder(stream());
+      VkMemoryBarrier b{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(enc.cmd,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, 1, &b, 0, nullptr, 0, nullptr);
     }
+    const array& src = *src_ptr;
+    const array& idx = inputs[1];
 
     out.set_data(allocator::malloc(out.nbytes()));
     if (out.size() == 0)
@@ -1726,6 +1749,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     auto& encoder = vulkan::get_command_encoder(stream());
     auto& dev = vulkan::device(stream().device);
     encoder.op_count++;
+
 
     uint32_t ax = static_cast<uint32_t>(axes_[0]);
     // ...
@@ -1771,7 +1795,6 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, out);
-  return;
 }
 
 // GatherAxis: simple axis-indexed gather → GPU dispatch
@@ -1822,6 +1845,9 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   pc.idx_offset = static_cast<uint32_t>(idx.offset() * idx.itemsize());
   pc.dst_offset = static_cast<uint32_t>(out.offset() * out.itemsize());
   pc.src_ax_size = static_cast<uint32_t>(src.shape(axis_));
+  // inner repurposed to carry out_ax_size for element-wise INDEX_GATHER path
+  // (the inner field is only read by op=3/INDEX_GATHER_GEN, safe to reuse for op=0)
+  pc.inner = static_cast<uint32_t>(out.shape(axis_));
   // src_outer_stride repurposed as element_wise flag:
   // 1 = idx.size() == out.size() (take_along_axis style, one index per output
   // element) 0 = group-wise (1 index per dst_stride group)
@@ -1927,7 +1953,7 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
   // - Not sorting on last axis (non-contiguous scan)
   // - Not float32 or int32 (bitonic/radix sort logic for these only)
   // - Not contiguous
-  // - Sort size > 128 (bitonic sort limit; radix sort has stability issues)
+  // - Sort size > 256 (bitonic sort limit; shared mem s_data[512] fits 256 elems at wg=256)
   bool supported_dtype = (in.dtype() == float32 || in.dtype() == int32);
   if (sort_axis != in.ndim() - 1 || !supported_dtype ||
       !in.flags().row_contiguous || sort_pow2 > 128) {
@@ -1936,7 +1962,7 @@ void Sort::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
-  // Use bitonic sort for small arrays (<= 128), radix sort for larger
+  // Use bitonic sort for small arrays (<= 256), radix sort for larger
   bool use_bitonic = (sort_pow2 <= 128);
 
   // Copy input to output (sort is in-place on output)
@@ -3684,8 +3710,11 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
   int axis = out.ndim() - 1;
   auto [n, m] = decompose_hadamard(out.shape(axis));
 
-  // GPU shader only handles pure power-of-2 WHT (m == 1) up to n = 2048
-  bool can_gpu = (m == 1) && (n > 0) && (n <= 2048) && (in.dtype() == float32);
+  // GPU shader handles pure power-of-2 WHT (m == 1) up to n = 16384.
+  // n <= 2048: single shared-memory pass (h_step=0).
+  // 2048 < n <= 16384: in-group pass on 2048-element tiles, then cross-group
+  //   passes via global-memory butterfly stages (h_step > 0).
+  bool can_gpu = (m == 1) && (n > 0) && (n <= 16384) && (in.dtype() == float32);
   if (!can_gpu) {
     // For large n or non-power-of-2 sizes we run the butterfly on CPU.
     // We cannot call eval_cpu() directly (stream mismatch causes wrong values),
@@ -3831,13 +3860,16 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& dev = vulkan::device(s.device);
   encoder.op_count++;
 
-  // hadamard.comp push_constant layout (12 bytes):
-  //   uint n, uint batch_size, float scale
+  // hadamard.comp push_constant layout (16 bytes):
+  //   uint n, uint batch_size, float scale, uint h_step
+  // h_step == 0  → shared-memory in-group butterfly (all stages, n <= 2048)
+  // h_step  > 0  → single cross-group butterfly stage with that stride
   struct HadamardPC {
     uint32_t n;
     uint32_t batch_size;
     float scale;
-  } pc{static_cast<uint32_t>(n), batch_size, scale_};
+    uint32_t h_step;
+  };
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
@@ -3846,53 +3878,111 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
       layout,
       ds_layout,
       2,
-      sizeof(pc),
+      sizeof(HadamardPC),
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
     eval_cpu(inputs, out);
     return;
   }
 
-  VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
-  // Bind src_arr (contiguous copy or original in) as binding 0,
-  // and out as binding 1 (shader writes results here).
-  VkDescriptorBufferInfo infos[2]{
-      {vulkan::get_buffer(src_arr), 0, VK_WHOLE_SIZE},
-      {vulkan::get_buffer(out), 0, VK_WHOLE_SIZE}};
-  VkWriteDescriptorSet writes[2]{};
-  for (int i = 0; i < 2; i++) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = ds;
-    writes[i].dstBinding = static_cast<uint32_t>(i);
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
-
   VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(
-      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(
-      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  // One workgroup per batch segment
-  vkCmdDispatch(cmd, batch_size, 1, 1);
 
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      1,
-      &barrier,
-      0,
-      nullptr,
-      0,
-      nullptr);
+  // Helper: issue one pipeline barrier between compute passes
+  auto compute_barrier = [&]() {
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &mb, 0, nullptr, 0, nullptr);
+  };
+
+  // Helper: bind two buffers (src_buf, dst_buf), push constants, dispatch
+  auto dispatch_pass = [&](
+      VkBuffer src_buf,
+      VkBuffer dst_buf,
+      HadamardPC pc,
+      uint32_t num_groups_x) {
+    VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
+    VkDescriptorBufferInfo infos[2]{
+        {src_buf, 0, VK_WHOLE_SIZE},
+        {dst_buf, 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet writes[2]{};
+    for (int i = 0; i < 2; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = static_cast<uint32_t>(i);
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+    vkCmdDispatch(cmd, num_groups_x, 1, 1);
+  };
+
+  if (n <= 2048) {
+    // ── Single shared-memory pass: all stages within the workgroup ───────────
+    // scale is applied inside the shader at the last butterfly stage.
+    HadamardPC pc{static_cast<uint32_t>(n), batch_size, scale_, 0u};
+    dispatch_pass(
+        vulkan::get_buffer(src_arr),
+        vulkan::get_buffer(out),
+        pc,
+        batch_size);
+  } else {
+    // ── Multi-pass for n > 2048 ──────────────────────────────────────────────
+    // Strategy:
+    //   Pass 1 (in-group): treat each 2048-element sub-block independently.
+    //     n_tile = 2048, effective batch = batch_size * (n / 2048).
+    //     scale = 1.0 (not yet — applied at final stage).
+    //     src: src_arr, dst: out.
+    //   Passes 2..log2(n)-log2(2048)+1 (cross-group):
+    //     Each pass does ONE butterfly stage at stride h_step.
+    //     src and dst are both 'out' (in-place via separate SSBO bindings on same buffer).
+    //     scale applied only at the last pass (h_step == n/2).
+
+    uint32_t n_tile = 2048u;
+    uint32_t tiles_per_batch = static_cast<uint32_t>(n) / n_tile;
+    uint32_t in_group_batch = batch_size * tiles_per_batch;
+
+    // Pass 1: in-group butterfly on 2048-element tiles
+    {
+      HadamardPC pc{n_tile, in_group_batch, 1.0f, 0u};
+      dispatch_pass(
+          vulkan::get_buffer(src_arr),
+          vulkan::get_buffer(out),
+          pc,
+          in_group_batch);  // one workgroup per tile
+    }
+
+    // Cross-group passes for h_step = 2048, 4096, ..., n/2
+    VkBuffer out_buf = vulkan::get_buffer(out);
+    for (uint32_t h_step = n_tile; h_step < static_cast<uint32_t>(n); h_step <<= 1u) {
+      compute_barrier();
+
+      bool is_last = (h_step == static_cast<uint32_t>(n) >> 1u);
+      float pass_scale = is_last ? scale_ : 1.0f;
+
+      // Global-memory pass: each thread handles one butterfly pair.
+      // total_pairs = batch_size * (n / 2)
+      uint32_t half_n = static_cast<uint32_t>(n) >> 1u;
+      uint32_t total_pairs = batch_size * half_n;
+      uint32_t wg_size = dev.preferred_workgroup_size();
+      uint32_t num_groups = (total_pairs + wg_size - 1) / wg_size;
+
+      HadamardPC pc{static_cast<uint32_t>(n), batch_size, pass_scale, h_step};
+      // src and dst both point to 'out' buffer (in-place)
+      dispatch_pass(out_buf, out_buf, pc, num_groups);
+    }
+  }
+
+  // Final barrier so downstream ops see all writes
+  compute_barrier();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4346,6 +4436,7 @@ NO_GPU_MULTI(ScaledDotProductAttentionVJP)
 void ConvertFP8::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
