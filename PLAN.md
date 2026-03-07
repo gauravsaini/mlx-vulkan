@@ -758,7 +758,10 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 | S1 | `test_scans` segfaults / bus error | `cpu/scan.cpp` & CPU fallbacks | CPU `Scan` correctly executes synchronously on unified memory, but subsequent downstream ops (e.g. `Gather`) crash with bus errors when reading the returned memory out of `Scan::eval_cpu`. Active investigation on memory format / allocator interaction. |
 | S2 | Full test suite stability | multi | Depends on S1. Use-after-free issues in `Gather` / `ScatterAxis` fallbacks (unsafe lambda closure captures) were identified and removed, fixing `test_take_along_axis` random crashes. |
 
-**Fix S1 first**: Isolating why `Scan::eval_cpu` output reading (by `Gather`) segfaults when axes=2 is chosen. Wait for memory analysis.
+**S1 Diagnostic Breakdown**:
+1. **Verify Strides and Contiguity Flags:** When `Scan::eval_cpu` completes, does it correctly set `row_contiguous`, `col_contiguous`, and the `strides` array on the output? If metadata is non-contiguous or improperly strided, `Gather` will read out-of-bounds scalar pointers and trigger the bus error.
+2. **Verify Memory Allocator Sizing & State:** Does `out.set_data(allocator::malloc(out.nbytes()))` inside `cpu/scan.cpp` actually provide `HOST_COHERENT` mapped memory back to the GPU context seamlessly?
+3. **Analyze Multi-axis Fallback Dimensions:** The scan bus error reliably triggered on `axes=2` specifically. Does `Scan::eval_cpu`'s strided fallback behavior improperly read/write beyond `out.size()` for deep dimensions?
 
 ---
 
@@ -1190,5 +1193,30 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 | 4 | Multi-axis Gather GPU | Unblocks transformer attention ops |
 | 5 | Sort > 256 radix sort | Production data sizes |
 | 6 | Scan > 1024 multi-pass | Edge cases |
+
+---
+
+## Prod Readiness Checklist (Target: MLX Vulkan MVP)
+
+These items must be completed before the Vulkan backend can be considered "Prod Ready" for public use.
+
+### 1. Stability & Completeness
+- [ ] **Zero Segfaults:** The entire `python -m pytest tests/` suite must pass or explicitly skip natively without hard crashes, bus errors, or segfaults (e.g., resolving S1 `test_scans`).
+- [ ] **Full `eval_gpu` Coverage:** Eliminate all remaining `NO_GPU` or `throw std::runtime_error` stubs in `primitives.cpp` by implementing either a dedicated Vulcan shader or a clean, safe unified-memory `eval_cpu` fallback.
+- [ ] **Thread-Safety Audit:** Verify that `Device::commit` properly handles heavily concurrent MLX workloads, ensuring `CommandEncoder` bindings and `VkDescriptorPool` objects do not induce `EXC_BAD_ACCESS` under load.
+
+### 2. Correctness & Precision
+- [ ] **Numerical Equivalence:** `tests/vulkan_equivalence.py` validation for all core primitive paths against CPU/Metal execution, confirming bounded loss across IEEE standard `float32`, `float16`, and `bfloat16`.
+- [ ] **Complex Data Support:** Full arithmetic equivalence across shaders for `complex64` mathematical paths.
+- [ ] **Shape/Stride Handling:** Guarantee contiguous, broadcasted, padded, and strided memory interpretations evaluate seamlessly within GLSL without OOB geometry errors (e.g. verifying `Concat` and `Gather` logic boundaries).
+
+### 3. Performance & Memory
+- [ ] **Zero-Copy Transits:** Ensure that `VK_EXT_external_memory_host` or VMA unified memory architectures reliably negate CPU <-> GPU round-trip copy overheads. 
+- [ ] **Clean Memory Management:** No GPU memory leaks; temporary buffer garbage collection accurately tracks execution boundaries and respects `allocator::free`.
+- [ ] **Shader Pipelining Cache:** Seamless SPIR-V dynamic recompilation caching limits cold-start costs. 
+
+### 4. Build & Platform
+- [ ] **Linux Target CI:** Add automated `vulkan-validationlayers` headless CI tests on standard Ubuntu Linux topologies (in addition to MoltenVK constraints).
+- [ ] **Package Signing & Linking:** Simplify dynamic linkage patterns such that Python extensions load reliably via standardized `pip` / `uv` packaging workflows without `macOS` `.so` conflicts.
 | 7 | Equivalence test suite | Prevents regressions |
 | 8 | Workgroup tuning | Performance on AMD/NVIDIA |
