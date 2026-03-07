@@ -23,56 +23,42 @@ void contiguous_scan(
     bool inclusive,
     const Op& op,
     U init) {
-  if (!reverse) {
-    if (inclusive) {
-      for (int i = 0; i < count; i++) {
-        *output = *input;
+  const int64_t block_span = static_cast<int64_t>(stride);
+  for (int i = 0; i < count; i++) {
+    const int64_t base = static_cast<int64_t>(i) * block_span;
+    U acc = init;
+    if (!reverse) {
+      if (inclusive) {
+        acc = static_cast<U>(input[base]);
+        output[base] = acc;
         for (int j = 1; j < stride; j++) {
-          input++;
-          output++;
-          *output = op(*(output - 1), *input);
+          auto idx = base + j;
+          acc = op(acc, input[idx]);
+          output[idx] = acc;
         }
-        output++;
-        input++;
+      } else {
+        for (int j = 0; j < stride; j++) {
+          auto idx = base + j;
+          output[idx] = acc;
+          acc = op(acc, input[idx]);
+        }
       }
     } else {
-      for (int i = 0; i < count; i++) {
-        *output = init;
-        for (int j = 1; j < stride; j++) {
-          *(output + 1) = op(*output, *input);
-          input++;
-          output++;
+      if (inclusive) {
+        auto idx_last = base + stride - 1;
+        acc = static_cast<U>(input[idx_last]);
+        output[idx_last] = acc;
+        for (int j = stride - 2; j >= 0; j--) {
+          auto idx = base + j;
+          acc = op(acc, input[idx]);
+          output[idx] = acc;
         }
-        output++;
-        input++;
-      }
-    }
-  } else {
-    if (inclusive) {
-      for (int i = 0; i < count; i++) {
-        output += stride - 1;
-        input += stride - 1;
-        *output = *input;
-        for (int j = 1; j < stride; j++) {
-          input--;
-          output--;
-          *output = op(*(output + 1), *input);
+      } else {
+        for (int j = stride - 1; j >= 0; j--) {
+          auto idx = base + j;
+          output[idx] = acc;
+          acc = op(acc, input[idx]);
         }
-        output += stride;
-        input += stride;
-      }
-    } else {
-      for (int i = 0; i < count; i++) {
-        output += stride - 1;
-        input += stride - 1;
-        *output = init;
-        for (int j = 1; j < stride; j++) {
-          *(output - 1) = op(*output, *input);
-          input--;
-          output--;
-        }
-        output += stride;
-        input += stride;
       }
     }
   }
@@ -89,65 +75,50 @@ void strided_scan(
     bool inclusive,
     const Op& op,
     U init) {
-  // TODO: Vectorize the following naive implementation
-  if (!reverse) {
-    if (inclusive) {
-      for (int i = 0; i < count; i++) {
-        std::copy(input, input + stride, output);
-        output += stride;
-        input += stride;
-        for (int j = 1; j < size; j++) {
-          for (int k = 0; k < stride; k++) {
-            *output = op(*(output - stride), *input);
-            output++;
-            input++;
+  // Index-based implementation avoids pointer drift and out-of-bounds writes
+  // in reverse/exclusive paths.
+  const int64_t block_span = static_cast<int64_t>(size) * stride;
+
+  for (int i = 0; i < count; i++) {
+    const int64_t block_base = static_cast<int64_t>(i) * block_span;
+
+    for (int k = 0; k < stride; k++) {
+      U acc = init;
+      if (!reverse) {
+        if (inclusive) {
+          auto idx0 = block_base + k;
+          acc = static_cast<U>(input[idx0]);
+          output[idx0] = acc;
+          for (int j = 1; j < size; j++) {
+            auto idx = block_base + static_cast<int64_t>(j) * stride + k;
+            acc = op(acc, input[idx]);
+            output[idx] = acc;
+          }
+        } else {
+          for (int j = 0; j < size; j++) {
+            auto idx = block_base + static_cast<int64_t>(j) * stride + k;
+            output[idx] = acc;
+            acc = op(acc, input[idx]);
           }
         }
-      }
-    } else {
-      for (int i = 0; i < count; i++) {
-        std::fill(output, output + stride, init);
-        output += stride;
-        input += stride;
-        for (int j = 1; j < size; j++) {
-          for (int k = 0; k < stride; k++) {
-            *output = op(*(output - stride), *(input - stride));
-            output++;
-            input++;
+      } else {
+        if (inclusive) {
+          auto idx_last =
+              block_base + static_cast<int64_t>(size - 1) * stride + k;
+          acc = static_cast<U>(input[idx_last]);
+          output[idx_last] = acc;
+          for (int j = size - 2; j >= 0; j--) {
+            auto idx = block_base + static_cast<int64_t>(j) * stride + k;
+            acc = op(acc, input[idx]);
+            output[idx] = acc;
+          }
+        } else {
+          for (int j = size - 1; j >= 0; j--) {
+            auto idx = block_base + static_cast<int64_t>(j) * stride + k;
+            output[idx] = acc;
+            acc = op(acc, input[idx]);
           }
         }
-      }
-    }
-  } else {
-    if (inclusive) {
-      for (int i = 0; i < count; i++) {
-        output += (size - 1) * stride;
-        input += (size - 1) * stride;
-        std::copy(input, input + stride, output);
-        for (int j = 1; j < size; j++) {
-          for (int k = 0; k < stride; k++) {
-            output--;
-            input--;
-            *output = op(*(output + stride), *input);
-          }
-        }
-        output += size * stride;
-        input += size * stride;
-      }
-    } else {
-      for (int i = 0; i < count; i++) {
-        output += (size - 1) * stride;
-        input += (size - 1) * stride;
-        std::fill(output, output + stride, init);
-        for (int j = 1; j < size; j++) {
-          for (int k = 0; k < stride; k++) {
-            output--;
-            input--;
-            *output = op(*(output + stride), *(input + stride));
-          }
-        }
-        output += size * stride;
-        input += size * stride;
       }
     }
   }
@@ -162,6 +133,10 @@ void scan_op(
     bool inclusive,
     const Op& op,
     U init) {
+  if (in.size() == 0 || in.shape(axis) == 0) {
+    return;
+  }
+
   if (in.flags().row_contiguous) {
     if (in.strides()[axis] == 1) {
       contiguous_scan(

@@ -99,6 +99,20 @@ logical_not, isinf, isnan, isneginf, nan_to_num, maximum, minimum, logaddexp, lo
 
 ## Known Issues / Critical Bugs Fixed
 
+### Fixed (2026-03-08) — CPU Scan Fallback Stability + Vulkan Availability Gate
+
+48. **`scan.cpp` pointer-drift hardening** (`backend/cpu/scan.cpp`):
+    - Replaced `contiguous_scan` pointer-walk logic with index-based loops (matching the earlier `strided_scan` hardening).
+    - Eliminates reverse/exclusive pointer underflow risk and stabilizes repeated scan pipelines used by `test_scans`.
+
+49. **Zero-sized axis safety in scans** (`backend/cpu/scan.cpp`):
+    - Added early return in `scan_op` when `in.size() == 0` or `in.shape(axis) == 0`.
+    - Prevents divide-by-zero / negative-offset behavior in empty-dimension edge cases.
+
+50. **Vulkan runtime availability check** (`backend/vulkan/device_info.cpp`):
+    - Replaced hardcoded `gpu::is_available() == true` with guarded runtime probe (`try/catch` around device init).
+    - `device_count()` and `device_info()` now reflect actual availability instead of forcing invalid Vulkan startup.
+
 ### Fixed (2026-03-07) — LogicalNot all-False on Vulkan backend
 
 45. **`unary.comp` LogicalNot hardcoded return** (`kernels/unary.comp`):
@@ -755,13 +769,13 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 | ID | Issue | File | Root Cause |
 |---|---|---|---|
-| S1 | `test_scans` segfaults / bus error | `cpu/scan.cpp` & CPU fallbacks | CPU `Scan` correctly executes synchronously on unified memory, but subsequent downstream ops (e.g. `Gather`) crash with bus errors when reading the returned memory out of `Scan::eval_cpu`. Active investigation on memory format / allocator interaction. |
-| S2 | Full test suite stability | multi | Depends on S1. Use-after-free issues in `Gather` / `ScatterAxis` fallbacks (unsafe lambda closure captures) were identified and removed, fixing `test_take_along_axis` random crashes. |
+| S1 | `test_scans` segfault / bus error (CPU fallback path) | `cpu/scan.cpp` | ✅ Mitigated in code: `contiguous_scan` and `strided_scan` rewritten with index-based loops (no pointer drift), plus zero-axis guard to avoid divide-by-zero / negative-offset paths. |
+| S2 | Full test suite stability | multi | Pending user-side full `pytest` re-run in Vulkan environment to confirm no residual scan regressions. |
 
-**S1 Diagnostic Breakdown**:
-1. **Verify Strides and Contiguity Flags:** When `Scan::eval_cpu` completes, does it correctly set `row_contiguous`, `col_contiguous`, and the `strides` array on the output? If metadata is non-contiguous or improperly strided, `Gather` will read out-of-bounds scalar pointers and trigger the bus error.
-2. **Verify Memory Allocator Sizing & State:** Does `out.set_data(allocator::malloc(out.nbytes()))` inside `cpu/scan.cpp` actually provide `HOST_COHERENT` mapped memory back to the GPU context seamlessly?
-3. **Analyze Multi-axis Fallback Dimensions:** The scan bus error reliably triggered on `axes=2` specifically. Does `Scan::eval_cpu`'s strided fallback behavior improperly read/write beyond `out.size()` for deep dimensions?
+**S1 Validation Snapshot (2026-03-08)**:
+1. Added deterministic CPU regression checks for forward/reverse inclusive/exclusive scan invariants across `cumsum/cumprod/cummax/cummin` (`tests/test_gather_cpu.cpp`).
+2. Rebuilt and ran regression in a CPU-only build (`MLX_BUILD_VULKAN=OFF`): passes over randomized repeated trials.
+3. Full Python `test_scans` still requires user-side revalidation on Vulkan-linked runtime.
 
 ---
 

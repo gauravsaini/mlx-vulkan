@@ -2,6 +2,29 @@
 
 ## UPDATED ON : 2026-03-08
 
+### fix (2026-03-08) — CPU Scan fallback stabilization (`test_scans` crash path)
+
+1. **`cpu/scan.cpp` hardening**:
+   - Reworked `contiguous_scan` to index-based traversal to remove pointer drift in reverse/exclusive paths.
+   - Kept index-based `strided_scan` path and added empty-axis guard in `scan_op` (`in.size()==0 || in.shape(axis)==0`), preventing divide-by-zero / negative pointer offset.
+
+2. **Regression coverage (`tests/test_gather_cpu.cpp`)**:
+   - Replaced placeholder test with randomized repeated invariants mirroring `test_scans` logic:
+     - forward inclusive vs forward exclusive shift relation
+     - reverse inclusive equivalence via reversed-index transform
+     - reverse exclusive shift relation
+   - Covers `cumsum`, `cumprod`, `cummax`, `cummin` on shape `(32,32,32)`.
+
+3. **Validation run**:
+   - Built and ran in CPU-only configuration (`MLX_BUILD_VULKAN=OFF`): regression binary passes.
+   - Vulkan-linked runtime still requires user-side full `pytest` validation for final confirmation.
+
+4. **Vulkan availability gate (`backend/vulkan/device_info.cpp`)**:
+   - Replaced hardcoded `is_available=true` with guarded runtime probe.
+   - `device_count()` / `device_info()` now return empty when Vulkan init fails, instead of always reporting a usable GPU.
+
+---
+
 ### fix (2026-03-08) — Indexing Operations CPU Fallback Safety & ScatterAxis Correctness
 
 1. **ScatterAxis Correctness (`indexing.comp`)**:
@@ -12,8 +35,9 @@
    - Discovered that unified memory CPU fallbacks for `Gather`, `GatherAxis`, and `ScatterAxis` were capturing temporary array instances by reference inside asynchronous lambdas. These buffers were destroyed when `eval_gpu` returned before the callback executed on the stream.
    - Fixed by removing the `fallback_cpu` lambda wrappers and directly invoking `eval_cpu` inline, matching the pattern used by `linalg` delegates. MoltenVK `cpu::CommandEncoder` implicitly traps GPU streams and executes them synchronously safely.
 
-3. **In Progress — `test_scans` bus error isolation**:
-   - Traced `test_scans` crash (exit code 139) to a memory corruption event occurring strictly when reading the output array of `Scan::eval_cpu` inside a subsequent operation (like `Gather`).
+3. **Follow-up status — `test_scans` bus error isolation**:
+   - Root cause remained in CPU scan fallback path; subsequent session hardened scan traversal logic (`cpu/scan.cpp`) and added dedicated regression checks.
+   - Current status: crash path mitigated in code; awaiting final user-side full pytest confirmation in Vulkan runtime.
    
 ---
 

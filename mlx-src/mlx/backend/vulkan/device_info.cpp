@@ -4,6 +4,7 @@
 #include "mlx/backend/gpu/device_info.h"
 #include "mlx/backend/vulkan/device.h"
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -11,13 +12,21 @@
 namespace mlx::core::gpu {
 
 bool is_available() {
-  return true;
+  static std::once_flag init_once;
+  static bool available = false;
+  std::call_once(init_once, []() {
+    try {
+      (void)vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
+      available = true;
+    } catch (...) {
+      available = false;
+    }
+  });
+  return available;
 }
 
 int device_count() {
-  // For now return 1 (the selected device)
-  // Could be extended to enumerate all Vulkan physical devices
-  return 1;
+  return is_available() ? 1 : 0;
 }
 
 const std::unordered_map<std::string, std::variant<std::string, size_t>>&
@@ -25,7 +34,7 @@ device_info(int device_index) {
   static std::unordered_map<std::string, std::variant<std::string, size_t>>
       info;
 
-  if (device_index != 0) {
+  if (!is_available() || device_index != 0) {
     static auto empty =
         std::unordered_map<std::string, std::variant<std::string, size_t>>();
     return empty;
