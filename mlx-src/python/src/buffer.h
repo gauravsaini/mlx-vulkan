@@ -21,6 +21,45 @@
 namespace mx = mlx::core;
 namespace nb = nanobind;
 
+namespace {
+
+struct buffer_snapshot {
+  std::vector<char> host_data;
+  size_t logical_byte_offset{0};
+};
+
+inline buffer_snapshot snapshot_array(const mx::array& a) {
+  buffer_snapshot snapshot;
+  if (a.nbytes() == 0) {
+    return snapshot;
+  }
+
+  int64_t min_elem_offset = 0;
+  int64_t max_elem_offset = 0;
+  for (int i = 0; i < a.ndim(); ++i) {
+    auto extent = static_cast<int64_t>(a.shape(i) - 1) * a.strides(i);
+    if (extent < 0) {
+      min_elem_offset += extent;
+    } else {
+      max_elem_offset += extent;
+    }
+  }
+
+  auto itemsize = static_cast<int64_t>(a.itemsize());
+  auto span_elems = max_elem_offset - min_elem_offset + 1;
+  auto span_bytes = static_cast<size_t>(span_elems * itemsize);
+  auto base_offset = static_cast<size_t>(a.offset() + min_elem_offset * itemsize);
+
+  snapshot.host_data.resize(span_bytes);
+  mx::allocator::copy_to_host(
+      a.buffer(), snapshot.host_data.data(), span_bytes, base_offset);
+  snapshot.logical_byte_offset =
+      static_cast<size_t>(-min_elem_offset * itemsize);
+  return snapshot;
+}
+
+} // namespace
+
 std::string buffer_format(const mx::array& a) {
   // https://docs.python.org/3.10/library/struct.html#format-characters
   switch (a.dtype()) {
@@ -95,8 +134,7 @@ struct buffer_info {
 extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   std::memset(view, 0, sizeof(Py_buffer));
   auto a = nb::cast<mx::array>(nb::handle(obj));
-  auto row_contiguous = a.flags().row_contiguous;
-  auto value = row_contiguous ? mx::copy(a, mx::Device::cpu) : a;
+  auto value = a;
 
   {
     nb::gil_scoped_release nogil;
@@ -112,29 +150,22 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   for (auto& s : strides) {
     s *= value.itemsize();
   }
-  std::vector<char> host_data;
-  if (row_contiguous) {
-    host_data.resize(value.nbytes());
-  }
-  if (!host_data.empty()) {
-    mx::allocator::copy_to_host(
-        value.buffer(), host_data.data(), host_data.size(), value.offset());
-  }
+  auto snapshot = snapshot_array(value);
   buffer_info* info = new buffer_info(
       buffer_format(value),
       std::move(shape),
       std::move(strides),
-      std::move(host_data));
+      std::move(snapshot.host_data));
 
   view->obj = obj;
   view->ndim = value.ndim();
   view->internal = info;
-  view->buf = row_contiguous
-      ? (info->host_data.empty() ? nullptr : info->host_data.data())
-      : value.data<void>();
+  view->buf = info->host_data.empty()
+      ? nullptr
+      : (info->host_data.data() + snapshot.logical_byte_offset);
   view->itemsize = value.itemsize();
   view->len = value.nbytes();
-  view->readonly = row_contiguous;
+  view->readonly = true;
   if ((flags & PyBUF_FORMAT) == PyBUF_FORMAT) {
     view->format = const_cast<char*>(info->format.c_str());
   }

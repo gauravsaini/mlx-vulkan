@@ -126,6 +126,20 @@ def main():
         if not np.allclose(got_np_in, np_in, atol=1e-4):
             raise RuntimeError(f"numpy import mismatch: got {got_np_in.tolist()}")
 
+        rev = mx.arange(5, dtype=mx.int32)[::-1]
+        rev_ref = np.array([4, 3, 2, 1, 0], dtype=np.int32)
+        if rev.tolist() != rev_ref.tolist():
+            raise RuntimeError(f"reverse tolist mismatch: got {rev.tolist()}")
+        if not np.array_equal(np.asarray(rev), rev_ref):
+            raise RuntimeError(f"reverse numpy export mismatch: got {np.asarray(rev).tolist()}")
+
+        strided = mx.arange(6, dtype=mx.int32).reshape(2, 3)[:, ::2]
+        strided_ref = np.array([[0, 2], [3, 5]], dtype=np.int32)
+        if strided.tolist() != strided_ref.tolist():
+            raise RuntimeError(f"strided tolist mismatch: got {strided.tolist()}")
+        if not np.array_equal(np.asarray(strided), strided_ref):
+            raise RuntimeError(f"strided numpy export mismatch: got {np.asarray(strided).tolist()}")
+
     def check_cpu_fallback_outputs():
         x = mx.isinf(mx.array([1, 2, 3], dtype=mx.int32))
         mx.eval(x)

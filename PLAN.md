@@ -42,8 +42,8 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 - [x] First-pass fix for Vulkan allocator readback ownership in `backend/vulkan/allocator.cpp`:
       separated VMA mappings from CPU readback snapshots so discrete-GPU `raw_ptr()` no longer stores heap snapshots as fake VMA mappings.
-- [ ] Reconcile the Vulkan memory model:
-      code currently assumes host-visible/coherent allocations in places that contradict the documented "device-local + staging" design.
+- [x] First allocator memory-model shift toward discrete-GPU behavior:
+      `backend/vulkan/allocator.cpp` no longer requires host-coherent primary allocations and now prefers transfer-backed access, with Stage 25 still passing against the staged host-transfer path.
 - [x] First-pass synchronization hardening for GPU-stream CPU fallbacks in `backend/vulkan/primitives.cpp` and `backend/vulkan/copy.cpp`.
       Added `synchronize()` before compiled fallback, linalg CPU fallbacks, quantize CPU/readback paths, and dynamic offset CPU reads.
 - [x] Added explicit Vulkan host transfer helpers (`copy_from_host` / `copy_to_host`) and migrated backend call sites away from direct mapped-pointer writes where practical.
@@ -58,9 +58,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 - [x] Patched shared serialization/readback paths to use allocator host copies:
       `export.cpp`, `.npy` save, safetensors save, GGUF save, compile scalar folding, and debug printing no longer read Vulkan-backed arrays through direct `data<T>()` pointers.
 - [x] Hardened Python bridge host reads for discrete-memory safety:
-      `python/src/buffer.h` and `python/src/convert.cpp` now expose host-owned snapshots for row-contiguous buffer protocol, NumPy export, scalar conversion, and `tolist()` paths instead of dereferencing backend memory directly; the Python buffer protocol is explicitly read-only on those snapshot-backed exports.
-- [ ] Non-row-contiguous Python export/readback still needs explicit follow-up:
-      reversed / strided view export remains on the old direct-pointer path for correctness on the current MoltenVK build, so it is not yet part of the discrete-memory-safe AMD bring-up contract.
+      `python/src/buffer.h` and `python/src/convert.cpp` now expose host-owned snapshots for buffer protocol, NumPy export, scalar conversion, and `tolist()` paths instead of dereferencing backend memory directly; the Python buffer protocol is explicitly read-only on those snapshot-backed exports, including reversed / strided views.
 - [x] Remove or downgrade overstated readiness claims:
       `VK_EXT_external_memory_host` zero-copy, Vulkan `mx.compile()` GPU fusion, SDPA coverage, and full FFT surface coverage.
 - [ ] Re-audit MoltenVK-only fallback assumptions before AMD bring-up:

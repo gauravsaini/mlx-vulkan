@@ -28,17 +28,20 @@ struct ndarray_traits<mx::float16_t> {
 
 namespace {
 
-std::vector<char> copy_array_to_host(const mx::array& a) {
-  std::vector<char> host_data(a.nbytes());
-  if (!host_data.empty()) {
-    mx::allocator::copy_to_host(
-        a.buffer(), host_data.data(), host_data.size(), a.offset());
-  }
-  return host_data;
-}
+struct HostSnapshot {
+  std::vector<char> host_data;
+  size_t logical_byte_offset{0};
 
-mx::array prepare_host_snapshot(mx::array a) {
-  a = mx::copy(a, mx::Device::cpu);
+  template <typename T>
+  const T* logical_data() const {
+    if (host_data.empty()) {
+      return nullptr;
+    }
+    return reinterpret_cast<const T*>(host_data.data() + logical_byte_offset);
+  }
+};
+
+mx::array eval_for_host_read(mx::array a) {
   {
     nb::gil_scoped_release nogil;
     a.eval();
@@ -47,6 +50,36 @@ mx::array prepare_host_snapshot(mx::array a) {
     a.detach();
   }
   return a;
+}
+
+HostSnapshot snapshot_array(const mx::array& a) {
+  HostSnapshot snapshot;
+  if (a.nbytes() == 0) {
+    return snapshot;
+  }
+
+  int64_t min_elem_offset = 0;
+  int64_t max_elem_offset = 0;
+  for (int i = 0; i < a.ndim(); ++i) {
+    auto extent = static_cast<int64_t>(a.shape(i) - 1) * a.strides(i);
+    if (extent < 0) {
+      min_elem_offset += extent;
+    } else {
+      max_elem_offset += extent;
+    }
+  }
+
+  auto itemsize = static_cast<int64_t>(a.itemsize());
+  auto span_elems = max_elem_offset - min_elem_offset + 1;
+  auto span_bytes = static_cast<size_t>(span_elems * itemsize);
+  auto base_offset = static_cast<size_t>(a.offset() + min_elem_offset * itemsize);
+
+  snapshot.host_data.resize(span_bytes);
+  mx::allocator::copy_to_host(
+      a.buffer(), snapshot.host_data.data(), span_bytes, base_offset);
+  snapshot.logical_byte_offset =
+      static_cast<size_t>(-min_elem_offset * itemsize);
+  return snapshot;
 }
 
 template <typename T>
@@ -172,28 +205,20 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
   };
 
   auto owner = std::make_unique<NdArrayOwner>(a);
-  {
-    nb::gil_scoped_release nogil;
-    owner->array.eval();
-  }
-  if (owner->array.has_primitive() && !owner->array.is_tracer()) {
-    owner->array.detach();
-  }
-  if (owner->array.flags().row_contiguous) {
-    owner->array = prepare_host_snapshot(owner->array);
-    owner->host_data = copy_array_to_host(owner->array);
-  }
+  owner->array = eval_for_host_read(owner->array);
   owner->shape.assign(owner->array.shape().begin(), owner->array.shape().end());
   owner->strides.assign(
       owner->array.strides().begin(), owner->array.strides().end());
+  auto snapshot = snapshot_array(owner->array);
+  owner->host_data = std::move(snapshot.host_data);
+  auto* data_ptr =
+      reinterpret_cast<T*>(owner->host_data.data() + snapshot.logical_byte_offset);
   auto* owner_ptr = owner.get();
   auto capsule = nb::capsule(
       owner.release(),
       [](void* ptr) noexcept { delete static_cast<NdArrayOwner*>(ptr); });
   return nb::ndarray<NDParams...>(
-      owner_ptr->host_data.empty()
-          ? owner_ptr->array.template data<T>()
-          : reinterpret_cast<T*>(owner_ptr->host_data.data()),
+      data_ptr,
       owner_ptr->array.ndim(),
       owner_ptr->shape.data(),
       capsule,
@@ -250,7 +275,7 @@ nb::object to_scalar(mx::array& a) {
     throw std::invalid_argument(
         "[convert] Only length-1 arrays can be converted to Python scalars.");
   }
-  mx::array value = prepare_host_snapshot(a);
+  mx::array value = eval_for_host_read(a);
   switch (value.dtype()) {
     case mx::bool_:
       return nb::cast(scalar_from_host<bool>(value));
@@ -294,122 +319,103 @@ nb::object tolist(mx::array& a) {
     nb::gil_scoped_release nogil;
     a.eval();
   }
-  if (a.has_primitive() && !a.is_tracer()) {
-    a.detach();
-  }
-  auto row_contiguous = a.flags().row_contiguous;
-  mx::array value = row_contiguous ? prepare_host_snapshot(a) : a;
-  auto host_data = row_contiguous ? copy_array_to_host(value) : std::vector<char>{};
-  auto* data = row_contiguous
-      ? reinterpret_cast<const char*>(host_data.data())
-      : nullptr;
+  mx::array value = eval_for_host_read(a);
+  auto snapshot = snapshot_array(value);
   switch (value.dtype()) {
     case mx::bool_:
       return to_list<bool>(
-          row_contiguous ? reinterpret_cast<const bool*>(data) : value.data<bool>(),
+          snapshot.logical_data<bool>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::uint8:
       return to_list<uint8_t>(
-          row_contiguous ? reinterpret_cast<const uint8_t*>(data)
-                         : value.data<uint8_t>(),
+          snapshot.logical_data<uint8_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::uint16:
       return to_list<uint16_t>(
-          row_contiguous ? reinterpret_cast<const uint16_t*>(data)
-                         : value.data<uint16_t>(),
+          snapshot.logical_data<uint16_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::uint32:
       return to_list<uint32_t>(
-          row_contiguous ? reinterpret_cast<const uint32_t*>(data)
-                         : value.data<uint32_t>(),
+          snapshot.logical_data<uint32_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::uint64:
       return to_list<uint64_t>(
-          row_contiguous ? reinterpret_cast<const uint64_t*>(data)
-                         : value.data<uint64_t>(),
+          snapshot.logical_data<uint64_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::int8:
       return to_list<int8_t>(
-          row_contiguous ? reinterpret_cast<const int8_t*>(data)
-                         : value.data<int8_t>(),
+          snapshot.logical_data<int8_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::int16:
       return to_list<int16_t>(
-          row_contiguous ? reinterpret_cast<const int16_t*>(data)
-                         : value.data<int16_t>(),
+          snapshot.logical_data<int16_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::int32:
       return to_list<int32_t>(
-          row_contiguous ? reinterpret_cast<const int32_t*>(data)
-                         : value.data<int32_t>(),
+          snapshot.logical_data<int32_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::int64:
       return to_list<int64_t>(
-          row_contiguous ? reinterpret_cast<const int64_t*>(data)
-                         : value.data<int64_t>(),
+          snapshot.logical_data<int64_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::float16:
       return to_list<mx::float16_t, float>(
-          row_contiguous ? reinterpret_cast<const mx::float16_t*>(data)
-                         : value.data<mx::float16_t>(),
+          snapshot.logical_data<mx::float16_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::float32:
       return to_list<float>(
-          row_contiguous ? reinterpret_cast<const float*>(data) : value.data<float>(),
+          snapshot.logical_data<float>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::bfloat16:
       return to_list<mx::bfloat16_t, float>(
-          row_contiguous ? reinterpret_cast<const mx::bfloat16_t*>(data)
-                         : value.data<mx::bfloat16_t>(),
+          snapshot.logical_data<mx::bfloat16_t>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::float64:
       return to_list<double>(
-          row_contiguous ? reinterpret_cast<const double*>(data)
-                         : value.data<double>(),
+          snapshot.logical_data<double>(),
           value.shape(),
           value.strides(),
           0,
           0);
     case mx::complex64:
       return to_list<std::complex<float>>(
-          row_contiguous ? reinterpret_cast<const std::complex<float>*>(data)
-                         : value.data<std::complex<float>>(),
+          snapshot.logical_data<std::complex<float>>(),
           value.shape(),
           value.strides(),
           0,

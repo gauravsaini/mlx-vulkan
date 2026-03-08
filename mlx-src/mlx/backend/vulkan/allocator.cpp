@@ -174,12 +174,10 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
 
   VmaAllocationCreateInfo alloc_info{};
   alloc_info.usage = VMA_MEMORY_USAGE_AUTO;
-  // Prefer device-local; for integrated GPUs VMA will pick host-visible
-  alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
-  // Ensure that memory maps are automatically flushed to GPU without manual
-  // vmaFlushAllocation
-  alloc_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  // Prefer device-local allocations and rely on explicit staging when direct
+  // host access is unavailable. Integrated GPUs may still choose host-visible
+  // memory, but discrete bring-up must not depend on it.
+  alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
 
   VkBuffer vk_buffer;
   VmaAllocation allocation;
