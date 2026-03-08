@@ -58,6 +58,8 @@ struct MLX_API CommandEncoder {
     // is already CPU-accessible (no staging needed).
     if (stream_.device.type == Device::DeviceType::gpu) {
       task();
+      temporaries_.clear();
+      data_references_.clear();
       return;
     }
 

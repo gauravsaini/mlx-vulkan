@@ -82,7 +82,7 @@ Full suite runs to completion with no segfaults or hangs.
 | `test_take` | Indexing result mismatch for multi-dim takes | P1 |
 | `test_take_along_axis` | Indexing result mismatch for axis takes | P1 |
 | `test_put_along_axis` | `[0, 0]` != `[15, 122]` — ScatterAxis wrong result | P1 |
-| `test_scans` | Scan correctness issue (assertion failure, not segfault) | P1 |
+| `test_scans` | "Attempting to eval an array without a primitive" (Upstream MLX macOS Bug, Memory Race Fixed) | P1 |
 | `test_softmax` | Precision: `0.03...` unexpected value | P2 |
 | `test_round` | Wrong result — `round()` not correctly implemented on GPU | P2 |
 | `test_logcumsumexp` | LogAddExp scan returns wrong result | P2 |
@@ -112,6 +112,11 @@ logical_not, isinf, isnan, isneginf, nan_to_num, maximum, minimum, logaddexp, lo
 50. **Vulkan runtime availability check** (`backend/vulkan/device_info.cpp`):
     - Replaced hardcoded `gpu::is_available() == true` with guarded runtime probe (`try/catch` around device init).
     - `device_count()` and `device_info()` now reflect actual availability instead of forcing invalid Vulkan startup.
+
+51. **Scan Memory Race Condition Fixed** (`backend/cpu/encoder.h`, `backend/vulkan/primitives.cpp`):
+    - Resolved non-deterministic memory corruption in `cumsum` resulting from eagerly recycled VMA buffers.
+    - Fixed a reference leak in `cpu::CommandEncoder` during GPU-stream CPU fallbacks.
+    - Fixed `GatherAxis`, `ScatterAxis`, and `Gather` to unconditionally extend lifetime of input buffers via `add_temporary`, preventing premature evaluator frees.
 
 ### Fixed (2026-03-07) — LogicalNot all-False on Vulkan backend
 

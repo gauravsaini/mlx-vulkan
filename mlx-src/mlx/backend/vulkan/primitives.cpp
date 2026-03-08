@@ -1838,12 +1838,8 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
         vulkan::get_buffer(out),
         pc,
         out.size());
-    if (src_copied) {
-      dev.add_temporary(stream(), src);
-    }
-    if (idx_copied) {
-      dev.add_temporary(stream(), idx);
-    }
+    dev.add_temporary(stream(), src);
+    dev.add_temporary(stream(), idx);
     return;
   }
 
@@ -1943,12 +1939,8 @@ void GatherAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
       vulkan::get_buffer(out),
       pc,
       out.size());
-  if (src_copied) {
-    dev.add_temporary(stream(), src_storage);
-  }
-  if (idx_copied) {
-    dev.add_temporary(stream(), idx_storage);
-  }
+  dev.add_temporary(stream(), src_storage);
+  dev.add_temporary(stream(), idx_storage);
 }
 
 // General Scatter: multi-axis → CPU fallback
@@ -2058,12 +2050,8 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
       vulkan::get_buffer(out),
       pc,
       updates.size());
-  if (idx_copied) {
-    dev.add_temporary(stream(), idx_contig);
-  }
-  if (updates_copied) {
-    dev.add_temporary(stream(), updates_contig);
-  }
+  dev.add_temporary(stream(), idx);
+  dev.add_temporary(stream(), updates);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

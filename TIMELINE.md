@@ -2,6 +2,22 @@
 
 ## UPDATED ON : 2026-03-08
 
+### fix (2026-03-08) — Scan Race Condition and Memory Corruption Fixed
+
+1. **`CommandEncoder` Memory Leak Fixed** (`backend/cpu/encoder.h`):
+   - Root cause: When GPU-backed primitives (like `Scan`) generated a CPU fallback executed on a GPU stream, the `cpu::CommandEncoder` leaked references to `temporaries_` and `data_references_` indefinitely.
+   - Fix: Cleared `temporaries_` and `data_references_` after synchronous execution on the GPU stream (`stream_.device.type == Device::DeviceType::gpu`).
+   
+2. **GPU Indexing Ops Buffer Lifetimes Fixed** (`backend/vulkan/primitives.cpp`):
+   - Root cause: `GatherAxis`, `ScatterAxis`, and `Gather` failed to conditionally retain their input buffers (`dev.add_temporary`) if no contiguous copy was made. The MLX evaluator immediately freed intermediate outputs (e.g. from `Scan`), which VMA eagerly recycled to concurrent `Scan` operations, overwriting data before the indexing shader could read it.
+   - Fix: Removed conditional retention and made `dev.add_temporary` calls unconditional for all source and index buffers in `Gather::eval_gpu`, `GatherAxis::eval_gpu`, and `ScatterAxis::eval_gpu`.
+   
+3. **Validation**:
+   - `test_race.py` (a targeted python script reproducing the `cumsum` and `GatherAxis` race condition) runs perfectly 100% of the time without memory corruption.
+   - Note: The remaining `Attempting to eval an array without a primitive` error in the overarching `test_scans` is an independent bug in the base MLX evaluation tree, confirmed by reproducing it on pristine upstream macOS branches.
+
+---
+
 ### wip (2026-03-08) — Vulkan-build CPU fallback: broadcast predicate/allclose lifetime investigation
 
 1. **Stability work completed**:
