@@ -30,6 +30,11 @@ run_cmd() {
     "$@"
 }
 
+run_cmd_allow_fail() {
+    echo "+ $*"
+    "$@" || true
+}
+
 echo "═══════════════════════════════════════"
 echo "  Google Colab NVIDIA Vulkan Smoke"
 echo "═══════════════════════════════════════"
@@ -85,9 +90,19 @@ args=()
 shader_stage=""
 target_env=""
 input=""
+show_version=0
+show_help=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --version|-v)
+            show_version=1
+            shift
+            ;;
+        --help|-h)
+            show_help=1
+            shift
+            ;;
         --target-env=*)
             target_env="${1#*=}"
             shift
@@ -117,6 +132,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ "$show_help" -eq 1 ]; then
+    exec glslangValidator --help
+fi
+
+if [ "$show_version" -eq 1 ] && [ -z "$input" ]; then
+    exec glslangValidator --version
+fi
+
 if [ -z "$input" ]; then
     echo "glslc wrapper: missing input shader" >&2
     exit 1
@@ -145,7 +168,7 @@ run_cmd cmake --version
 run_cmd gcc --version
 run_cmd g++ --version
 run_cmd git --version
-run_cmd glslc --version
+run_cmd_allow_fail glslc --version
 if command -v glslangValidator >/dev/null 2>&1; then
     run_cmd glslangValidator --version
 fi

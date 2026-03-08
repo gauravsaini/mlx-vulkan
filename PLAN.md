@@ -38,6 +38,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       Header follow-up: explicitly installs `liblapack-dev` and `liblapacke-dev` on Colab/Jammy so the CPU backend can compile `lapack.h`-based code even when BLAS/LAPACK libraries are being provided from a different preloaded stack.
       Diagnostics follow-up: the Colab smoke script now prints environment/toolchain summaries, Vulkan ICD visibility, explicit build commands, built artifact paths, and supports `MLX_COLAB_TRACE=1` for shell xtrace.
       FFT compile follow-up: fixed `backend/vulkan/fft.cpp` to return `std::pair` instead of `std::tuple`, which was blocking Linux/Colab compilation in `compute_bluestein_constants(...)`.
+      Wrapper follow-up: the synthetic `glslc` shim now handles `--version` / `--help` cleanly so toolchain introspection does not fail before the build starts.
 - [x] Added `notebooks/nvidia_colab_smoke.ipynb`:
       provides a shareable Colab notebook that links to this repo, clones `main`, detects whether the runtime actually has an NVIDIA GPU, runs the smoke wrapper, and keeps the stricter linalg fallback check as a separate optional follow-up cell.
 - [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:
