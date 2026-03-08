@@ -293,11 +293,26 @@ if(MLX_BUILD_CPU)
     if(NOT LAPACK_FOUND)
       message(FATAL_ERROR "Must have LAPACK installed")
     endif()
-    find_path(LAPACK_INCLUDE_DIRS lapacke.h /usr/include /usr/local/include
-              /usr/local/opt/openblas/include)
+    find_path(
+      LAPACK_INCLUDE_DIRS
+      NAMES lapack.h lapacke.h
+      PATHS
+        /usr/include
+        /usr/include/x86_64-linux-gnu
+        /usr/include/mkl
+        /usr/local/include
+        /usr/local/opt/openblas/include
+        $ENV{MKLROOT}/include
+        $ENV{CONDA_PREFIX}/include)
     message(STATUS "Lapack lib " ${LAPACK_LIBRARIES})
     message(STATUS "Lapack include " ${LAPACK_INCLUDE_DIRS})
-    target_include_directories(mlx PRIVATE ${LAPACK_INCLUDE_DIRS})
+    if(LAPACK_INCLUDE_DIRS)
+      target_include_directories(mlx PRIVATE ${LAPACK_INCLUDE_DIRS})
+    else()
+      message(
+        STATUS
+          "LAPACK headers not found via find_path; relying on compiler default include search paths")
+    endif()
     target_link_libraries(mlx PRIVATE ${LAPACK_LIBRARIES})
     # List blas after lapack otherwise we may accidentally incldue an old
     # version of lapack.h from the include dirs of blas.
@@ -306,11 +321,26 @@ if(MLX_BUILD_CPU)
       message(FATAL_ERROR "Must have BLAS installed")
     endif()
     # TODO find a cleaner way to do this
-    find_path(BLAS_INCLUDE_DIRS cblas.h /usr/include /usr/local/include
-              $ENV{BLAS_HOME}/include)
+    find_path(
+      BLAS_INCLUDE_DIRS
+      NAMES cblas.h
+      PATHS
+        /usr/include
+        /usr/include/x86_64-linux-gnu
+        /usr/include/mkl
+        /usr/local/include
+        $ENV{BLAS_HOME}/include
+        $ENV{MKLROOT}/include
+        $ENV{CONDA_PREFIX}/include)
     message(STATUS "Blas lib " ${BLAS_LIBRARIES})
     message(STATUS "Blas include " ${BLAS_INCLUDE_DIRS})
-    target_include_directories(mlx PRIVATE ${BLAS_INCLUDE_DIRS})
+    if(BLAS_INCLUDE_DIRS)
+      target_include_directories(mlx PRIVATE ${BLAS_INCLUDE_DIRS})
+    else()
+      message(
+        STATUS
+          "BLAS headers not found via find_path; relying on compiler default include search paths")
+    endif()
     target_link_libraries(mlx PRIVATE ${BLAS_LIBRARIES})
   endif()
 else()

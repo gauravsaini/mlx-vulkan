@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MLX_SRC="$ROOT_DIR/mlx-src"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg-runtime}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+VULKAN_HAS_LLVMPIPE=0
 
 echo "═══════════════════════════════════════"
 echo "  Google Colab NVIDIA Vulkan Smoke"
@@ -117,7 +121,15 @@ echo "→ Python build deps"
 echo ""
 echo "→ Vulkan summary"
 if [ "$HAS_NVIDIA" -eq 1 ] && command -v vulkaninfo >/dev/null 2>&1; then
-    vulkaninfo --summary || true
+    VULKAN_SUMMARY="$(vulkaninfo --summary 2>&1 || true)"
+    printf '%s\n' "$VULKAN_SUMMARY"
+    if printf '%s\n' "$VULKAN_SUMMARY" | grep -qi "llvmpipe"; then
+        VULKAN_HAS_LLVMPIPE=1
+        echo ""
+        echo "WARNING: Vulkan is currently exposing llvmpipe, not the NVIDIA GPU."
+        echo "The Colab runtime has an NVIDIA CUDA device, but not a usable NVIDIA Vulkan ICD."
+        echo "The script will stop at compile/import validation instead of running the Stage 25 NVIDIA gate."
+    fi
 else
     echo "Skipping vulkaninfo summary without an attached NVIDIA runtime"
 fi
@@ -129,7 +141,7 @@ CMAKE_ARGS="-DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CUDA=OFF -DM
     "$PYTHON_BIN" setup.py build_ext --inplace
 
 echo ""
-if [ "$HAS_NVIDIA" -eq 1 ]; then
+if [ "$HAS_NVIDIA" -eq 1 ] && [ "$VULKAN_HAS_LLVMPIPE" -eq 0 ]; then
     echo "→ Running Stage 25 with NVIDIA vendor gate"
     cd "$ROOT_DIR"
     PYTHONPATH="$MLX_SRC/python" \
@@ -146,5 +158,10 @@ print("mx.is_available(mx.gpu) =", mx.is_available(mx.gpu))
 print("mx.default_device() =", mx.default_device())
 PY
     echo ""
-    echo "Compile/import-only probe passed. Re-run this notebook on a GPU runtime for the full NVIDIA smoke."
+    if [ "$HAS_NVIDIA" -eq 1 ] && [ "$VULKAN_HAS_LLVMPIPE" -eq 1 ]; then
+        echo "Compile/import-only probe passed, but Vulkan is still routed to llvmpipe."
+        echo "This Colab image is not currently usable for the NVIDIA Vulkan smoke."
+    else
+        echo "Compile/import-only probe passed. Re-run this notebook on a GPU runtime for the full NVIDIA smoke."
+    fi
 fi
