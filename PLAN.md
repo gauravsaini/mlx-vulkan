@@ -17,28 +17,30 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ---
 
-## Current Priority (as of 2026-03-08)
+## Current Priority (as of 2026-03-09)
 
-**Top milestone**: first successful end-to-end MLX execution on a real Linux AMD GPU using the Vulkan backend.
+**Top milestone**: first successful end-to-end MLX execution on a real Linux NVIDIA GPU using the Vulkan backend.
 
-**Current status**: Not there yet. The backend has strong MoltenVK stage coverage, but Linux/AMD execution is still unvalidated, the full Vulkan-linked pytest story is not yet green, and the remaining failures are still concentrated in stability, fallback lifetime, and correctness paths that will matter on a discrete GPU.
+**Current status**: Not there yet. The backend has strong MoltenVK stage coverage, but Linux/NVIDIA execution is still unvalidated, the full Vulkan-linked pytest story is not yet green, and the remaining failures are still concentrated in discrete-memory safety, fallback lifetime, and correctness paths that will matter on a discrete GPU.
 
-### AMD/Linux Bring-up Checklist
+### NVIDIA/Linux Bring-up Checklist
 
-- [ ] Provision a real Linux AMD machine or runner and make it the primary validation target.
+- [ ] Provision a real Linux NVIDIA machine or runner and make it the primary validation target.
 - [ ] Build `MLX_BUILD_VULKAN=ON` on Linux and verify `import mlx.core` succeeds without macOS-specific packaging steps.
-- [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_amd_bringup.py`:
-      covers import, GPU detection, core ops, CPU-fallback output paths, and linalg fallbacks; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_AMD=1` for strict AMD runner gating.
-      Latest expansion: also checks Python bridge safety (`memoryview`, NumPy export, and `tolist()`) against the freshly built extension.
+- [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_linux_vulkan_bringup.py`:
+      covers import, GPU detection, core ops, CPU-fallback output paths, and Python bridge safety; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_VENDOR=amd|nvidia|intel` for strict runner gating.
+      Latest expansion: linalg fallback checks remain available behind `MLX_VULKAN_INCLUDE_LINALG=1`, but are no longer part of the default first-pass NVIDIA bring-up contract.
+- [x] Added `tests/vulkan/google_colab_nvidia_smoke.sh` as the first disposable Linux/NVIDIA lane:
+      installs Vulkan build prerequisites on a Colab-style Ubuntu runtime, builds the Python extension in place with Vulkan enabled, prints `nvidia-smi` / `vulkaninfo --summary`, and runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia`.
 - [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:
       includes stages 3a-25, fixes the outdated Stage 17 entry, supports `PYTHON_BIN`, and no longer aborts on skipped stages under `set -e`.
-- [ ] Confirm runtime detection on AMD with the new smoke gate: `is_available(gpu)`, `device_count(gpu)`, `device_info(gpu)`, and the Stage 25 Python smoke test.
-- [ ] Run the Vulkan stage suite on AMD and fix any discrete-GPU-only failures first.
-- [ ] Run targeted MLX coverage on AMD: `test_ops.py`, `test_array.py`, `test_random.py`, and a small inference-oriented smoke path (`matmul`, `softmax`, `layer_norm`, `rope`).
+- [ ] Confirm runtime detection on NVIDIA with the new smoke gate: `is_available(gpu)`, `device_count(gpu)`, `device_info(gpu)`, and the Stage 25 Python smoke test.
+- [ ] Run the Vulkan stage suite on NVIDIA and fix any discrete-GPU-only failures first.
+- [ ] Run targeted MLX coverage on NVIDIA: `test_ops.py`, `test_array.py`, `test_random.py`, and a small inference-oriented smoke path (`matmul`, `softmax`, `layer_norm`, `rope`).
 - [ ] Prioritize anything blocking that path: staging-buffer correctness, synchronization, allocator lifetime, CPU fallback safety, and teardown stability.
-- [ ] Defer perf tuning, cooperative matrix work, distributed ops, and non-essential feature work until the AMD bring-up path is stable.
+- [ ] Defer AMD-specific tuning, cooperative matrix work, distributed ops, and non-essential feature work until the NVIDIA bring-up path is stable.
 
-### Pre-AMD Blockers From Static Code Review
+### Pre-NVIDIA Blockers From Static Code Review
 
 - [x] First-pass fix for Vulkan allocator readback ownership in `backend/vulkan/allocator.cpp`:
       separated VMA mappings from CPU readback snapshots so discrete-GPU `raw_ptr()` no longer stores heap snapshots as fake VMA mappings.
@@ -61,27 +63,27 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       `python/src/buffer.h` and `python/src/convert.cpp` now expose host-owned snapshots for buffer protocol, NumPy export, scalar conversion, and `tolist()` paths instead of dereferencing backend memory directly; the Python buffer protocol is explicitly read-only on those snapshot-backed exports, including reversed / strided views.
 - [x] Remove or downgrade overstated readiness claims:
       `VK_EXT_external_memory_host` zero-copy, Vulkan `mx.compile()` GPU fusion, SDPA coverage, and full FFT surface coverage.
-- [ ] Re-audit MoltenVK-only fallback assumptions before AMD bring-up:
+- [ ] Re-audit MoltenVK-only fallback assumptions before NVIDIA bring-up:
       linalg fallbacks, dynamic offset reads, quantized dequant readback, and any direct `data<T>()` access on GPU-backed arrays.
 - [ ] Broad allocator memory-model flip still pending:
       the model-loading, main CPU-fallback output path, and shared serialization/readback paths are now staged safely, but a final audit is still needed for direct host access that occurs outside encoder-managed GPU fallbacks and outside the already-patched construction/load/readback helpers before primary Vulkan allocations can move to fully device-local discrete-GPU behavior.
-- [ ] Non-core paths still need explicit AMD validation:
+- [ ] Non-core paths still need explicit NVIDIA validation:
       distributed backends and other code that bypasses the CPU encoder are not yet part of the validated bring-up gate.
-      Current audit result: MPI/ring/JACCL still use direct host pointers internally, but Vulkan distributed ops are explicit no-GPU stubs today, so they are not blockers for the first single-node AMD bring-up milestone.
+      Current audit result: MPI/ring/JACCL still use direct host pointers internally, but Vulkan distributed ops are explicit no-GPU stubs today, so they are not blockers for the first single-node NVIDIA bring-up milestone.
 
 ### Exit Criteria For This Milestone
 
-- [ ] Linux AMD build succeeds from a clean checkout.
-- [ ] `mlx.core` imports and sees the Vulkan GPU on AMD.
-- [ ] No segfaults, bus errors, or teardown crashes in the targeted AMD validation path.
-- [ ] Stage suite passes on AMD or fails only for explicitly documented unsupported paths.
-- [ ] Core MLX smoke workload runs on the Vulkan backend on AMD without manual intervention.
+- [ ] Linux NVIDIA build succeeds from a clean checkout.
+- [ ] `mlx.core` imports and sees the Vulkan GPU on NVIDIA.
+- [ ] No segfaults, bus errors, or teardown crashes in the targeted NVIDIA validation path.
+- [ ] Stage suite passes on NVIDIA or fails only for explicitly documented unsupported paths.
+- [ ] Core MLX smoke workload runs on the Vulkan backend on NVIDIA without manual intervention.
 
 ---
 
 ## Build Status (as of 2026-03-03)
 
-> This section is a MoltenVK/macOS validation snapshot. It does not by itself imply Linux/AMD readiness.
+> This section is a MoltenVK/macOS validation snapshot. It does not by itself imply Linux/NVIDIA readiness.
 
 **Build dir**: `build/temp.macosx-15.0-arm64-cpython-311/mlx.core/`
 **Python**: 3.11 (`python3.11`) — `.so` is `core.cpython-311-darwin.so`

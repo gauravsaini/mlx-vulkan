@@ -141,8 +141,8 @@ stage_run 24 "QQMatmul / Quantize / GatherQMM" \
 stage_run 24 "Subgroup / Workgroup Validation" \
     "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage24_subgroup.py'"
 
-stage_run 25 "AMD Bring-up Smoke" \
-    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage25_amd_bringup.py'"
+stage_run 25 "Linux Vulkan Bring-up Smoke" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage25_linux_vulkan_bringup.py'"
 echo ""
 echo "╔═══════════════════════════════════════╗"
 echo "║  Final Results                        ║"

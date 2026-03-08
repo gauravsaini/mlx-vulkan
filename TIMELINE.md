@@ -1,6 +1,23 @@
 # MLX Vulkan Backend — Change Timeline
 
-## UPDATED ON : 2026-03-08
+## UPDATED ON : 2026-03-09
+
+### pivot (2026-03-09) — NVIDIA-first Linux bring-up and Colab bootstrap
+
+1. **Top milestone switched to NVIDIA** (`PLAN.md`, `TIMELINE.md`):
+   - Replaced the AMD-first bring-up wording in the tracker with a Linux/NVIDIA-first milestone.
+   - NVIDIA is now the primary validation target; AMD is deferred until after the first discrete-GPU Linux bring-up path is proven on NVIDIA.
+
+2. **Stage 25 renamed and generalized** (`tests/vulkan/test_stage25_linux_vulkan_bringup.py`, `tests/vulkan/run_all_stages.sh`):
+   - Renamed the Stage 25 smoke from the AMD-specific filename to a generic Linux Vulkan bring-up gate.
+   - Added vendor gating via `MLX_VULKAN_REQUIRE_VENDOR=amd|nvidia|intel`, while keeping `MLX_VULKAN_REQUIRE_AMD=1` and `MLX_VULKAN_REQUIRE_NVIDIA=1` as compatibility aliases.
+   - Moved linalg fallback checks behind `MLX_VULKAN_INCLUDE_LINALG=1` so the default Stage 25 path stays aligned with first-pass Linux/NVIDIA bring-up rather than overstating current linalg readiness.
+   - The runner now points at the renamed script and labels Stage 25 as a Linux Vulkan bring-up smoke rather than an AMD-only check.
+
+3. **Colab/NVIDIA bootstrap added** (`tests/vulkan/google_colab_nvidia_smoke.sh`):
+   - Added a disposable Linux/NVIDIA smoke wrapper for Colab-style Ubuntu runtimes.
+   - The script installs Vulkan build prerequisites, prints `nvidia-smi` plus `vulkaninfo --summary`, builds the Python extension in place with Vulkan enabled, and runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia`.
+   - This is the first concrete path to test compilation and initial backend execution on an easily available NVIDIA machine.
 
 ### fix (2026-03-08) — Shared host-copy path for Vulkan discrete-memory safety
 
@@ -14,7 +31,7 @@
 
 3. **Shared non-Vulkan write paths hardened** (`backend/common/common.cpp`, `backend/common/load.cpp`, `io/gguf.cpp`, `io/gguf_quants.cpp`):
    - Common scalar output (`NumberOfElements`), file-load staging, GGUF tensor import, and GGUF quantized unpacking now write through allocator copies instead of direct pointer access.
-   - This covers the main inference/model-loading path needed for AMD/Linux bring-up.
+   - This covers the main inference/model-loading path needed for first Linux discrete-GPU bring-up.
 
 4. **Central GPU-stream CPU fallback flush** (`backend/cpu/encoder.h`):
    - Added a post-dispatch flush for GPU-stream CPU fallbacks so encoder-managed outputs written through `data<T>()` are copied back through the allocator bridge before returning to the Vulkan evaluator.
@@ -35,16 +52,16 @@
      - `cholesky`
      - `eigh`
 
-6. **Bring-up gate added** (`tests/vulkan/test_stage25_amd_bringup.py`):
-   - Added a dedicated Stage 25 Python smoke for real Linux AMD validation.
+6. **Bring-up gate added** (`tests/vulkan/test_stage25_linux_vulkan_bringup.py`):
+   - Added a dedicated Stage 25 Python smoke for real Linux discrete-GPU validation.
    - Covers:
      - import/build sanity,
      - Vulkan GPU detection,
      - core matmul/softmax execution,
-     - allocator-sensitive CPU-fallback outputs (`isinf(int)`, empty-K matmul),
-     - linalg CPU fallbacks (`qr`, `svd`, `inv`).
+     - allocator-sensitive CPU-fallback outputs (`isinf(int)`, empty-K matmul).
    - Supports `MLX_CORE_SO=...` to test fresh local builds without copying the extension into the Python package.
-   - Supports `MLX_VULKAN_REQUIRE_AMD=1` to hard-fail on non-AMD hardware when used on a real runner.
+   - Supports `MLX_VULKAN_REQUIRE_VENDOR=amd|nvidia|intel` to hard-fail on the wrong vendor when used on a real runner.
+   - Follow-up: linalg fallback checks are still available behind `MLX_VULKAN_INCLUDE_LINALG=1`, but are not part of the default first-pass bring-up gate.
 
 7. **Stage runner refreshed** (`tests/vulkan/run_all_stages.sh`):
    - Updated the master runner to include the current stage sequence through Stage 25.
@@ -60,7 +77,7 @@
      - GGUF save smoke,
      - `str(array)` / formatter path.
 
-9. **Python bridge hardened for host-snapshot reads** (`python/src/buffer.h`, `python/src/convert.cpp`, `tests/vulkan/test_stage25_amd_bringup.py`):
+9. **Python bridge hardened for host-snapshot reads** (`python/src/buffer.h`, `python/src/convert.cpp`, `tests/vulkan/test_stage25_linux_vulkan_bringup.py`):
    - Replaced direct `data<T>()` dereferences in the Python buffer protocol, NumPy export, scalar conversion, and `tolist()` paths with allocator-level host copies.
    - Buffer protocol exports are now explicitly read-only when they expose host snapshots rather than aliased backend storage.
    - Expanded the Stage 25 bring-up smoke to cover:
@@ -84,8 +101,8 @@
 12. **Remaining gap**:
    - The simple fresh-allocation zero-fill/scalar cases are now covered, encoder-managed GPU-stream CPU fallback outputs are flushed centrally, and the shared serialization/readback helpers are staged safely.
    - The remaining work before a full device-local allocator flip is a final audit for direct host access that still bypasses those paths.
-   - Non-core paths like distributed backends remain outside the validated AMD bring-up gate.
-   - Follow-up audit result: MPI/ring/JACCL still use direct host pointers internally, but Vulkan distributed primitives are currently explicit no-GPU stubs, so they are deferred rather than blockers for first single-node Linux AMD bring-up.
+   - Non-core paths like distributed backends remain outside the validated first discrete-GPU bring-up gate.
+   - Follow-up audit result: MPI/ring/JACCL still use direct host pointers internally, but Vulkan distributed primitives are currently explicit no-GPU stubs, so they are deferred rather than blockers for first single-node Linux NVIDIA bring-up.
 
 ### fix (2026-03-08) — Scan Race Condition and Memory Corruption Fixed
 

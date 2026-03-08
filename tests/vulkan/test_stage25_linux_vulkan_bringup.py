@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Stage 25: Linux AMD bring-up smoke for the Vulkan backend.
+Stage 25: Linux Vulkan bring-up smoke for the backend.
 
 Usage:
-  python tests/vulkan/test_stage25_amd_bringup.py
+  python tests/vulkan/test_stage25_linux_vulkan_bringup.py
 
 Optional environment flags:
+  MLX_VULKAN_REQUIRE_VENDOR=amd|nvidia|intel
+    Fail if the detected GPU vendor does not match the requested value.
   MLX_VULKAN_REQUIRE_AMD=1
-    Fail if the detected GPU is not AMD.
+    Legacy alias for MLX_VULKAN_REQUIRE_VENDOR=amd.
+  MLX_VULKAN_REQUIRE_NVIDIA=1
+    Legacy alias for MLX_VULKAN_REQUIRE_VENDOR=nvidia.
+  MLX_VULKAN_INCLUDE_LINALG=1
+    Also run the current linalg CPU-fallback smoke. This is disabled by default
+    for first-pass Linux/NVIDIA bring-up because that path is not yet stable.
 """
 
 import os
@@ -27,6 +34,22 @@ def info_to_str(value):
 def vendor_looks_amd(info):
     text = " ".join(info_to_str(v).lower() for v in info.values())
     return "amd" in text or "advanced micro devices" in text or "radeon" in text
+
+
+def vendor_looks_nvidia(info):
+    text = " ".join(info_to_str(v).lower() for v in info.values())
+    return "nvidia" in text or "geforce" in text or "tesla" in text or "quadro" in text
+
+
+def vendor_matches(info, required_vendor):
+    if required_vendor == "amd":
+        return vendor_looks_amd(info)
+    if required_vendor == "nvidia":
+        return vendor_looks_nvidia(info)
+    if required_vendor == "intel":
+        text = " ".join(info_to_str(v).lower() for v in info.values())
+        return "intel" in text or "arc" in text
+    raise RuntimeError(f"Unsupported MLX_VULKAN_REQUIRE_VENDOR value: {required_vendor}")
 
 
 def check(name, fn, errors):
@@ -55,14 +78,20 @@ def main():
         print("Install/build MLX first, for example: pip install -e mlx-src/")
         return 1
 
-    print("=======================================")
-    print("  STAGE 25: AMD Vulkan Bring-up Smoke")
-    print("=======================================")
+    print("========================================")
+    print("  STAGE 25: Linux Vulkan Bring-up Smoke")
+    print("========================================")
     print(f"  Python: {sys.version.split()[0]}")
     print(f"  Platform: {platform.platform()}")
 
     errors = []
-    require_amd = os.environ.get("MLX_VULKAN_REQUIRE_AMD", "0") == "1"
+    required_vendor = os.environ.get("MLX_VULKAN_REQUIRE_VENDOR", "").strip().lower()
+    include_linalg = os.environ.get("MLX_VULKAN_INCLUDE_LINALG", "0") == "1"
+    if not required_vendor:
+        if os.environ.get("MLX_VULKAN_REQUIRE_AMD", "0") == "1":
+            required_vendor = "amd"
+        elif os.environ.get("MLX_VULKAN_REQUIRE_NVIDIA", "0") == "1":
+            required_vendor = "nvidia"
 
     check("mlx import", lambda: None, errors)
 
@@ -78,8 +107,8 @@ def main():
         else:
             first = info
         print(f"  GPU info: {first}")
-        if require_amd and not vendor_looks_amd(first):
-            raise RuntimeError(f"AMD GPU required, got: {first}")
+        if required_vendor and not vendor_matches(first, required_vendor):
+            raise RuntimeError(f"{required_vendor} GPU required, got: {first}")
 
     def check_core_ops():
         x = mx.array([[1.0, 2.0], [3.0, 4.0]], dtype=mx.float32)
@@ -182,7 +211,10 @@ def main():
     check("core ops", check_core_ops, errors)
     check("python bridge", check_python_bridge, errors)
     check("cpu fallback outputs", check_cpu_fallback_outputs, errors)
-    check("linalg fallbacks", check_linalg_fallbacks, errors)
+    if include_linalg:
+        check("linalg fallbacks", check_linalg_fallbacks, errors)
+    else:
+        print("  SKIP linalg fallbacks (set MLX_VULKAN_INCLUDE_LINALG=1 to enable)")
 
     print()
     if errors:
