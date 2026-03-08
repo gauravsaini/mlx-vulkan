@@ -7,6 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKIP_BUILD=0
 START_STAGE=1
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -28,7 +29,7 @@ stage_run() {
 
     if [ "$stage_num" -lt "$START_STAGE" ]; then
         echo "⏭️  Stage $stage_num skipped (--stage $START_STAGE)"
-        ((SKIP++))
+        SKIP=$((SKIP + 1))
         return
     fi
 
@@ -38,10 +39,10 @@ stage_run() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     if eval "$cmd"; then
-        ((PASS++))
+        PASS=$((PASS + 1))
         echo "✅ Stage $stage_num PASSED"
     else
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
         echo "❌ Stage $stage_num FAILED"
         echo ""
         echo "Fix Stage $stage_num before proceeding."
@@ -54,6 +55,7 @@ echo "╔═══════════════════════�
 echo "║  MLX Vulkan Backend Test Runner       ║"
 echo "║  Starting from Stage $START_STAGE                  ║"
 echo "╚═══════════════════════════════════════╝"
+echo "Using Python: $PYTHON_BIN"
 
 # Infrastructure stages (can run without Linux GPU on macOS dev)
 stage_run 1 "Vulkan Device Detection" \
@@ -67,41 +69,80 @@ fi
 stage_run 3 "SPIR-V Shader Compilation" \
     "bash '$SCRIPT_DIR/test_stage3_shaders.sh'"
 
+stage_run 3 "Allocator Validation" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage3a_allocator.py'"
+
+stage_run 4 "Unified Memory / Host Transfers" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage4_unified_mem.py'"
+
+stage_run 5 "Workgroup Tuning / Subgroup Info" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage5_workgroup_tune.py'"
+
 # Python stages (require mlx installed)
 stage_run 6 "MLX CPU Stream Sanity" \
-    "python '$SCRIPT_DIR/test_stage6_mlx_cpu.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage6_mlx_cpu.py'"
 
 stage_run 7 "GPU Stream Copy" \
-    "python '$SCRIPT_DIR/test_stage7_gpu_copy.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage7_gpu_copy.py'"
 
 stage_run 8 "Unary GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage8_unary.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage8_unary.py'"
 
 stage_run 9 "Binary GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage9_binary.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage9_binary.py'"
 
 stage_run 10 "Reduction GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage10_reduce.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage10_reduce.py'"
 
 stage_run 11 "Matmul GPU Op" \
-    "python '$SCRIPT_DIR/test_stage11_matmul.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage11_matmul.py'"
 
 stage_run 12 "Neural Net GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage12_nn_ops.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage12_nn_ops.py'"
 stage_run 13 "Indexing GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage13_indexing.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage13_indexing.py'"
 
 stage_run 14 "Sorting GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage14_sort.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage14_sort.py'"
 
 stage_run 15 "Scan Prefix GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage15_scan.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage15_scan.py'"
 
 stage_run 16 "NN Extended GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage16_nn_extended.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage16_nn_extended.py'"
+
+stage_run 17 "FFT GPU Ops" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage17_fft.py'"
 
 stage_run 17 "AddMM/Conv/Random GPU Ops" \
-    "python '$SCRIPT_DIR/test_stage17_addmm_random.py'"
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage17_addmm_conv_rbits.py'"
+
+stage_run 18 "Concatenate GPU Ops" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage18_concat.py'"
+
+stage_run 19 "Quantized GPU Ops" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage19_quantized.py'"
+
+stage_run 20 "Linalg CPU Fallbacks on GPU Stream" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage20_linalg.py'"
+
+stage_run 21 "Advanced Matmul Ops" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage21_advanced_mm.py'"
+
+stage_run 22 "Event / Fence Synchronization" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage22_sync.py'"
+
+stage_run 23 "Shape / Misc Ops" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage23_shape_misc.py'"
+
+stage_run 24 "QQMatmul / Quantize / GatherQMM" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage24_qqmatmul.py'"
+
+stage_run 24 "Subgroup / Workgroup Validation" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage24_subgroup.py'"
+
+stage_run 25 "AMD Bring-up Smoke" \
+    "'$PYTHON_BIN' '$SCRIPT_DIR/test_stage25_amd_bringup.py'"
 echo ""
 echo "╔═══════════════════════════════════════╗"
 echo "║  Final Results                        ║"

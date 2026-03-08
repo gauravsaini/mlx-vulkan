@@ -29,6 +29,8 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 - [ ] Build `MLX_BUILD_VULKAN=ON` on Linux and verify `import mlx.core` succeeds without macOS-specific packaging steps.
 - [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_amd_bringup.py`:
       covers import, GPU detection, core ops, CPU-fallback output paths, and linalg fallbacks; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_AMD=1` for strict AMD runner gating.
+- [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:
+      includes stages 3a-25, fixes the outdated Stage 17 entry, supports `PYTHON_BIN`, and no longer aborts on skipped stages under `set -e`.
 - [ ] Confirm runtime detection on AMD with the new smoke gate: `is_available(gpu)`, `device_count(gpu)`, `device_info(gpu)`, and the Stage 25 Python smoke test.
 - [ ] Run the Vulkan stage suite on AMD and fix any discrete-GPU-only failures first.
 - [ ] Run targeted MLX coverage on AMD: `test_ops.py`, `test_array.py`, `test_random.py`, and a small inference-oriented smoke path (`matmul`, `softmax`, `layer_norm`, `rope`).

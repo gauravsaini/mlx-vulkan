@@ -46,7 +46,13 @@
    - Supports `MLX_CORE_SO=...` to test fresh local builds without copying the extension into the Python package.
    - Supports `MLX_VULKAN_REQUIRE_AMD=1` to hard-fail on non-AMD hardware when used on a real runner.
 
-7. **Shared readback/serialization hardening** (`export.cpp`, `io/load.cpp`, `io/safetensors.cpp`, `io/gguf.cpp`, `compile.cpp`, `utils.cpp`):
+7. **Stage runner refreshed** (`tests/vulkan/run_all_stages.sh`):
+   - Updated the master runner to include the current stage sequence through Stage 25.
+   - Fixed the outdated Stage 17 entry and added the missing later stages.
+   - Added `PYTHON_BIN` override support for more predictable Linux bring-up runs.
+   - Fixed `set -e` counter handling so `--stage 25` style runs do not abort on skipped earlier stages.
+
+8. **Shared readback/serialization hardening** (`export.cpp`, `io/load.cpp`, `io/safetensors.cpp`, `io/gguf.cpp`, `compile.cpp`, `utils.cpp`):
    - Replaced direct `data<T>()`-based reads with allocator-level host copies in the common save/export/readback helpers.
    - Verified locally with:
      - `.npy` save/load smoke,
@@ -54,7 +60,7 @@
      - GGUF save smoke,
      - `str(array)` / formatter path.
 
-8. **Remaining gap**:
+9. **Remaining gap**:
    - The simple fresh-allocation zero-fill/scalar cases are now covered, encoder-managed GPU-stream CPU fallback outputs are flushed centrally, and the shared serialization/readback helpers are staged safely.
    - The remaining work before a full device-local allocator flip is a final audit for direct host access that still bypasses those paths.
    - Non-core paths like distributed backends remain outside the validated AMD bring-up gate.
