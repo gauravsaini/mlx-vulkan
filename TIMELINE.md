@@ -19,6 +19,10 @@
    - The script installs Vulkan build prerequisites, prints `nvidia-smi` plus `vulkaninfo --summary`, builds the Python extension in place with Vulkan enabled, and runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia`.
    - This is the first concrete path to test compilation and initial backend execution on an easily available NVIDIA machine.
 
+4. **Shareable notebook added** (`notebooks/nvidia_colab_smoke.ipynb`):
+   - Added a Colab-friendly notebook that links back to the repo, clones `main`, and runs the NVIDIA smoke wrapper end to end.
+   - Kept the stricter linalg fallback smoke in a separate optional cell so the notebook reflects the actual first-pass bring-up contract.
+
 ### fix (2026-03-08) — Shared host-copy path for Vulkan discrete-memory safety
 
 1. **Allocator-level host copy hook** (`mlx/allocator.h`, `backend/vulkan/allocator.h`, `backend/vulkan/allocator.cpp`):
