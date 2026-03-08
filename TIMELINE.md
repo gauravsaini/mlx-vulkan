@@ -58,6 +58,7 @@
    - The simple fresh-allocation zero-fill/scalar cases are now covered, encoder-managed GPU-stream CPU fallback outputs are flushed centrally, and the shared serialization/readback helpers are staged safely.
    - The remaining work before a full device-local allocator flip is a final audit for direct host access that still bypasses those paths.
    - Non-core paths like distributed backends remain outside the validated AMD bring-up gate.
+   - Follow-up audit result: MPI/ring/JACCL still use direct host pointers internally, but Vulkan distributed primitives are currently explicit no-GPU stubs, so they are deferred rather than blockers for first single-node Linux AMD bring-up.
 
 ### fix (2026-03-08) — Scan Race Condition and Memory Corruption Fixed
 

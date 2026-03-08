@@ -60,6 +60,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       the model-loading, main CPU-fallback output path, and shared serialization/readback paths are now staged safely, but a final audit is still needed for direct host access that occurs outside encoder-managed GPU fallbacks and outside the already-patched construction/load/readback helpers before primary Vulkan allocations can move to fully device-local discrete-GPU behavior.
 - [ ] Non-core paths still need explicit AMD validation:
       distributed backends and other code that bypasses the CPU encoder are not yet part of the validated bring-up gate.
+      Current audit result: MPI/ring/JACCL still use direct host pointers internally, but Vulkan distributed ops are explicit no-GPU stubs today, so they are not blockers for the first single-node AMD bring-up milestone.
 
 ### Exit Criteria For This Milestone
 
