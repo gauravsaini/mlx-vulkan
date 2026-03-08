@@ -35,6 +35,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       Colab/Jammy follow-up: installs `glslang-tools` plus `spirv-tools` and synthesizes a `glslc` compatibility wrapper from `glslangValidator` when the image does not provide a standalone `glslc` package.
       Colab/T4 follow-up: exports `XDG_RUNTIME_DIR`, relaxes LAPACK header discovery for MKL-backed Linux builds, and treats `llvmpipe` Vulkan exposure as an environment limitation rather than a backend failure.
       Cooperative-matrix follow-up: Vulkan shader build now probes whether `glslc` actually supports `GL_KHR_cooperative_matrix` before attempting the coop shader variants, so unsupported Linux toolchains fall back to dummy `.spv` outputs instead of aborting the build.
+      Header follow-up: explicitly installs `liblapack-dev` and `liblapacke-dev` on Colab/Jammy so the CPU backend can compile `lapack.h`-based code even when BLAS/LAPACK libraries are being provided from a different preloaded stack.
 - [x] Added `notebooks/nvidia_colab_smoke.ipynb`:
       provides a shareable Colab notebook that links to this repo, clones `main`, detects whether the runtime actually has an NVIDIA GPU, runs the smoke wrapper, and keeps the stricter linalg fallback check as a separate optional follow-up cell.
 - [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:

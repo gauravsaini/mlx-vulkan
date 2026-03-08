@@ -41,6 +41,8 @@ apt-get install -y \
     cmake \
     git \
     glslang-tools \
+    liblapack-dev \
+    liblapacke-dev \
     libvulkan-dev \
     ninja-build \
     spirv-tools \
