@@ -36,12 +36,79 @@ apt-get install -y \
     build-essential \
     cmake \
     git \
-    glslc \
+    glslang-tools \
     libvulkan-dev \
     ninja-build \
+    spirv-tools \
     python3-dev \
     python3-pip \
     vulkan-tools
+
+if ! command -v glslc >/dev/null 2>&1; then
+    if command -v glslangValidator >/dev/null 2>&1; then
+        echo ""
+        echo "→ Creating glslc compatibility wrapper from glslangValidator"
+        cat >/usr/local/bin/glslc <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+args=()
+shader_stage=""
+target_env=""
+input=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --target-env=*)
+            target_env="${1#*=}"
+            shift
+            ;;
+        -fshader-stage=compute)
+            shader_stage="comp"
+            shift
+            ;;
+        -o)
+            args+=("$1")
+            shift
+            args+=("$1")
+            shift
+            ;;
+        -I*|-D*)
+            args+=("$1")
+            shift
+            ;;
+        -*)
+            args+=("$1")
+            shift
+            ;;
+        *)
+            input="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$input" ]; then
+    echo "glslc wrapper: missing input shader" >&2
+    exit 1
+fi
+
+cmd=(glslangValidator -V)
+if [ -n "$target_env" ]; then
+    cmd+=(--target-env "$target_env")
+fi
+if [ -n "$shader_stage" ]; then
+    cmd+=(-S "$shader_stage")
+fi
+cmd+=("${args[@]}" "$input")
+"${cmd[@]}"
+EOF
+        chmod +x /usr/local/bin/glslc
+    else
+        echo "FAIL: neither glslc nor glslangValidator is available after package install"
+        exit 1
+    fi
+fi
 
 echo ""
 echo "→ Python build deps"

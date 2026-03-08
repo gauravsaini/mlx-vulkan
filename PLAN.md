@@ -32,6 +32,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       Latest expansion: linalg fallback checks remain available behind `MLX_VULKAN_INCLUDE_LINALG=1`, but are no longer part of the default first-pass NVIDIA bring-up contract.
 - [x] Added `tests/vulkan/google_colab_nvidia_smoke.sh` as the first disposable Linux/NVIDIA lane:
       installs Vulkan build prerequisites on a Colab-style Ubuntu runtime, builds the Python extension in place with Vulkan enabled, and either runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia` on a GPU runtime or falls back to a compile/import-only probe when Colab has no attached NVIDIA GPU.
+      Colab/Jammy follow-up: installs `glslang-tools` plus `spirv-tools` and synthesizes a `glslc` compatibility wrapper from `glslangValidator` when the image does not provide a standalone `glslc` package.
 - [x] Added `notebooks/nvidia_colab_smoke.ipynb`:
       provides a shareable Colab notebook that links to this repo, clones `main`, detects whether the runtime actually has an NVIDIA GPU, runs the smoke wrapper, and keeps the stricter linalg fallback check as a separate optional follow-up cell.
 - [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:
