@@ -22,6 +22,7 @@
    - Colab/T4 follow-up: export `XDG_RUNTIME_DIR`, fix LAPACK header discovery for MKL-backed Linux builds, and warn explicitly when the runtime exposes `llvmpipe` instead of an NVIDIA Vulkan ICD.
    - Cooperative-matrix follow-up: the Vulkan shader CMake now probes whether `glslc` supports `GL_KHR_cooperative_matrix` before compiling coop shader variants, and falls back to dummy `.spv` outputs when the compiler does not support the extension.
    - Header follow-up: install `liblapack-dev` and `liblapacke-dev` in the Colab bootstrap so `mlx/backend/cpu/lapack.h` can resolve `lapack.h` on Jammy.
+   - Diagnostics follow-up: added environment/toolchain summaries, Vulkan ICD listing, explicit command echoing, built artifact listing, and optional `MLX_COLAB_TRACE=1` shell tracing to the Colab smoke wrapper.
    - This is the first concrete path to test compilation and initial backend execution on an easily available NVIDIA machine.
 
 4. **Shareable notebook added** (`notebooks/nvidia_colab_smoke.ipynb`):

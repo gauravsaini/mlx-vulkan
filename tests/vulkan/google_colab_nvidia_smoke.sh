@@ -1,6 +1,8 @@
 #!/bin/bash
 # Bootstrap and run the Linux/NVIDIA Vulkan bring-up smoke on a Colab-style VM.
 # Usage: bash tests/vulkan/google_colab_nvidia_smoke.sh
+# Optional:
+#   MLX_COLAB_TRACE=1  Enable shell xtrace for deeper debugging.
 
 set -euo pipefail
 
@@ -8,10 +10,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MLX_SRC="$ROOT_DIR/mlx-src"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+MLX_COLAB_TRACE="${MLX_COLAB_TRACE:-0}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg-runtime}"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 VULKAN_HAS_LLVMPIPE=0
+
+if [ "$MLX_COLAB_TRACE" = "1" ]; then
+    set -x
+fi
+
+section() {
+    echo ""
+    echo "→ $1"
+}
+
+run_cmd() {
+    echo "+ $*"
+    "$@"
+}
 
 echo "═══════════════════════════════════════"
 echo "  Google Colab NVIDIA Vulkan Smoke"
@@ -22,21 +39,27 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     HAS_NVIDIA=1
 fi
 
-echo ""
-echo "→ Runtime detection"
+section "Runtime detection"
 if [ "$HAS_NVIDIA" -eq 1 ]; then
     echo "NVIDIA runtime detected."
-    nvidia-smi
+    run_cmd nvidia-smi
 else
     echo "No NVIDIA GPU runtime detected."
     echo "Colab note: switch to a GPU runtime if you want the full Vulkan/NVIDIA smoke."
     echo "Continuing with compile/import-only validation on this machine."
 fi
 
-echo ""
-echo "→ Installing Vulkan/build prerequisites"
-apt-get update
-apt-get install -y \
+section "Environment summary"
+echo "ROOT_DIR=$ROOT_DIR"
+echo "MLX_SRC=$MLX_SRC"
+echo "PYTHON_BIN=$PYTHON_BIN"
+echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+run_cmd uname -a
+run_cmd "$PYTHON_BIN" --version
+
+section "Installing Vulkan/build prerequisites"
+run_cmd apt-get update
+run_cmd apt-get install -y \
     build-essential \
     cmake \
     git \
@@ -116,12 +139,24 @@ EOF
     fi
 fi
 
-echo ""
-echo "→ Python build deps"
-"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel numpy
+section "Toolchain summary"
+run_cmd which "$PYTHON_BIN"
+run_cmd cmake --version
+run_cmd gcc --version
+run_cmd g++ --version
+run_cmd git --version
+run_cmd glslc --version
+if command -v glslangValidator >/dev/null 2>&1; then
+    run_cmd glslangValidator --version
+fi
+run_cmd "$PYTHON_BIN" -m pip --version
+echo "+ Vulkan ICD files"
+find /usr/share/vulkan /etc/vulkan -maxdepth 3 -type f \( -name '*.json' -o -name '*.icd' \) 2>/dev/null | sort || true
 
-echo ""
-echo "→ Vulkan summary"
+section "Python build deps"
+run_cmd "$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel numpy
+
+section "Vulkan summary"
 if [ "$HAS_NVIDIA" -eq 1 ] && command -v vulkaninfo >/dev/null 2>&1; then
     VULKAN_SUMMARY="$(vulkaninfo --summary 2>&1 || true)"
     printf '%s\n' "$VULKAN_SUMMARY"
@@ -136,21 +171,23 @@ else
     echo "Skipping vulkaninfo summary without an attached NVIDIA runtime"
 fi
 
-echo ""
-echo "→ Building mlx.core with Vulkan enabled"
+section "Building mlx.core with Vulkan enabled"
 cd "$MLX_SRC"
+echo "+ CMAKE_ARGS=-DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CUDA=OFF -DMLX_BUILD_CPU=ON $PYTHON_BIN setup.py build_ext --inplace"
 CMAKE_ARGS="-DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CUDA=OFF -DMLX_BUILD_CPU=ON" \
     "$PYTHON_BIN" setup.py build_ext --inplace
+echo "+ Built python artifacts"
+find "$MLX_SRC/build" "$MLX_SRC/python" -maxdepth 4 -type f \( -name 'core*.so' -o -name 'core*.pyd' -o -name 'core*.dylib' \) 2>/dev/null | sort || true
 
-echo ""
 if [ "$HAS_NVIDIA" -eq 1 ] && [ "$VULKAN_HAS_LLVMPIPE" -eq 0 ]; then
-    echo "→ Running Stage 25 with NVIDIA vendor gate"
+    section "Running Stage 25 with NVIDIA vendor gate"
     cd "$ROOT_DIR"
+    echo "+ PYTHONPATH=$MLX_SRC/python MLX_VULKAN_REQUIRE_VENDOR=nvidia $PYTHON_BIN $ROOT_DIR/tests/vulkan/test_stage25_linux_vulkan_bringup.py"
     PYTHONPATH="$MLX_SRC/python" \
     MLX_VULKAN_REQUIRE_VENDOR=nvidia \
     "$PYTHON_BIN" "$ROOT_DIR/tests/vulkan/test_stage25_linux_vulkan_bringup.py"
 else
-    echo "→ Running compile/import-only probe"
+    section "Running compile/import-only probe"
     cd "$ROOT_DIR"
     PYTHONPATH="$MLX_SRC/python" "$PYTHON_BIN" - <<'PY'
 import mlx.core as mx
