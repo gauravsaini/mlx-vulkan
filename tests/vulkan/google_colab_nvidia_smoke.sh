@@ -13,14 +13,21 @@ echo "════════════════════════�
 echo "  Google Colab NVIDIA Vulkan Smoke"
 echo "═══════════════════════════════════════"
 
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-    echo "FAIL: nvidia-smi not found. Start a GPU runtime first."
-    exit 1
+HAS_NVIDIA=0
+if command -v nvidia-smi >/dev/null 2>&1; then
+    HAS_NVIDIA=1
 fi
 
 echo ""
-echo "→ GPU"
-nvidia-smi
+echo "→ Runtime detection"
+if [ "$HAS_NVIDIA" -eq 1 ]; then
+    echo "NVIDIA runtime detected."
+    nvidia-smi
+else
+    echo "No NVIDIA GPU runtime detected."
+    echo "Colab note: switch to a GPU runtime if you want the full Vulkan/NVIDIA smoke."
+    echo "Continuing with compile/import-only validation on this machine."
+fi
 
 echo ""
 echo "→ Installing Vulkan/build prerequisites"
@@ -42,10 +49,10 @@ echo "→ Python build deps"
 
 echo ""
 echo "→ Vulkan summary"
-if command -v vulkaninfo >/dev/null 2>&1; then
+if [ "$HAS_NVIDIA" -eq 1 ] && command -v vulkaninfo >/dev/null 2>&1; then
     vulkaninfo --summary || true
 else
-    echo "vulkaninfo not found after install"
+    echo "Skipping vulkaninfo summary without an attached NVIDIA runtime"
 fi
 
 echo ""
@@ -55,8 +62,22 @@ CMAKE_ARGS="-DMLX_BUILD_VULKAN=ON -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CUDA=OFF -DM
     "$PYTHON_BIN" setup.py build_ext --inplace
 
 echo ""
-echo "→ Running Stage 25 with NVIDIA vendor gate"
-cd "$ROOT_DIR"
-PYTHONPATH="$MLX_SRC/python" \
-MLX_VULKAN_REQUIRE_VENDOR=nvidia \
-"$PYTHON_BIN" "$ROOT_DIR/tests/vulkan/test_stage25_linux_vulkan_bringup.py"
+if [ "$HAS_NVIDIA" -eq 1 ]; then
+    echo "→ Running Stage 25 with NVIDIA vendor gate"
+    cd "$ROOT_DIR"
+    PYTHONPATH="$MLX_SRC/python" \
+    MLX_VULKAN_REQUIRE_VENDOR=nvidia \
+    "$PYTHON_BIN" "$ROOT_DIR/tests/vulkan/test_stage25_linux_vulkan_bringup.py"
+else
+    echo "→ Running compile/import-only probe"
+    cd "$ROOT_DIR"
+    PYTHONPATH="$MLX_SRC/python" "$PYTHON_BIN" - <<'PY'
+import mlx.core as mx
+
+print("mlx.core import OK")
+print("mx.is_available(mx.gpu) =", mx.is_available(mx.gpu))
+print("mx.default_device() =", mx.default_device())
+PY
+    echo ""
+    echo "Compile/import-only probe passed. Re-run this notebook on a GPU runtime for the full NVIDIA smoke."
+fi

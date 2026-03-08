@@ -16,11 +16,13 @@
 
 3. **Colab/NVIDIA bootstrap added** (`tests/vulkan/google_colab_nvidia_smoke.sh`):
    - Added a disposable Linux/NVIDIA smoke wrapper for Colab-style Ubuntu runtimes.
-   - The script installs Vulkan build prerequisites, prints `nvidia-smi` plus `vulkaninfo --summary`, builds the Python extension in place with Vulkan enabled, and runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia`.
+   - The script installs Vulkan build prerequisites, builds the Python extension in place with Vulkan enabled, and runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia` when an NVIDIA runtime is present.
+   - On CPU-only Colab runtimes it now falls back to a compile/import probe instead of failing immediately, so we still learn whether the repo builds cleanly there.
    - This is the first concrete path to test compilation and initial backend execution on an easily available NVIDIA machine.
 
 4. **Shareable notebook added** (`notebooks/nvidia_colab_smoke.ipynb`):
    - Added a Colab-friendly notebook that links back to the repo, clones `main`, and runs the NVIDIA smoke wrapper end to end.
+   - Added an explicit runtime-detection cell so it is obvious when Colab launched without an attached NVIDIA GPU.
    - Kept the stricter linalg fallback smoke in a separate optional cell so the notebook reflects the actual first-pass bring-up contract.
 
 ### fix (2026-03-08) — Shared host-copy path for Vulkan discrete-memory safety
