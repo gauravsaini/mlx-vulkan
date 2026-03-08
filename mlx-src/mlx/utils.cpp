@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 
+#include "mlx/allocator.h"
 #include "mlx/dtype_utils.h"
 #include "mlx/types/limits.h"
 #include "mlx/utils.h"
@@ -192,7 +193,13 @@ void print_subarray(std::ostream& os, const array& a, size_t index, int dim) {
       i = n - num_print - 1;
       index += s * (n - 2 * num_print - 1);
     } else if (is_last) {
-      get_global_formatter().print(os, a.data<T>()[index]);
+      T value{};
+      allocator::copy_to_host(
+          a.buffer(),
+          &value,
+          sizeof(T),
+          a.offset() + index * sizeof(T));
+      get_global_formatter().print(os, value);
     } else {
       print_subarray<T>(os, a, index, dim + 1);
     }
@@ -207,8 +214,9 @@ void print_array(std::ostream& os, const array& a) {
   os << std::boolalpha;
   os << "array(";
   if (a.ndim() == 0) {
-    auto data = a.data<T>();
-    get_global_formatter().print(os, data[0]);
+    T value{};
+    allocator::copy_to_host(a.buffer(), &value, sizeof(T), a.offset());
+    get_global_formatter().print(os, value);
   } else {
     print_subarray<T>(os, a, 0, 0);
   }

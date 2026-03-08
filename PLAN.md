@@ -27,7 +27,9 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 - [ ] Provision a real Linux AMD machine or runner and make it the primary validation target.
 - [ ] Build `MLX_BUILD_VULKAN=ON` on Linux and verify `import mlx.core` succeeds without macOS-specific packaging steps.
-- [ ] Confirm runtime detection on AMD: `gpu::is_available()`, `device_count()`, `device_info()`, and a minimal Python smoke test.
+- [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_amd_bringup.py`:
+      covers import, GPU detection, core ops, CPU-fallback output paths, and linalg fallbacks; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_AMD=1` for strict AMD runner gating.
+- [ ] Confirm runtime detection on AMD with the new smoke gate: `is_available(gpu)`, `device_count(gpu)`, `device_info(gpu)`, and the Stage 25 Python smoke test.
 - [ ] Run the Vulkan stage suite on AMD and fix any discrete-GPU-only failures first.
 - [ ] Run targeted MLX coverage on AMD: `test_ops.py`, `test_array.py`, `test_random.py`, and a small inference-oriented smoke path (`matmul`, `softmax`, `layer_norm`, `rope`).
 - [ ] Prioritize anything blocking that path: staging-buffer correctness, synchronization, allocator lifetime, CPU fallback safety, and teardown stability.
@@ -48,12 +50,16 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       integer predicate zero-fill (`backend/cpu/unary.cpp`), empty-K matmul output zeroing (`backend/cpu/matmul.cpp`), and CPU dynamic-offset scalar writes (`backend/cpu/primitives.cpp`) now go through allocator-level host copies.
 - [x] Added a central GPU-stream CPU-fallback output flush in `backend/cpu/encoder.h`:
       CPU fallback kernels that write through `data<T>()` on GPU-backed outputs now push those host-side writes back through allocator staging before returning to the Vulkan evaluator.
+- [x] Patched shared serialization/readback paths to use allocator host copies:
+      `export.cpp`, `.npy` save, safetensors save, GGUF save, compile scalar folding, and debug printing no longer read Vulkan-backed arrays through direct `data<T>()` pointers.
 - [ ] Remove or downgrade overstated readiness claims:
       `VK_EXT_external_memory_host` zero-copy, Vulkan `mx.compile()` GPU fusion, SDPA coverage, and full FFT surface coverage.
 - [ ] Re-audit MoltenVK-only fallback assumptions before AMD bring-up:
       linalg fallbacks, dynamic offset reads, quantized dequant readback, and any direct `data<T>()` access on GPU-backed arrays.
 - [ ] Broad allocator memory-model flip still pending:
-      the model-loading and main CPU-fallback output path are now staged safely, but a final audit is still needed for direct host writes that occur outside encoder-managed GPU fallbacks and outside the already-patched construction/load helpers before primary Vulkan allocations can move to fully device-local discrete-GPU behavior.
+      the model-loading, main CPU-fallback output path, and shared serialization/readback paths are now staged safely, but a final audit is still needed for direct host access that occurs outside encoder-managed GPU fallbacks and outside the already-patched construction/load/readback helpers before primary Vulkan allocations can move to fully device-local discrete-GPU behavior.
+- [ ] Non-core paths still need explicit AMD validation:
+      distributed backends and other code that bypasses the CPU encoder are not yet part of the validated bring-up gate.
 
 ### Exit Criteria For This Milestone
 

@@ -28,10 +28,36 @@
    - Additional Python 3.11 smoke confirms:
      - integer `mx.isinf(...)` saves out an all-false bool array,
      - empty-K `mx.matmul(...)` saves out the expected all-zero matrix.
+   - Additional direct Python 3.11 linalg smokes confirm sane saved outputs for:
+     - `qr`
+     - `svd(compute_uv=False)`
+     - `inv`
+     - `cholesky`
+     - `eigh`
 
-6. **Remaining gap**:
-   - The simple fresh-allocation zero-fill/scalar cases are now covered, and encoder-managed GPU-stream CPU fallback outputs are now flushed centrally.
-   - The remaining work before a full device-local allocator flip is a final audit for direct host writes that still bypass that encoder-managed path.
+6. **Bring-up gate added** (`tests/vulkan/test_stage25_amd_bringup.py`):
+   - Added a dedicated Stage 25 Python smoke for real Linux AMD validation.
+   - Covers:
+     - import/build sanity,
+     - Vulkan GPU detection,
+     - core matmul/softmax execution,
+     - allocator-sensitive CPU-fallback outputs (`isinf(int)`, empty-K matmul),
+     - linalg CPU fallbacks (`qr`, `svd`, `inv`).
+   - Supports `MLX_CORE_SO=...` to test fresh local builds without copying the extension into the Python package.
+   - Supports `MLX_VULKAN_REQUIRE_AMD=1` to hard-fail on non-AMD hardware when used on a real runner.
+
+7. **Shared readback/serialization hardening** (`export.cpp`, `io/load.cpp`, `io/safetensors.cpp`, `io/gguf.cpp`, `compile.cpp`, `utils.cpp`):
+   - Replaced direct `data<T>()`-based reads with allocator-level host copies in the common save/export/readback helpers.
+   - Verified locally with:
+     - `.npy` save/load smoke,
+     - safetensors save/load smoke,
+     - GGUF save smoke,
+     - `str(array)` / formatter path.
+
+8. **Remaining gap**:
+   - The simple fresh-allocation zero-fill/scalar cases are now covered, encoder-managed GPU-stream CPU fallback outputs are flushed centrally, and the shared serialization/readback helpers are staged safely.
+   - The remaining work before a full device-local allocator flip is a final audit for direct host access that still bypasses those paths.
+   - Non-core paths like distributed backends remain outside the validated AMD bring-up gate.
 
 ### fix (2026-03-08) — Scan Race Condition and Memory Corruption Fixed
 

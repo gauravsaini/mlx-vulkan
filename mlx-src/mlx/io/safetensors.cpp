@@ -3,7 +3,9 @@
 #include <json.hpp>
 #include <memory>
 #include <stack>
+#include <vector>
 
+#include "mlx/allocator.h"
 #include "mlx/backend/cuda/cuda.h"
 #include "mlx/io.h"
 #include "mlx/io/load.h"
@@ -213,7 +215,10 @@ void save_safetensors(
   out_stream->write(reinterpret_cast<char*>(&header_len), 8);
   out_stream->write(header.c_str(), header_len);
   for (auto& [key, arr] : a) {
-    out_stream->write(arr.data<char>(), arr.nbytes());
+    std::vector<char> host_data(arr.nbytes());
+    allocator::copy_to_host(
+        arr.buffer(), host_data.data(), host_data.size(), arr.offset());
+    out_stream->write(host_data.data(), host_data.size());
   }
 }
 

@@ -1,6 +1,8 @@
 // Copyright © 2024 Apple Inc.
 #include "mlx/export.h"
 #include <map>
+#include <vector>
+#include "mlx/allocator.h"
 #include "mlx/compile_impl.h"
 #include "mlx/fast_primitives.h"
 #include "mlx/graph_utils.h"
@@ -867,7 +869,10 @@ void FunctionExporter::export_function(const Args& args, const Kwargs& kwargs) {
         if (constants.insert({arr.id(), arr}).second) {
           serialize(os, arr.shape());
           serialize(os, arr.dtype());
-          os.write(arr.data<char>(), arr.nbytes());
+          std::vector<char> host_data(arr.nbytes());
+          allocator::copy_to_host(
+              arr.buffer(), host_data.data(), host_data.size(), arr.offset());
+          os.write(host_data.data(), host_data.size());
         }
       } else {
         serialize(os, false);

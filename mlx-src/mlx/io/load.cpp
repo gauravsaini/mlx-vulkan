@@ -11,6 +11,7 @@
 #endif // _WIN32
 
 #include "mlx/backend/cuda/cuda.h"
+#include "mlx/allocator.h"
 #include "mlx/io.h"
 #include "mlx/io/load.h"
 #include "mlx/ops.h"
@@ -212,7 +213,9 @@ void save(std::shared_ptr<io::Writer> out_stream, array a) {
 
   out_stream->write(magic_ver_len.str().c_str(), magic_ver_len.str().length());
   out_stream->write(header.str().c_str(), header.str().length());
-  out_stream->write(a.data<char>(), a.nbytes());
+  std::vector<char> host_data(a.nbytes());
+  allocator::copy_to_host(a.buffer(), host_data.data(), host_data.size(), a.offset());
+  out_stream->write(host_data.data(), host_data.size());
 }
 
 /** Save array to file in .npy format */

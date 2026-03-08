@@ -6,6 +6,7 @@
 #include <numeric>
 
 #include "mlx/io/gguf.h"
+#include "mlx/allocator.h"
 #include "mlx/ops.h"
 
 namespace mlx::core {
@@ -269,10 +270,11 @@ void append_kv_array(
     gguf_value* gguf_val = reinterpret_cast<gguf_value*>(val_vec.data());
     gguf_val->array.type = gguf_type;
     gguf_val->array.len = val.size();
-    memcpy(
+    allocator::copy_to_host(
+        val.buffer(),
         val_vec.data() + gguf_array_header_size,
-        val.data<char>(),
-        val.nbytes());
+        val.nbytes(),
+        val.offset());
     gguf_append_kv(
         ctx,
         key.c_str(),
@@ -281,12 +283,15 @@ void append_kv_array(
         reinterpret_cast<void*>(val_vec.data()),
         gguf_size);
   } else {
+    std::vector<char> host_data(val.nbytes());
+    allocator::copy_to_host(
+        val.buffer(), host_data.data(), host_data.size(), val.offset());
     gguf_append_kv(
         ctx,
         key.c_str(),
         key.length(),
         gguf_type,
-        reinterpret_cast<void*>(val.data<char>()),
+        reinterpret_cast<void*>(host_data.data()),
         val.nbytes());
   }
 }
@@ -460,8 +465,11 @@ void save_gguf(
 
   // Then, append the tensor weights
   for (const auto& [key, arr] : array_map) {
+    std::vector<char> host_data(arr.nbytes());
+    allocator::copy_to_host(
+        arr.buffer(), host_data.data(), host_data.size(), arr.offset());
     if (!gguf_append_tensor_data(
-            ctx.get(), (void*)arr.data<void>(), arr.nbytes())) {
+            ctx.get(), host_data.data(), arr.nbytes())) {
       throw std::runtime_error("[save_gguf] gguf_append_tensor_data failed");
     }
   }

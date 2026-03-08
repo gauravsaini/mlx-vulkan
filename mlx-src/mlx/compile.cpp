@@ -572,18 +572,16 @@ void compile_simplify(
   };
   auto get_scalar_rep = [](const array& a) {
     uint64_t v = 0;
-    switch (a.dtype().size()) {
+    auto size = a.dtype().size();
+    allocator::copy_to_host(a.buffer(), &v, size, a.offset());
+    switch (size) {
       case 1:
-        v = *a.data<uint8_t>();
         break;
       case 2:
-        v = *a.data<uint16_t>();
         break;
       case 4:
-        v = *a.data<uint32_t>();
         break;
       case 8:
-        v = *a.data<uint64_t>();
         break;
     }
     return std::make_pair(v, a.dtype().val());
