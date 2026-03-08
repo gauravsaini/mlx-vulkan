@@ -4,8 +4,10 @@
 
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "mlx/array.h"
+#include "mlx/allocator.h"
 #include "mlx/scheduler.h"
 
 namespace mlx::core::cpu {
@@ -26,6 +28,9 @@ struct MLX_API CommandEncoder {
   }
   void set_output_array(array& a) {
     retain(a);
+    if (stream_.device.type == Device::DeviceType::gpu) {
+      output_arrays_.push_back(array::unsafe_weak_copy(a));
+    }
   }
 
   // Hold onto a temporary until any already scheduled tasks which use it as
@@ -58,8 +63,10 @@ struct MLX_API CommandEncoder {
     // is already CPU-accessible (no staging needed).
     if (stream_.device.type == Device::DeviceType::gpu) {
       task();
+      flush_gpu_outputs();
       temporaries_.clear();
       data_references_.clear();
+      output_arrays_.clear();
       return;
     }
 
@@ -77,6 +84,28 @@ struct MLX_API CommandEncoder {
   }
 
  private:
+  void flush_gpu_outputs() {
+    std::unordered_set<const void*> flushed_buffers;
+    for (auto& out : output_arrays_) {
+      if (!out.data_shared_ptr()) {
+        continue;
+      }
+      const void* buffer_ptr = out.buffer().ptr();
+      if (!buffer_ptr || !flushed_buffers.insert(buffer_ptr).second) {
+        continue;
+      }
+      auto bytes = out.buffer_size();
+      if (bytes == 0) {
+        continue;
+      }
+      auto* host_ptr = out.buffer().raw_ptr();
+      if (!host_ptr) {
+        continue;
+      }
+      allocator::copy_from_host(out.buffer(), host_ptr, bytes);
+    }
+  }
+
   void retain(const array& arr) {
     if (auto data = arr.data_shared_ptr()) {
       data_references_.push_back(std::move(data));
@@ -88,6 +117,7 @@ struct MLX_API CommandEncoder {
   Stream stream_;
   std::vector<array> temporaries_;
   std::vector<std::shared_ptr<array::Data>> data_references_;
+  std::vector<array> output_arrays_;
   int num_ops_{0};
 };
 

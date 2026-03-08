@@ -68,8 +68,8 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
       throw std::runtime_error("[load_gguf] NULL tensor data pointer");
     }
     allocator::Buffer buffer = allocator::malloc(tensor->bsize);
-    memcpy(
-        buffer.raw_ptr(),
+    allocator::copy_from_host(
+        buffer,
         tensor->weights_data,
         tensor->num_weights * equivalent_dtype.value().size());
     return {buffer, equivalent_dtype.value()};
@@ -82,7 +82,7 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
   }
   const size_t new_size = tensor->num_weights * sizeof(int16_t);
   allocator::Buffer buffer = allocator::malloc(new_size);
-  memcpy(buffer.raw_ptr(), data, new_size);
+  allocator::copy_from_host(buffer, data, new_size);
   free(data);
   return {buffer, float16};
 }

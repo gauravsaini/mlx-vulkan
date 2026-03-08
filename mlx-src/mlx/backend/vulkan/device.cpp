@@ -345,7 +345,7 @@ void Device::create_logical_device() {
     dev_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
     fprintf(
         stderr,
-        "[MLX Vulkan] Zero-copy (VK_EXT_external_memory_host) available\n");
+        "[MLX Vulkan] VK_EXT_external_memory_host detected (host import path not yet enabled)\n");
   }
 
   // Check for hardware tensor cores (Cooperative Matrix)

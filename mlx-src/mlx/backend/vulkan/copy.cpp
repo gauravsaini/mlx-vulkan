@@ -222,14 +222,22 @@ void copy_gpu_inplace(
     std::optional<array> dynamic_o_offset) {
   if (out.size() == 0)
     return;
-  // Apply dynamic offsets (CPU-computed scalars in unified-memory buffers).
-  // On MoltenVK, VMA allocations are CPU-visible so data<int32_t>() is valid
-  // immediately after the offset array is populated by compute_dynamic_offset.
+  // Dynamic offsets are produced on the GPU. Drain the stream before reading
+  // them back on the CPU so discrete-GPU paths do not observe stale values.
+  if (dynamic_i_offset.has_value() || dynamic_o_offset.has_value()) {
+    vulkan::device(s.device).synchronize(s);
+  }
   if (dynamic_i_offset.has_value()) {
-    i_offset += static_cast<int64_t>(*dynamic_i_offset->data<int32_t>());
+    int32_t host_offset = 0;
+    vulkan::copy_to_host(
+        *dynamic_i_offset, &host_offset, sizeof(host_offset), s);
+    i_offset += static_cast<int64_t>(host_offset);
   }
   if (dynamic_o_offset.has_value()) {
-    o_offset += static_cast<int64_t>(*dynamic_o_offset->data<int32_t>());
+    int32_t host_offset = 0;
+    vulkan::copy_to_host(
+        *dynamic_o_offset, &host_offset, sizeof(host_offset), s);
+    o_offset += static_cast<int64_t>(host_offset);
   }
   dispatch_copy_shader(
       in, out, data_shape, i_strides, o_strides, i_offset, o_offset, ctype, s);

@@ -45,13 +45,17 @@ static std::pair<array, bool> compute_dynamic_offset(
   auto& encoder = cpu::get_command_encoder(stream);
   encoder.set_input_array(indices);
   encoder.set_output_array(offset);
-  auto compute_offset =
-      [strides, axes, offset = offset.data<int64_t>()](const auto* indices) {
+  auto compute_offset = [strides,
+                         axes,
+                         offset_buffer = offset.buffer(),
+                         offset_base = static_cast<size_t>(offset.offset())](
+                            const auto* indices) {
         int64_t offset_ = 0;
         for (int i = 0; i < axes.size(); ++i) {
           offset_ += indices[i] * strides[axes[i]];
         }
-        offset[0] = offset_;
+        allocator::copy_from_host(
+            offset_buffer, &offset_, sizeof(offset_), offset_base);
       };
   switch (indices.dtype()) {
     case int8:

@@ -94,8 +94,7 @@ array::array(
   auto buffer = allocator::make_buffer(data, nbytes());
   if (buffer.ptr() == nullptr) {
     set_data(allocator::malloc(nbytes()));
-    auto ptr = static_cast<char*>(data);
-    std::copy(ptr, ptr + nbytes(), this->data<char>());
+    allocator::copy_from_host(this->buffer(), data, nbytes());
     deleter(data);
   } else {
     auto wrapped_deleter = [deleter](allocator::Buffer buffer) {

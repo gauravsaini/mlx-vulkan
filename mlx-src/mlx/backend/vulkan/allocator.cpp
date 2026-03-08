@@ -7,6 +7,7 @@
 //   allocator::allocator() → returns the singleton VulkanAllocator
 
 #include "mlx/backend/vulkan/allocator.h"
+#include "mlx/array.h"
 #include "mlx/backend/gpu/device_info.h"
 #include "mlx/backend/vulkan/device.h"
 #include "mlx/backend/vulkan/utils.h"
@@ -14,6 +15,8 @@
 #include "mlx/scheduler.h"
 
 #include <cassert>
+#include <cstring>
+#include <cstdlib>
 #include <cstdio>
 #include <deque>
 #include <sstream>
@@ -22,6 +25,109 @@
 namespace mlx::core {
 
 namespace vulkan {
+
+namespace {
+
+VulkanBuffer* unwrap_buffer(const allocator::Buffer& buffer) {
+  return static_cast<VulkanBuffer*>(const_cast<void*>(buffer.ptr()));
+}
+
+void copy_from_host_buffer(
+    const allocator::Buffer& buffer,
+    size_t base_offset,
+    const void* src,
+    size_t bytes,
+    const Stream& s) {
+  auto* vk_buf = unwrap_buffer(buffer);
+  if (!vk_buf || bytes == 0) {
+    return;
+  }
+
+  auto& dev = device(s.device);
+  if (vk_buf->mapped_ptr) {
+    std::memcpy(static_cast<char*>(vk_buf->mapped_ptr) + base_offset, src, bytes);
+    if (!(vk_buf->memory_properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+      vmaFlushAllocation(
+          dev.vma_allocator(), vk_buf->allocation, base_offset, bytes);
+    }
+    return;
+  }
+
+  auto* staging = allocator().alloc_staging(bytes);
+  if (!staging || !staging->mapped_ptr) {
+    throw std::runtime_error("[vulkan::copy_from_host] staging allocation failed");
+  }
+  std::memcpy(staging->mapped_ptr, src, bytes);
+
+  auto& enc = get_command_encoder(s);
+  VkBufferCopy region{
+      0, static_cast<VkDeviceSize>(base_offset), static_cast<VkDeviceSize>(bytes)};
+  vkCmdCopyBuffer(enc.cmd, staging->buffer, vk_buf->buffer, 1, &region);
+  enc.op_count++;
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask =
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+      VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  vkCmdPipelineBarrier(
+      enc.cmd,
+      VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  device(s.device).add_completed_handler(
+      s, [staging]() { allocator().free_staging(staging); });
+}
+
+void copy_to_host_buffer(
+    const allocator::Buffer& buffer,
+    size_t base_offset,
+    void* dst,
+    size_t bytes,
+    const Stream& s) {
+  auto* vk_buf = unwrap_buffer(buffer);
+  if (!vk_buf || bytes == 0) {
+    return;
+  }
+
+  auto& dev = device(s.device);
+  if (vk_buf->mapped_ptr) {
+    if (!(vk_buf->memory_properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+      vmaInvalidateAllocation(
+          dev.vma_allocator(), vk_buf->allocation, base_offset, bytes);
+    }
+    std::memcpy(
+        dst, static_cast<const char*>(vk_buf->mapped_ptr) + base_offset, bytes);
+    return;
+  }
+
+  auto* staging = allocator().alloc_staging(bytes);
+  if (!staging || !staging->mapped_ptr) {
+    throw std::runtime_error("[vulkan::copy_to_host] staging allocation failed");
+  }
+
+  dev.synchronize(s);
+
+  auto& enc = get_command_encoder(s);
+  VkBufferCopy region{
+      static_cast<VkDeviceSize>(base_offset), 0, static_cast<VkDeviceSize>(bytes)};
+  vkCmdCopyBuffer(enc.cmd, vk_buf->buffer, staging->buffer, 1, &region);
+  enc.op_count++;
+  dev.synchronize(s);
+
+  std::memcpy(dst, staging->mapped_ptr, bytes);
+  vmaDestroyBuffer(dev.vma_allocator(), staging->buffer, staging->allocation);
+  delete staging;
+}
+
+} // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VulkanAllocator constructor
@@ -50,8 +156,8 @@ VulkanAllocator::VulkanAllocator() {
 
 allocator::Buffer VulkanAllocator::malloc(size_t size) {
   if (size == 0) {
-    return allocator::Buffer{
-        new VulkanBuffer{VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr}};
+    return allocator::Buffer{new VulkanBuffer{
+        VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr, nullptr, false, true, 0}};
   }
 
   // Pad to 4 bytes so that shaders can read/write 32-bit uints safely
@@ -101,7 +207,15 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
     vmaMapMemory(dev.vma_allocator(), allocation, &mapped);
   }
 
-  auto* vk_buf = new VulkanBuffer{vk_buffer, allocation, size, mapped};
+  auto* vk_buf = new VulkanBuffer{
+      vk_buffer,
+      allocation,
+      size,
+      mapped,
+      nullptr,
+      mapped != nullptr,
+      true,
+      mem_flags};
 
   {
     std::lock_guard<std::mutex> lk(mutex_);
@@ -135,10 +249,15 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
   // handler.
   vulkan::device(stream.device)
       .add_completed_handler(stream, [buf, dev = &dev]() {
-        if (buf->mapped_ptr) {
+        if (buf->owns_vma_mapping && buf->mapped_ptr) {
           vmaUnmapMemory(dev->vma_allocator(), buf->allocation);
         }
-        vmaDestroyBuffer(dev->vma_allocator(), buf->buffer, buf->allocation);
+        if (buf->cpu_readback_ptr) {
+          std::free(buf->cpu_readback_ptr);
+        }
+        if (buf->owns_allocation) {
+          vmaDestroyBuffer(dev->vma_allocator(), buf->buffer, buf->allocation);
+        }
 
         {
           std::lock_guard<std::mutex> lk(allocator().mutex_);
@@ -165,7 +284,14 @@ allocator::Buffer VulkanAllocator::make_buffer(void* ptr, size_t size) {
   // Crucially, when `release` is called on this new wrapper, we will ONLY
   // delete the wrapper (`new_buf`), not the underlying Vulkan memory.
   auto* new_buf = new VulkanBuffer{
-      src_buf->buffer, src_buf->allocation, size, src_buf->mapped_ptr};
+      src_buf->buffer,
+      src_buf->allocation,
+      size,
+      src_buf->mapped_ptr,
+      src_buf->cpu_readback_ptr,
+      false,
+      false,
+      src_buf->memory_properties};
 
   return allocator::Buffer{new_buf};
 }
@@ -182,6 +308,26 @@ void VulkanAllocator::release(allocator::Buffer buffer) {
   if (buf) {
     delete buf;
   }
+}
+
+void VulkanAllocator::copy_from_host(
+    allocator::Buffer buffer,
+    const void* src,
+    size_t bytes,
+    size_t offset) {
+  auto s = default_stream(mlx::core::Device::gpu);
+  copy_from_host_buffer(buffer, offset, src, bytes, s);
+  device(s.device).synchronize(s);
+}
+
+void VulkanAllocator::copy_to_host(
+    allocator::Buffer buffer,
+    void* dst,
+    size_t bytes,
+    size_t offset) {
+  auto s = default_stream(mlx::core::Device::gpu);
+  device(s.device).synchronize(s);
+  copy_to_host_buffer(buffer, offset, dst, bytes, s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,7 +382,15 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
         "[vulkan::alloc_staging] Unable to allocate staging buffer");
   }
 
-  return new VulkanBuffer{vk_buffer, allocation, size, vma_info.pMappedData};
+  return new VulkanBuffer{
+      vk_buffer,
+      allocation,
+      size,
+      vma_info.pMappedData,
+      nullptr,
+      vma_info.pMappedData != nullptr,
+      true,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
 }
 
 void VulkanAllocator::free_staging(VulkanBuffer* buf) {
@@ -272,6 +426,26 @@ VkBuffer get_buffer(const array& arr) {
   if (!vk_buf)
     return VK_NULL_HANDLE;
   return vk_buf->buffer;
+}
+
+void copy_from_host(
+    const array& arr,
+    const void* src,
+    size_t bytes,
+    const Stream& s,
+    size_t byte_offset) {
+  copy_from_host_buffer(
+      arr.buffer(), static_cast<size_t>(arr.offset()) + byte_offset, src, bytes, s);
+}
+
+void copy_to_host(
+    const array& arr,
+    void* dst,
+    size_t bytes,
+    const Stream& s,
+    size_t byte_offset) {
+  copy_to_host_buffer(
+      arr.buffer(), static_cast<size_t>(arr.offset()) + byte_offset, dst, bytes, s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,6 +696,7 @@ void* Buffer::raw_ptr() {
   VkResult res = vmaMapMemory(dev.vma_allocator(), vk_buf->allocation, &mapped);
   if (res == VK_SUCCESS) {
     vk_buf->mapped_ptr = mapped;
+    vk_buf->owns_vma_mapping = true;
     return mapped;
   }
 
@@ -544,15 +719,13 @@ void* Buffer::raw_ptr() {
   // Synchronize to ensure copy completes
   dev.synchronize(Stream{0, mlx::core::Device{mlx::core::Device::gpu, 0}});
 
-  // Copy data out of staging to a persistent CPU allocation
-  void* cpu_ptr = std::malloc(vk_buf->size);
-  std::memcpy(cpu_ptr, staging->mapped_ptr, vk_buf->size);
+  // Copy data out of staging into a reusable CPU snapshot buffer.
+  if (!vk_buf->cpu_readback_ptr) {
+    vk_buf->cpu_readback_ptr = std::malloc(vk_buf->size);
+  }
+  std::memcpy(vk_buf->cpu_readback_ptr, staging->mapped_ptr, vk_buf->size);
   vulkan::allocator().free_staging(staging);
-
-  // Note: this leaks cpu_ptr — in production, the caller should ensure
-  // proper lifecycle. For correctness, store it back.
-  vk_buf->mapped_ptr = cpu_ptr;
-  return cpu_ptr;
+  return vk_buf->cpu_readback_ptr;
 }
 
 } // namespace allocator

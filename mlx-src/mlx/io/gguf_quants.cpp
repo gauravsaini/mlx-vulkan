@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <numeric>
+#include <vector>
 
 #include "mlx/io/gguf.h"
 
@@ -36,16 +37,20 @@ void extract_q4_0_data(
     array& biases_arr) {
   const uint64_t bytes_per_block = 18; // 2 bytes scale, 32x0.5 byte weights
   auto data = static_cast<uint8_t*>(tensor.weights_data);
-  auto weights = weights_arr.data<int8_t>();
-  auto scales = scales_arr.data<float16_t>();
-  auto biases = biases_arr.data<float16_t>();
+  std::vector<int8_t> weights(weights_arr.nbytes());
+  std::vector<float16_t> scales(scales_arr.size());
+  std::vector<float16_t> biases(biases_arr.size());
+  auto* weights_ptr = weights.data();
   for (int64_t i = 0; i < scales_arr.size(); i++) {
     scales[i] = *((float16_t*)data);
     biases[i] = -8 * scales[i];
-    unpack_32_4(data, weights);
-    weights += 16;
+    unpack_32_4(data, weights_ptr);
+    weights_ptr += 16;
     data += bytes_per_block;
   }
+  allocator::copy_from_host(weights_arr.buffer(), weights.data(), weights_arr.nbytes());
+  allocator::copy_from_host(scales_arr.buffer(), scales.data(), scales_arr.nbytes());
+  allocator::copy_from_host(biases_arr.buffer(), biases.data(), biases_arr.nbytes());
 }
 
 // Extracts (weight, scales, biases) from Q4_1 tensors.
@@ -58,16 +63,20 @@ void extract_q4_1_data(
   const uint64_t bytes_per_block =
       20; // 2 bytes scale, 2 bytes bias, 32x0.5 byte weights
   auto data = static_cast<uint8_t*>(tensor.weights_data);
-  auto weights = weights_arr.data<int8_t>();
-  auto scales = scales_arr.data<float16_t>();
-  auto biases = biases_arr.data<float16_t>();
+  std::vector<int8_t> weights(weights_arr.nbytes());
+  std::vector<float16_t> scales(scales_arr.size());
+  std::vector<float16_t> biases(biases_arr.size());
+  auto* weights_ptr = weights.data();
   for (int64_t i = 0; i < scales_arr.size(); i++) {
     scales[i] = *((float16_t*)data);
     biases[i] = *((float16_t*)(data) + 1);
-    unpack_32_4(data, weights);
-    weights += 16;
+    unpack_32_4(data, weights_ptr);
+    weights_ptr += 16;
     data += bytes_per_block;
   }
+  allocator::copy_from_host(weights_arr.buffer(), weights.data(), weights_arr.nbytes());
+  allocator::copy_from_host(scales_arr.buffer(), scales.data(), scales_arr.nbytes());
+  allocator::copy_from_host(biases_arr.buffer(), biases.data(), biases_arr.nbytes());
 }
 
 // Extracts (weight, scales, biases) from Q8_0 tensors.
@@ -80,9 +89,9 @@ void extract_q8_0_data(
   const uint64_t weights_per_block = 32;
   const uint64_t bytes_per_block = 34; // 2 bytes scale, 32x1 byte weights
   auto data = static_cast<uint8_t*>(tensor.weights_data);
-  auto weights = weights_arr.data<int8_t>();
-  auto scales = scales_arr.data<float16_t>();
-  auto biases = biases_arr.data<float16_t>();
+  std::vector<int8_t> weights(weights_arr.nbytes());
+  std::vector<float16_t> scales(scales_arr.size());
+  std::vector<float16_t> biases(biases_arr.size());
   for (int64_t i = 0; i < scales_arr.size(); i++) {
     uint8_t* block_data = data + i * bytes_per_block;
     scales[i] = *((float16_t*)block_data);
@@ -95,6 +104,9 @@ void extract_q8_0_data(
       weights[i * weights_per_block + j] = x;
     }
   }
+  allocator::copy_from_host(weights_arr.buffer(), weights.data(), weights_arr.nbytes());
+  allocator::copy_from_host(scales_arr.buffer(), scales.data(), scales_arr.nbytes());
+  allocator::copy_from_host(biases_arr.buffer(), biases.data(), biases_arr.nbytes());
 }
 
 void gguf_load_quantized(

@@ -3,6 +3,8 @@
 #pragma once
 
 #include <cstdlib>
+#include <cstring>
+#include <stdexcept>
 
 #include "mlx/api.h"
 
@@ -40,6 +42,34 @@ class MLX_API Allocator {
     return Buffer{nullptr};
   };
   virtual void release(Buffer buffer) {}
+  virtual void copy_from_host(
+      Buffer buffer,
+      const void* src,
+      size_t size,
+      size_t offset = 0) {
+    if (size == 0) {
+      return;
+    }
+    auto* dst = static_cast<char*>(buffer.raw_ptr());
+    if (!dst) {
+      throw std::runtime_error("[allocator::copy_from_host] null destination");
+    }
+    std::memcpy(dst + offset, src, size);
+  }
+  virtual void copy_to_host(
+      Buffer buffer,
+      void* dst,
+      size_t size,
+      size_t offset = 0) {
+    if (size == 0) {
+      return;
+    }
+    auto* src = static_cast<const char*>(buffer.raw_ptr());
+    if (!src) {
+      throw std::runtime_error("[allocator::copy_to_host] null source");
+    }
+    std::memcpy(dst, src + offset, size);
+  }
 
   Allocator() = default;
   Allocator(const Allocator& other) = delete;
@@ -70,6 +100,22 @@ inline Buffer make_buffer(void* ptr, size_t size) {
 // Release a buffer from the allocator made with make_buffer
 inline void release(Buffer buffer) {
   allocator().release(buffer);
+}
+
+inline void copy_from_host(
+    Buffer buffer,
+    const void* src,
+    size_t size,
+    size_t offset = 0) {
+  allocator().copy_from_host(buffer, src, size, offset);
+}
+
+inline void copy_to_host(
+    Buffer buffer,
+    void* dst,
+    size_t size,
+    size_t offset = 0) {
+  allocator().copy_to_host(buffer, dst, size, offset);
 }
 
 } // namespace mlx::core::allocator

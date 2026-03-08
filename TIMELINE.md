@@ -2,6 +2,37 @@
 
 ## UPDATED ON : 2026-03-08
 
+### fix (2026-03-08) — Shared host-copy path for Vulkan discrete-memory safety
+
+1. **Allocator-level host copy hook** (`mlx/allocator.h`, `backend/vulkan/allocator.h`, `backend/vulkan/allocator.cpp`):
+   - Added backend-neutral `allocator::copy_from_host` / `copy_to_host`.
+   - Vulkan override now routes through explicit staging-aware transfers and synchronizes before exposing the data to generic MLX code.
+
+2. **Shared array initialization no longer assumes host-visible Vulkan memory** (`mlx/array.h`, `mlx/array.cpp`):
+   - `array::init(...)` and the raw-pointer constructor now initialize storage via allocator-level host copies instead of writing through `data<T>()` / `raw_ptr()`.
+   - This removes the main constant-construction dependency on host-visible Vulkan allocations.
+
+3. **Shared non-Vulkan write paths hardened** (`backend/common/common.cpp`, `backend/common/load.cpp`, `io/gguf.cpp`, `io/gguf_quants.cpp`):
+   - Common scalar output (`NumberOfElements`), file-load staging, GGUF tensor import, and GGUF quantized unpacking now write through allocator copies instead of direct pointer access.
+   - This covers the main inference/model-loading path needed for AMD/Linux bring-up.
+
+4. **Central GPU-stream CPU fallback flush** (`backend/cpu/encoder.h`):
+   - Added a post-dispatch flush for GPU-stream CPU fallbacks so encoder-managed outputs written through `data<T>()` are copied back through the allocator bridge before returning to the Vulkan evaluator.
+   - This materially reduces the remaining need for per-op patching in LAPACK- and copy-backed CPU fallback paths.
+
+5. **Validation**:
+   - `cmake --build build_vulkan -j4` passes.
+   - `build_vulkan/tests/test_gather_cpu` passes (`scan regression checks passed`).
+   - `build_vulkan/check_logical_not` passes.
+   - Direct Python 3.11 smoke against the freshly built extension confirms scalar array construction plus `mx.save` / `mx.load` shape round-trip on the Vulkan build.
+   - Additional Python 3.11 smoke confirms:
+     - integer `mx.isinf(...)` saves out an all-false bool array,
+     - empty-K `mx.matmul(...)` saves out the expected all-zero matrix.
+
+6. **Remaining gap**:
+   - The simple fresh-allocation zero-fill/scalar cases are now covered, and encoder-managed GPU-stream CPU fallback outputs are now flushed centrally.
+   - The remaining work before a full device-local allocator flip is a final audit for direct host writes that still bypass that encoder-managed path.
+
 ### fix (2026-03-08) — Scan Race Condition and Memory Corruption Fixed
 
 1. **`CommandEncoder` Memory Leak Fixed** (`backend/cpu/encoder.h`):
@@ -407,26 +438,22 @@
 
 ## UPDATED ON : 2026-03-03 (session 2)
 
-### feat (2026-03-03) — Top-Level JIT Kernel Fusion (mx.compile GPU)
+### feat (2026-03-03) — Historical JIT Fusion Attempt (later superseded)
 
 1. **JIT GLSL generation (`compiled.cpp`)**:
-   - Implemented `Compiled::eval_gpu` for Vulkan, replacing the old CPU fallback.
-   - Generates GLSL compute shader source code dynamically from the MLX traced graph.
-   - Computes expression strings for 30+ operators (Unary, Binary, Ternary) mapping to GLSL math native variants (e.g. `Log1p`, `LogAddExp`, `ArcTan2`).
-   - Supports both `contiguous` (flat 1D indexing) and `strided` (ND coordinate decomposition via pushing dynamic shape bounds + stride array buffers) pathways.
+   - This section no longer reflects current code.
+   - The Vulkan backend currently falls back to `eval_cpu()` for `Compiled::eval_gpu`; true Vulkan JIT fusion is not present in the checked-in implementation.
    
 2. **Runtime SPIR-V Compilation (`jit_compiler.cpp`)**:
-   - Bound C++ infrastructure safely interacting with `<shaderc/shaderc.h>` producing unrolled compute pipelines at runtime without disk I/O.
-   - Protected execution pipeline via `JitPipelineEntry` map keyed per globally derived graph-hash name.
-   - Vulkan 1.2 target spec natively applied with performance optimization toggled ON globally.
-   - Dynamic caching circumvents double-compilation of overlapping expressions minimizing framework overhead natively.
+   - Historical notes from an exploratory implementation attempt.
+   - Not currently wired into the active Vulkan `Compiled::eval_gpu` path in this tree.
 
 3. **Dependencies updated**:
    - Appended `find_library` for `shaderc` directly inside `mlx/backend/vulkan/CMakeLists.txt` guaranteeing correct Vulkan SDK mapping.
    
 4. **Validation Test Coverage**:
-   - Confirmed isolated JIT scripts operating at 100% correct float matching against reference executions (`x * 2 + y`, complex trigonometry `sin_cos`, conditional reductions, max_min chaining).
-   - Python native compiled decorator correctly routes graphs natively onto Apple Silicon hardware bypassing fallback.
+   - Historical validation notes only.
+   - Current checked-in behavior should be treated as CPU fallback coverage, not GPU JIT fusion.
 
 ---
 
@@ -794,8 +821,8 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
 1. **Load** (`primitives.cpp`): Was `throw runtime_error` — fixed to `eval_cpu(inputs, out)`.
    On unified memory (MoltenVK) the VMA buffer is CPU-accessible for mmap/file reads.
 
-2. **Compiled** (`primitives.cpp`): Was `throw runtime_error` — fixed to `eval_cpu(inputs, outputs)`.
-   `mx.compile()` now works on CPU stream; GPU stream re-dispatches sub-ops transparently.
+2. **Compiled** (`primitives.cpp`): Was `throw runtime_error` — now falls back to `eval_cpu(inputs, outputs)`.
+   This is CPU fallback coverage only; current Vulkan code does not provide fused GPU JIT execution.
 
 3. **NumberOfElements / Unflatten / View / Split**: Already correctly implemented in
    `backend/gpu/primitives.cpp` with proper GPU copy/reshape. No changes needed in the
@@ -1001,7 +1028,8 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
 1. **Full Vulkan backend scaffold**: Device init (VkInstance → physical device → logical device), VMA allocator, per-stream CommandEncoder, pipeline cache (load/save binary), descriptor pool
 2. **20+ GLSL compute shaders**: `unary.comp`, `binary.comp`, `binary_two.comp`, `copy.comp`, `reduce.comp`, `arg_reduce.comp`, `matmul.comp`, `softmax.comp`, `arange.comp`, `indexing.comp`, `scan.comp`, `sort.comp`, `normalization.comp`, `rope.comp`, `logsumexp.comp`, `random.comp`, `conv.comp`, `quantized.comp`
 3. **GPU dispatch implemented** for: Unary (28 ops), Binary (18 ops), Ternary/Select, Arange, Reduce (Sum/Max/Min/Prod/And/Or), ArgReduce, Matmul, Softmax, LogSumExp, Copy, Gather (1D), Sort
-4. **MoltenVK / Apple M1**: Zero-copy path via `VK_EXT_external_memory_host`; pipeline cache persisted to `~/.cache/`
+4. **MoltenVK / Apple M1**: `VK_EXT_external_memory_host` detected; pipeline cache persisted to `~/.cache/`
+   - Note: detection/logging is present, but an actual zero-copy host import path is not implemented in the current tree.
 5. **Test suite (stages 1–16)**: Device, build, shader, allocator, unified-mem, workgroup, CPU smoke, copy, unary, binary, reduce, matmul, NN ops, indexing, sort, scan, NN-extended stages
 6. **Files changed**: entire `mlx-src/mlx/backend/vulkan/`, `tests/vulkan/` (18 test files), `PLAN.md`, `REFERENCES.md`
 

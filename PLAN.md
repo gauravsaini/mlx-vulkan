@@ -17,7 +17,57 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ---
 
+## Current Priority (as of 2026-03-08)
+
+**Top milestone**: first successful end-to-end MLX execution on a real Linux AMD GPU using the Vulkan backend.
+
+**Current status**: Not there yet. The backend has strong MoltenVK stage coverage, but Linux/AMD execution is still unvalidated, the full Vulkan-linked pytest story is not yet green, and the remaining failures are still concentrated in stability, fallback lifetime, and correctness paths that will matter on a discrete GPU.
+
+### AMD/Linux Bring-up Checklist
+
+- [ ] Provision a real Linux AMD machine or runner and make it the primary validation target.
+- [ ] Build `MLX_BUILD_VULKAN=ON` on Linux and verify `import mlx.core` succeeds without macOS-specific packaging steps.
+- [ ] Confirm runtime detection on AMD: `gpu::is_available()`, `device_count()`, `device_info()`, and a minimal Python smoke test.
+- [ ] Run the Vulkan stage suite on AMD and fix any discrete-GPU-only failures first.
+- [ ] Run targeted MLX coverage on AMD: `test_ops.py`, `test_array.py`, `test_random.py`, and a small inference-oriented smoke path (`matmul`, `softmax`, `layer_norm`, `rope`).
+- [ ] Prioritize anything blocking that path: staging-buffer correctness, synchronization, allocator lifetime, CPU fallback safety, and teardown stability.
+- [ ] Defer perf tuning, cooperative matrix work, distributed ops, and non-essential feature work until the AMD bring-up path is stable.
+
+### Pre-AMD Blockers From Static Code Review
+
+- [x] First-pass fix for Vulkan allocator readback ownership in `backend/vulkan/allocator.cpp`:
+      separated VMA mappings from CPU readback snapshots so discrete-GPU `raw_ptr()` no longer stores heap snapshots as fake VMA mappings.
+- [ ] Reconcile the Vulkan memory model:
+      code currently assumes host-visible/coherent allocations in places that contradict the documented "device-local + staging" design.
+- [x] First-pass synchronization hardening for GPU-stream CPU fallbacks in `backend/vulkan/primitives.cpp` and `backend/vulkan/copy.cpp`.
+      Added `synchronize()` before compiled fallback, linalg CPU fallbacks, quantize CPU/readback paths, and dynamic offset CPU reads.
+- [x] Added explicit Vulkan host transfer helpers (`copy_from_host` / `copy_to_host`) and migrated backend call sites away from direct mapped-pointer writes where practical.
+- [x] Centralized host-to-buffer initialization for the main MLX inference/model-loading path:
+      shared array constructors, common scalar/load helpers, GGUF tensor import, and GGUF quantized unpacking now use allocator-level host copies instead of assuming Vulkan allocations are directly writable through `data<T>()`.
+- [x] Removed the simple fresh-allocation direct-write assumptions in CPU fallback helpers:
+      integer predicate zero-fill (`backend/cpu/unary.cpp`), empty-K matmul output zeroing (`backend/cpu/matmul.cpp`), and CPU dynamic-offset scalar writes (`backend/cpu/primitives.cpp`) now go through allocator-level host copies.
+- [x] Added a central GPU-stream CPU-fallback output flush in `backend/cpu/encoder.h`:
+      CPU fallback kernels that write through `data<T>()` on GPU-backed outputs now push those host-side writes back through allocator staging before returning to the Vulkan evaluator.
+- [ ] Remove or downgrade overstated readiness claims:
+      `VK_EXT_external_memory_host` zero-copy, Vulkan `mx.compile()` GPU fusion, SDPA coverage, and full FFT surface coverage.
+- [ ] Re-audit MoltenVK-only fallback assumptions before AMD bring-up:
+      linalg fallbacks, dynamic offset reads, quantized dequant readback, and any direct `data<T>()` access on GPU-backed arrays.
+- [ ] Broad allocator memory-model flip still pending:
+      the model-loading and main CPU-fallback output path are now staged safely, but a final audit is still needed for direct host writes that occur outside encoder-managed GPU fallbacks and outside the already-patched construction/load helpers before primary Vulkan allocations can move to fully device-local discrete-GPU behavior.
+
+### Exit Criteria For This Milestone
+
+- [ ] Linux AMD build succeeds from a clean checkout.
+- [ ] `mlx.core` imports and sees the Vulkan GPU on AMD.
+- [ ] No segfaults, bus errors, or teardown crashes in the targeted AMD validation path.
+- [ ] Stage suite passes on AMD or fails only for explicitly documented unsupported paths.
+- [ ] Core MLX smoke workload runs on the Vulkan backend on AMD without manual intervention.
+
+---
+
 ## Build Status (as of 2026-03-03)
+
+> This section is a MoltenVK/macOS validation snapshot. It does not by itself imply Linux/AMD readiness.
 
 **Build dir**: `build/temp.macosx-15.0-arm64-cpython-311/mlx.core/`
 **Python**: 3.11 (`python3.11`) — `.so` is `core.cpython-311-darwin.so`
@@ -607,20 +657,19 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 - [x] Matmul — verified ✅
 - [x] QuantizedMatmul — GPU dispatch **COMPLETE** ✅ (dequantize pass + matmul; 17/17 PASS)
 - [x] QQMatmul — GPU dispatch **COMPLETE** ✅ (dual dequantize + matmul; 7/8 PASS, 1 SKIP=API check)
-- [x] QRF, SVD, Inverse, Cholesky, Eig, Eigh, LUF — CPU fallbacks **COMPLETE** ✅
-  (all delegate to `eval_cpu()` via unified-memory path; `cpu/encoder.h` fixed for GPU-stream sync;
-   `linalg.cpp` check_cpu_stream guards removed for qr/svd/inv/cholesky/eig/lu)
+- [x] QRF, SVD, Inverse, Cholesky, Eig, Eigh, LUF — MoltenVK CPU fallback coverage
+  (currently delegate to `eval_cpu()` after stream synchronization; discrete-GPU staging/readback still needs explicit hardening)
 
 #### Neural Net Ops
 
 - [x] Conv1D, Conv2D, Conv3D (ConvolutionVjp)
-- [x] FFT, RFFT — **COMPLETE** (Stockham radix-2/4/8 GPU dispatch; 3/3 tests passing)
-- [x] IFFT, IRFFT — dispatch implemented; inverse path via `params.inv=1`
-- [x] Hadamard — stub throws runtime_error (Phase G needed)
+- [x] FFT, RFFT — Stockham radix-2/4/8 path covered by current tests
+- [ ] IFFT, IRFFT — partial implementation only; inverse/Bluestein helper gaps remain in `fft.cpp`
+- [x] Hadamard — GPU path for power-of-2 float32 sizes; larger/non-power-of-2 cases fall back
 - [x] LayerNorm, RMSNorm (GPU dispatch via `normalization.comp`)
 - [x] LogSumExp
 - [x] Rope (GPU dispatch via `rope.comp`)
-- [x] ScaledDotProductAttention
+- [ ] ScaledDotProductAttention — still unimplemented on Vulkan (`NO_GPU_MULTI`)
 - [x] Softmax — verified via smoke test ✅
 - [x] Scan (prefix ops — GPU dispatch via scan.comp; Hillis-Steele 2-level; scan_size ≤ 1024; 5/5 tests pass)
 
@@ -679,7 +728,8 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 ### Smoke Tests ✅ PASSING
 
 - [x] Vulkan device detected: Apple M1 (via MoltenVK)
-- [x] VK_EXT_external_memory_host available (zero-copy path enabled)
+- [x] VK_EXT_external_memory_host detected
+- [ ] Zero-copy host import path actually implemented
 - [x] `add` (float32): `mx.ones(4) + mx.full(4, 3)` → 4.0 ✅
 - [x] `multiply` (float32): `mx.full(4,2) * mx.full(4,3)` → 6.0 ✅
 - [x] `arange`: `mx.arange(0,4,1)[2]` → 2.0 ✅
@@ -695,11 +745,11 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 - [x] `reshape [4]→[2,2]` ✅
 - [x] `softmax` (from previous session) ✅
 
-### Python REPL Tests — COMPLETE ✅
+### Historical MoltenVK Validation Snapshot
 
 - [x] `int32` arithmetic correctness (fixed binary.comp dtype bug)
-- [x] `test_array.py` full suite — 65/68 PASS (3 pre-existing failures)
-- [x] `test_ops.py` suite — ~100/134 PASS (9 pre-existing failures, no regressions)
+- [x] `test_array.py` full suite — 65/68 PASS (historical MoltenVK snapshot)
+- [x] `test_ops.py` suite — ~100/134 PASS (historical MoltenVK snapshot)
 - [x] `test_random.py` — 14/14 PASS
 - [x] `unary.comp` int32 paths (abs, neg on int32) — audit complete
 
@@ -713,8 +763,8 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ### MLX Test Suite
 
-- [x] `python -m pytest tests/ -x -v` — all existing tests pass on Vulkan backend
-- [x] `python -m pytest tests/test_ops.py` — op-level coverage
+- [ ] `python -m pytest tests/ -x -v` — not currently accepted as green; requires revalidation on the latest Vulkan-linked runtime
+- [x] `python -m pytest tests/test_ops.py` — op-level coverage on MoltenVK
 - [x] `python -m pytest tests/test_random.py` — RNG reproducibility
 - [x] No regressions introduced in this session
 
@@ -764,7 +814,7 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ---
 
-## Pending Work — Prioritized (as of 2026-03-05)
+## Pending Work — Prioritized For AMD/Linux Bring-up (as of 2026-03-08)
 
 > Based on live audit: 134 tests in `test_ops.py`, 24 shaders, full `primitives.cpp` code review.
 
@@ -955,9 +1005,10 @@ Tests: `test_scalar_inputs` ❌
 3. Run `test_array.py` suite to completion; log all failures.
 4. Run `test_ops.py` suite; identify remaining CPU fallback ops causing failures.
 
-### Phase G: FFT / Hadamard (Spectral Ops) ✅ COMPLETE
+### Phase G: FFT / Hadamard (Spectral Ops) 🔄 PARTIAL
 
-- [x] `FFT`, `RFFT`, `IFFT`, `IRFFT` — Stockham Cooley-Tukey radix-2/4/8; 3/3 tests passing.
+- [x] `FFT`, `RFFT` — Stockham Cooley-Tukey radix-2/4/8 path; currently covered by 3/3 tests.
+- [ ] `IFFT`, `IRFFT` — partial implementation only; inverse/Bluestein helper gaps remain in `fft.cpp`.
 - [x] `Hadamard` — GPU Walsh-Hadamard Transform in `kernels/hadamard.comp`; butterfly in shared mem; n≤2048 on GPU, larger/non-power-of-2 fall back to `eval_cpu`.
 - [ ] Rader/Bluestein for non-power-of-2 FFT sizes — future work.
 
@@ -1001,10 +1052,10 @@ These stages timeout after 20s. A hang blocks the entire test suite.
 Gaps identified in REVIEW.md, assessed against current implementation:
 
 ### A. JIT Kernel Fusion (`mx.compile()` GPU path)
-**Status**: ✅ COMPLETE. True GPU fusion via runtime SPIR-V generation (`shaderc` JIT).
+**Status**: ❌ Not implemented on Vulkan. Current behavior is CPU fallback after stream synchronization.
 **Plan**:
-- [x] Implement `Compiled::eval_gpu` with shaderc JIT: fuse elementwise chains into single SPIR-V kernel
-- [x] Cache fused kernels by op-graph hash
+- [ ] Implement `Compiled::eval_gpu` with shaderc JIT: fuse elementwise chains into single SPIR-V kernel
+- [ ] Cache fused kernels by op-graph hash
 
 ### B. Workgroup Tuning for AMD RDNA
 **Status**: ✅ Infrastructure COMPLETE. Subgroup size queried at init; M1/MoltenVK = 32/128.
@@ -1069,9 +1120,8 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 - **Load** (`primitives.cpp` line ~1706): Was throwing `runtime_error` — fixed to `eval_cpu(inputs, out)`.
   On unified-memory (MoltenVK) the VMA buffer is CPU-accessible so the mmap reader writes directly.
 
-- **Compiled** (`primitives.cpp` line ~1736): Was throwing `runtime_error` — fixed to
-  `eval_cpu(inputs, outputs)`. `mx.compile()`-fused kernels now work (CPU-stream compilation
-  is fully functional; GPU-stream compilation delegates and re-dispatches sub-ops).
+- **Compiled** (`primitives.cpp`): Was throwing `runtime_error` — currently falls back to
+  `eval_cpu(inputs, outputs)` after stream synchronization. This is CPU fallback coverage, not Vulkan JIT fusion.
 
 ### Test: Stage 23 (`tests/vulkan/test_stage23_shape_misc.py`)
 

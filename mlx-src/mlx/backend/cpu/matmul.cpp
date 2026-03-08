@@ -1,6 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <cstring>
+#include <vector>
 #include "mlx/array.h"
 #include "mlx/backend/cpu/binary.h"
 #include "mlx/backend/cpu/binary_ops.h"
@@ -121,11 +122,8 @@ void matmul_general(
 void Matmul::eval_cpu(const std::vector<array>& inputs, array& out) {
   out.set_data(allocator::malloc(out.nbytes()));
   if (inputs[0].shape(-1) == 0) {
-    auto& encoder = cpu::get_command_encoder(stream());
-    encoder.set_output_array(out);
-    encoder.dispatch([out_ptr = out.data<void>(), nbytes = out.nbytes()]() {
-      std::memset(out_ptr, 0, nbytes);
-    });
+    std::vector<char> zeros(out.nbytes(), 0);
+    allocator::copy_from_host(out.buffer(), zeros.data(), zeros.size(), out.offset());
     return;
   }
   matmul_general(inputs[0], inputs[1], out, stream());

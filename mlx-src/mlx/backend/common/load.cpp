@@ -1,7 +1,9 @@
 // Copyright © 2023 Apple Inc.
 
 #include <algorithm>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "mlx/primitives.h"
 #include "mlx/scheduler.h"
@@ -29,29 +31,41 @@ namespace mlx::core {
 
 void Load::eval_cpu(const std::vector<array>& inputs, array& out) {
   out.set_data(allocator::malloc(out.nbytes()));
-  auto read_task = [out_ptr = out.data<char>(),
+  auto host_data = std::make_shared<std::vector<char>>(out.nbytes());
+  auto read_task = [host_data,
                     size = out.size(),
                     itemsize = out.itemsize(),
                     offset = offset_,
                     reader = reader_,
                     swap_endianness_ = swap_endianness_]() mutable {
-    reader->read(out_ptr, size * itemsize, offset);
+    reader->read(host_data->data(), size * itemsize, offset);
     if (swap_endianness_) {
       switch (itemsize) {
         case 2:
-          swap_endianness<2>(reinterpret_cast<uint8_t*>(out_ptr), size);
+          swap_endianness<2>(
+              reinterpret_cast<uint8_t*>(host_data->data()), size);
           break;
         case 4:
-          swap_endianness<4>(reinterpret_cast<uint8_t*>(out_ptr), size);
+          swap_endianness<4>(
+              reinterpret_cast<uint8_t*>(host_data->data()), size);
           break;
         case 8:
-          swap_endianness<8>(reinterpret_cast<uint8_t*>(out_ptr), size);
+          swap_endianness<8>(
+              reinterpret_cast<uint8_t*>(host_data->data()), size);
           break;
       }
     }
   };
   auto fut = io::thread_pool().enqueue(std::move(read_task)).share();
-  scheduler::enqueue(stream(), [fut = std::move(fut)]() { fut.wait(); });
+  scheduler::enqueue(
+      stream(),
+      [fut = std::move(fut),
+       out = array::unsafe_weak_copy(out),
+       host_data = std::move(host_data)]() mutable {
+        fut.wait();
+        allocator::copy_from_host(
+            out.buffer(), host_data->data(), out.nbytes(), out.offset());
+      });
 }
 
 } // namespace mlx::core

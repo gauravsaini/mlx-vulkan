@@ -304,8 +304,7 @@ std::tuple<array, array, array> compute_raders_constants(
 
   array b_q_fft({rader_n - 1}, complex64, nullptr, {});
   b_q_fft.set_data(allocator::malloc(b_q_fft.nbytes()));
-  auto b_q_fft_ptr =
-      reinterpret_cast<std::complex<float>*>(b_q_fft.data<complex64_t>());
+  std::vector<std::complex<float>> b_q_fft_host(rader_n - 1);
   std::ptrdiff_t item_size = b_q_fft.itemsize();
   size_t fft_size = rader_n - 1;
   // This FFT is always small (<4096, batch 1) so save some overhead
@@ -317,8 +316,13 @@ std::tuple<array, array, array> compute_raders_constants(
       /* axes= */ {0},
       /* forward= */ true,
       /* data_in= */ b_q.data(),
-      /* data_out= */ b_q_fft_ptr,
+      /* data_out= */ b_q_fft_host.data(),
       /* scale= */ 1.0f);
+  vulkan::copy_from_host(
+      b_q_fft,
+      b_q_fft_host.data(),
+      b_q_fft.nbytes(),
+      default_stream(Device::gpu));
   return std::make_tuple(b_q_fft, g_q_arr, g_minus_q_arr);
 }
 
@@ -348,12 +352,12 @@ std::pair<array, array> compute_bluestein_constants(int n, int bluestein_n) {
 
   array w_k({n}, complex64, nullptr, {});
   w_k.set_data(allocator::malloc(w_k.nbytes()));
-  std::copy(w_k_vec.begin(), w_k_vec.end(), w_k.data<complex64_t>());
+  vulkan::copy_from_host(
+      w_k, w_k_vec.data(), w_k.nbytes(), default_stream(Device::gpu));
 
   array w_q({bluestein_n}, complex64, nullptr, {});
   w_q.set_data(allocator::malloc(w_q.nbytes()));
-  auto w_q_ptr =
-      reinterpret_cast<std::complex<float>*>(w_q.data<complex64_t>());
+  std::vector<std::complex<float>> w_q_host(bluestein_n);
 
   std::ptrdiff_t item_size = w_q.itemsize();
   size_t fft_size = bluestein_n;
@@ -364,8 +368,10 @@ std::pair<array, array> compute_bluestein_constants(int n, int bluestein_n) {
       /* axes= */ {0},
       /* forward= */ true,
       /* data_in= */ w_q_vec.data(),
-      /* data_out= */ w_q_ptr,
+      /* data_out= */ w_q_host.data(),
       /* scale= */ 1.0f);
+  vulkan::copy_from_host(
+      w_q, w_q_host.data(), w_q.nbytes(), default_stream(Device::gpu));
   return std::make_tuple(w_k, w_q);
 }
 

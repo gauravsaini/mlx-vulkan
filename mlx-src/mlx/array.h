@@ -587,48 +587,54 @@ T array::item() const {
 template <typename It>
 void array::init(It src) {
   set_data(allocator::malloc(size() * size_of(dtype())));
+  auto copy_init = [&](auto* type_tag) {
+    using T = std::remove_pointer_t<decltype(type_tag)>;
+    auto tmp = std::make_unique<T[]>(size());
+    std::copy(src, src + size(), tmp.get());
+    allocator::copy_from_host(buffer(), tmp.get(), size() * sizeof(T));
+  };
   switch (dtype()) {
     case bool_:
-      std::copy(src, src + size(), data<bool>());
+      copy_init(static_cast<bool*>(nullptr));
       break;
     case uint8:
-      std::copy(src, src + size(), data<uint8_t>());
+      copy_init(static_cast<uint8_t*>(nullptr));
       break;
     case uint16:
-      std::copy(src, src + size(), data<uint16_t>());
+      copy_init(static_cast<uint16_t*>(nullptr));
       break;
     case uint32:
-      std::copy(src, src + size(), data<uint32_t>());
+      copy_init(static_cast<uint32_t*>(nullptr));
       break;
     case uint64:
-      std::copy(src, src + size(), data<uint64_t>());
+      copy_init(static_cast<uint64_t*>(nullptr));
       break;
     case int8:
-      std::copy(src, src + size(), data<int8_t>());
+      copy_init(static_cast<int8_t*>(nullptr));
       break;
     case int16:
-      std::copy(src, src + size(), data<int16_t>());
+      copy_init(static_cast<int16_t*>(nullptr));
       break;
     case int32:
-      std::copy(src, src + size(), data<int32_t>());
+      copy_init(static_cast<int32_t*>(nullptr));
       break;
     case int64:
-      std::copy(src, src + size(), data<int64_t>());
+      copy_init(static_cast<int64_t*>(nullptr));
       break;
     case float16:
-      std::copy(src, src + size(), data<float16_t>());
+      copy_init(static_cast<float16_t*>(nullptr));
       break;
     case float32:
-      std::copy(src, src + size(), data<float>());
+      copy_init(static_cast<float*>(nullptr));
       break;
     case float64:
-      std::copy(src, src + size(), data<double>());
+      copy_init(static_cast<double*>(nullptr));
       break;
     case bfloat16:
-      std::copy(src, src + size(), data<bfloat16_t>());
+      copy_init(static_cast<bfloat16_t*>(nullptr));
       break;
     case complex64:
-      std::copy(src, src + size(), data<complex64_t>());
+      copy_init(static_cast<complex64_t*>(nullptr));
       break;
   }
 }

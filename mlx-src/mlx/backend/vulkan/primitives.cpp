@@ -3034,8 +3034,9 @@ void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
 void Compiled::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // mx.compile()-fused kernels have no Vulkan GPU implementation yet.
-  // Delegate to CPU — works on unified-memory (MoltenVK) devices.
+  // Vulkan JIT is not implemented yet. Drain pending GPU work before the CPU
+  // fallback so the fallback never reads stale device data.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
@@ -3518,16 +3519,11 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   VkBuffer ss_buf =
       static_cast<vulkan::VulkanBuffer*>(ss_alloc.ptr())->buffer;
 
-  // Copy shape/stride data to the GPU buffer (HOST_COHERENT, already mapped)
-  {
-    auto* vk_buf = static_cast<vulkan::VulkanBuffer*>(ss_alloc.ptr());
-    void* mapped = vk_buf->mapped_ptr;
-    if (!mapped) {
-      // Fallback: map if not already mapped
-      vmaMapMemory(dev.vma_allocator(), vk_buf->allocation, &mapped);
-    }
-    memcpy(mapped, ss_data, ss_bytes);
-  }
+  // Upload shape/stride data explicitly so this path does not depend on
+  // primary allocations being CPU-mapped.
+  array ss_meta({static_cast<int>(ss_bytes / sizeof(uint32_t))}, uint32, nullptr, {});
+  ss_meta.set_data(ss_alloc, allocator::free);
+  vulkan::copy_from_host(ss_meta, ss_data, ss_bytes, s);
 
   VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
   VkDescriptorBufferInfo a_info{a_buf, 0, VK_WHOLE_SIZE};
@@ -4119,9 +4115,12 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
     // Flush command buffer and wait for GPU copy to complete
     vulkan::device(s.device).synchronize(s);
 
-    // --- Butterfly transforms in-place on out.data<T>() ---
+    // Read back to CPU memory, run the butterfly there, then upload the
+    // transformed result so this fallback does not depend on unified memory.
     auto compute_hadamard = [&]<typename T>() {
-      auto* out_ptr = out.data<T>();
+      std::vector<T> host_out(out.size());
+      vulkan::copy_to_host(out, host_out.data(), out.nbytes(), s);
+      auto* out_ptr = host_out.data();
       size_t size = out.size();
 
       // hadamard_n: in-place power-of-2 Walsh-Hadamard butterfly
@@ -4185,6 +4184,8 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
           }
         }
       }
+
+      vulkan::copy_from_host(out, host_out.data(), out.nbytes(), s);
     };
 
     if (in.dtype() == float32) {
@@ -4388,6 +4389,7 @@ void LUF::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   // eval_cpu allocates lu / pivots / row_indices internally.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
@@ -4395,6 +4397,7 @@ void QRF::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   // eval_cpu allocates Q and R internally via set_data.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
@@ -4402,6 +4405,7 @@ void SVD::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   // eval_cpu allocates U, S, Vt (or just S) internally.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
@@ -4409,6 +4413,7 @@ void Eig::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   // eval_cpu allocates eigenvalues / eigenvectors internally.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
@@ -4416,6 +4421,7 @@ void Eigh::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   // eval_cpu allocates eigenvalues and copies input to eigenvectors internally.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, outputs);
 }
 
@@ -4424,12 +4430,14 @@ void Eigh::eval_gpu(
 void Inverse::eval_gpu(const std::vector<array>& inputs, array& out) {
   // eval_cpu calls copy_cpu which invokes set_copy_output_data -> allocates
   // out.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, out);
 }
 
 void Cholesky::eval_gpu(const std::vector<array>& inputs, array& out) {
   // eval_cpu calls copy_cpu which invokes set_copy_output_data -> allocates
   // out.
+  vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, out);
 }
 
@@ -4842,6 +4850,7 @@ void Quantize::eval_gpu(
     std::vector<array>& outputs) {
   if (!dequantize_) {
     // Quantize path (float -> packed): eval_cpu handles all 3 outputs.
+    vulkan::device(stream().device).synchronize(stream());
     eval_cpu(inputs, outputs);
     return;
   }
@@ -4861,13 +4870,18 @@ void Quantize::eval_gpu(
   if (n == 0)
     return;
 
-  // MLX guarantees inputs are evaluated before eval_gpu is called.
-  // On MoltenVK/iGPU unified memory, host can read GPU-written buffers
-  // directly.
-  const uint32_t* w_packed = inputs[0].data<uint32_t>();
-  const float* scales = inputs[1].data<float>();
-  const float* biases = inputs[2].data<float>();
-  float* dst = out.data<float>();
+  // Drain the producing stream before reading GPU-backed inputs on the CPU.
+  vulkan::device(stream().device).synchronize(stream());
+  std::vector<uint32_t> w_packed(inputs[0].size());
+  std::vector<float> scales(inputs[1].size());
+  std::vector<float> biases(inputs[2].size());
+  std::vector<float> dst(n);
+  vulkan::copy_to_host(
+      inputs[0], w_packed.data(), inputs[0].nbytes(), stream());
+  vulkan::copy_to_host(
+      inputs[1], scales.data(), inputs[1].nbytes(), stream());
+  vulkan::copy_to_host(
+      inputs[2], biases.data(), inputs[2].nbytes(), stream());
 
   uint32_t bits = static_cast<uint32_t>(bits_);
   uint32_t gs = static_cast<uint32_t>(group_size_);
@@ -4882,6 +4896,7 @@ void Quantize::eval_gpu(
     uint32_t group = ui / gs;
     dst[i] = static_cast<float>(q) * scales[group] + biases[group];
   }
+  vulkan::copy_from_host(out, dst.data(), out.nbytes(), stream());
 }
 
 NO_GPU_MULTI(CustomKernel)

@@ -4,6 +4,7 @@
 #define _USE_MATH_DEFINES
 
 #include <cassert>
+#include <vector>
 
 #include "mlx/backend/cpu/unary.h"
 #include "mlx/backend/cpu/unary_ops.h"
@@ -157,7 +158,9 @@ void IsInf::eval_cpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
   auto& in = inputs[0];
   if (issubdtype(in.dtype(), integer) || in.dtype() == bool_) {
-    out.set_data(allocator::malloc(out.nbytes())); std::memset(out.data<bool>(), 0, out.nbytes());
+    out.set_data(allocator::malloc(out.nbytes()));
+    std::vector<char> zeros(out.nbytes(), 0);
+    allocator::copy_from_host(out.buffer(), zeros.data(), zeros.size(), out.offset());
   } else {
     unary_fp_to_bool(in, out, detail::IsInf(), stream());
   }
@@ -167,7 +170,9 @@ void IsNaN::eval_cpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
   auto& in = inputs[0];
   if (issubdtype(in.dtype(), integer) || in.dtype() == bool_) {
-    out.set_data(allocator::malloc(out.nbytes())); std::memset(out.data<bool>(), 0, out.nbytes());
+    out.set_data(allocator::malloc(out.nbytes()));
+    std::vector<char> zeros(out.nbytes(), 0);
+    allocator::copy_from_host(out.buffer(), zeros.data(), zeros.size(), out.offset());
   } else {
     unary_fp_to_bool(in, out, detail::IsNaN(), stream());
   }
@@ -177,7 +182,9 @@ void IsNegInf::eval_cpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
   auto& in = inputs[0];
   if (issubdtype(in.dtype(), integer) || in.dtype() == bool_) {
-    out.set_data(allocator::malloc(out.nbytes())); std::memset(out.data<bool>(), 0, out.nbytes());
+    out.set_data(allocator::malloc(out.nbytes()));
+    std::vector<char> zeros(out.nbytes(), 0);
+    allocator::copy_from_host(out.buffer(), zeros.data(), zeros.size(), out.offset());
   } else {
     unary_fp_to_bool(in, out, detail::IsNegInf(), stream());
   }
