@@ -5,6 +5,31 @@ find_program(GLSLC_PROGRAM glslc REQUIRED
   HINTS $ENV{VULKAN_SDK}/bin)
 message(STATUS "Found glslc: ${GLSLC_PROGRAM}")
 
+set(MLX_GLSLC_SUPPORTS_COOP_MAT OFF)
+if(NOT APPLE)
+  execute_process(
+    COMMAND
+      ${GLSLC_PROGRAM}
+      --target-env=vulkan1.2
+      -fshader-stage=compute
+      -I${CMAKE_CURRENT_SOURCE_DIR}/kernels
+      -DMLX_USE_COOP_MAT=1
+      -o ${CMAKE_CURRENT_BINARY_DIR}/coop_probe.spv
+      ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp
+    RESULT_VARIABLE MLX_GLSLC_COOP_RESULT
+    OUTPUT_QUIET
+    ERROR_QUIET)
+  if(MLX_GLSLC_COOP_RESULT EQUAL 0)
+    set(MLX_GLSLC_SUPPORTS_COOP_MAT ON)
+    message(STATUS "glslc supports GL_KHR_cooperative_matrix")
+  else()
+    message(
+      STATUS
+        "glslc does not support GL_KHR_cooperative_matrix; cooperative shaders will use dummy .spv outputs")
+  endif()
+  file(REMOVE ${CMAKE_CURRENT_BINARY_DIR}/coop_probe.spv)
+endif()
+
 # Create output directory for compiled shaders
 set(VULKAN_SHADER_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/kernels)
 file(MAKE_DIRECTORY ${VULKAN_SHADER_OUTPUT_DIR})
@@ -63,8 +88,7 @@ add_custom_command(
 list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_stockham.spv)
 
 # Compile matmul.comp into matmul_coop.spv using cooperative matrix extension
-# Only compile on non-Apple platforms since MoltenVK doesn't support VK_KHR_cooperative_matrix
-if(NOT APPLE)
+if(MLX_GLSLC_SUPPORTS_COOP_MAT)
   add_custom_command(
     OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv
     COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -DMLX_USE_COOP_MAT=1 -o ${VULKAN_SHADER_OUTPUT_DIR}/matmul_coop.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/matmul.comp

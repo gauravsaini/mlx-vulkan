@@ -20,6 +20,7 @@
    - On CPU-only Colab runtimes it now falls back to a compile/import probe instead of failing immediately, so we still learn whether the repo builds cleanly there.
    - Colab/Jammy follow-up: switched package install from the missing standalone `glslc` package to `glslang-tools` + `spirv-tools`, and added a `glslc` compatibility wrapper backed by `glslangValidator` so the existing CMake shader build still works on that image.
    - Colab/T4 follow-up: export `XDG_RUNTIME_DIR`, fix LAPACK header discovery for MKL-backed Linux builds, and warn explicitly when the runtime exposes `llvmpipe` instead of an NVIDIA Vulkan ICD.
+   - Cooperative-matrix follow-up: the Vulkan shader CMake now probes whether `glslc` supports `GL_KHR_cooperative_matrix` before compiling coop shader variants, and falls back to dummy `.spv` outputs when the compiler does not support the extension.
    - This is the first concrete path to test compilation and initial backend execution on an easily available NVIDIA machine.
 
 4. **Shareable notebook added** (`notebooks/nvidia_colab_smoke.ipynb`):
