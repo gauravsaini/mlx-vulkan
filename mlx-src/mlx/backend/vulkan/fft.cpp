@@ -372,7 +372,7 @@ std::pair<array, array> compute_bluestein_constants(int n, int bluestein_n) {
       /* scale= */ 1.0f);
   vulkan::copy_from_host(
       w_q, w_q_host.data(), w_q.nbytes(), default_stream(Device::gpu));
-  return std::make_tuple(w_k, w_q);
+  return std::make_pair(w_k, w_q);
 }
 
 void multi_upload_bluestein_fft(

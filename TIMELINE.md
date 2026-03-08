@@ -23,6 +23,7 @@
    - Cooperative-matrix follow-up: the Vulkan shader CMake now probes whether `glslc` supports `GL_KHR_cooperative_matrix` before compiling coop shader variants, and falls back to dummy `.spv` outputs when the compiler does not support the extension.
    - Header follow-up: install `liblapack-dev` and `liblapacke-dev` in the Colab bootstrap so `mlx/backend/cpu/lapack.h` can resolve `lapack.h` on Jammy.
    - Diagnostics follow-up: added environment/toolchain summaries, Vulkan ICD listing, explicit command echoing, built artifact listing, and optional `MLX_COLAB_TRACE=1` shell tracing to the Colab smoke wrapper.
+   - FFT compile follow-up: fixed `backend/vulkan/fft.cpp` to return `std::pair` instead of `std::tuple` from `compute_bluestein_constants(...)`, which was causing the current Linux/Colab build to fail during C++ compilation.
    - This is the first concrete path to test compilation and initial backend execution on an easily available NVIDIA machine.
 
 4. **Shareable notebook added** (`notebooks/nvidia_colab_smoke.ipynb`):
