@@ -5,6 +5,7 @@
 #include "python/src/convert.h"
 #include "python/src/utils.h"
 
+#include "mlx/allocator.h"
 #include "mlx/utils.h"
 
 enum PyScalarT {
@@ -24,6 +25,58 @@ struct ndarray_traits<mx::float16_t> {
   static constexpr bool is_signed = true;
 };
 }; // namespace nanobind
+
+namespace {
+
+std::vector<char> copy_array_to_host(const mx::array& a) {
+  std::vector<char> host_data(a.nbytes());
+  if (!host_data.empty()) {
+    mx::allocator::copy_to_host(
+        a.buffer(), host_data.data(), host_data.size(), a.offset());
+  }
+  return host_data;
+}
+
+mx::array prepare_host_snapshot(mx::array a) {
+  a = mx::copy(a, mx::Device::cpu);
+  {
+    nb::gil_scoped_release nogil;
+    a.eval();
+  }
+  if (a.has_primitive() && !a.is_tracer()) {
+    a.detach();
+  }
+  return a;
+}
+
+template <typename T>
+T scalar_from_host(const mx::array& a) {
+  T value{};
+  mx::allocator::copy_to_host(a.buffer(), &value, sizeof(T), a.offset());
+  return value;
+}
+
+template <typename T, typename U = T>
+nb::list to_list(
+    const T* data,
+    const mx::Shape& shape,
+    const mx::Strides& strides,
+    int64_t index,
+    int dim) {
+  nb::list pl;
+  auto stride = strides[dim];
+  for (int i = 0; i < shape[dim]; ++i) {
+    if (dim == shape.size() - 1) {
+      pl.append(static_cast<U>(data[index]));
+    } else {
+      pl.append(to_list<T, U>(data, shape, strides, index, dim + 1));
+    }
+    index += stride;
+  }
+  return pl;
+}
+
+} // namespace
 
 int check_shape_dim(int64_t dim) {
   if (dim > std::numeric_limits<int>::max()) {
@@ -115,6 +168,7 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
     mx::array array;
     std::vector<size_t> shape;
     std::vector<int64_t> strides;
+    std::vector<char> host_data;
   };
 
   auto owner = std::make_unique<NdArrayOwner>(a);
@@ -125,6 +179,10 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
   if (owner->array.has_primitive() && !owner->array.is_tracer()) {
     owner->array.detach();
   }
+  if (owner->array.flags().row_contiguous) {
+    owner->array = prepare_host_snapshot(owner->array);
+    owner->host_data = copy_array_to_host(owner->array);
+  }
   owner->shape.assign(owner->array.shape().begin(), owner->array.shape().end());
   owner->strides.assign(
       owner->array.strides().begin(), owner->array.strides().end());
@@ -133,7 +191,9 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
       owner.release(),
       [](void* ptr) noexcept { delete static_cast<NdArrayOwner*>(ptr); });
   return nb::ndarray<NDParams...>(
-      owner_ptr->array.template data<T>(),
+      owner_ptr->host_data.empty()
+          ? owner_ptr->array.template data<T>()
+          : reinterpret_cast<T*>(owner_ptr->host_data.data()),
       owner_ptr->array.ndim(),
       owner_ptr->shape.data(),
       capsule,
@@ -190,62 +250,40 @@ nb::object to_scalar(mx::array& a) {
     throw std::invalid_argument(
         "[convert] Only length-1 arrays can be converted to Python scalars.");
   }
-  {
-    nb::gil_scoped_release nogil;
-    a.eval();
-  }
-  mx::array value(a.shape(), a.dtype(), nullptr, {});
-  value.copy_shared_buffer(a);
-  if (a.has_primitive() && !a.is_tracer()) {
-    a.detach();
-  }
+  mx::array value = prepare_host_snapshot(a);
   switch (value.dtype()) {
     case mx::bool_:
-      return nb::cast(value.item<bool>());
+      return nb::cast(scalar_from_host<bool>(value));
     case mx::uint8:
-      return nb::cast(value.item<uint8_t>());
+      return nb::cast(scalar_from_host<uint8_t>(value));
     case mx::uint16:
-      return nb::cast(value.item<uint16_t>());
+      return nb::cast(scalar_from_host<uint16_t>(value));
     case mx::uint32:
-      return nb::cast(value.item<uint32_t>());
+      return nb::cast(scalar_from_host<uint32_t>(value));
     case mx::uint64:
-      return nb::cast(value.item<uint64_t>());
+      return nb::cast(scalar_from_host<uint64_t>(value));
     case mx::int8:
-      return nb::cast(value.item<int8_t>());
+      return nb::cast(scalar_from_host<int8_t>(value));
     case mx::int16:
-      return nb::cast(value.item<int16_t>());
+      return nb::cast(scalar_from_host<int16_t>(value));
     case mx::int32:
-      return nb::cast(value.item<int32_t>());
+      return nb::cast(scalar_from_host<int32_t>(value));
     case mx::int64:
-      return nb::cast(value.item<int64_t>());
+      return nb::cast(scalar_from_host<int64_t>(value));
     case mx::float16:
-      return nb::cast(static_cast<float>(value.item<mx::float16_t>()));
+      return nb::cast(static_cast<float>(scalar_from_host<mx::float16_t>(value)));
     case mx::float32:
-      return nb::cast(value.item<float>());
+      return nb::cast(scalar_from_host<float>(value));
     case mx::bfloat16:
-      return nb::cast(static_cast<float>(value.item<mx::bfloat16_t>()));
+      return nb::cast(
+          static_cast<float>(scalar_from_host<mx::bfloat16_t>(value)));
     case mx::complex64:
-      return nb::cast(value.item<std::complex<float>>());
+      return nb::cast(scalar_from_host<std::complex<float>>(value));
     case mx::float64:
-      return nb::cast(value.item<double>());
+      return nb::cast(scalar_from_host<double>(value));
     default:
       throw nb::type_error("type cannot be converted to Python scalar.");
   }
-}
-
-template <typename T, typename U = T>
-nb::list to_list(mx::array& a, size_t index, int dim) {
-  nb::list pl;
-  auto stride = a.strides()[dim];
-  for (int i = 0; i < a.shape(dim); ++i) {
-    if (dim == a.ndim() - 1) {
-      pl.append(static_cast<U>(a.data<T>()[index]));
-    } else {
-      pl.append(to_list<T, U>(a, index, dim + 1));
-    }
-    index += stride;
-  }
-  return pl;
 }
 
 nb::object tolist(mx::array& a) {
@@ -256,40 +294,126 @@ nb::object tolist(mx::array& a) {
     nb::gil_scoped_release nogil;
     a.eval();
   }
-  mx::array value(a.shape(), a.dtype(), nullptr, {});
-  value.copy_shared_buffer(a);
   if (a.has_primitive() && !a.is_tracer()) {
     a.detach();
   }
+  auto row_contiguous = a.flags().row_contiguous;
+  mx::array value = row_contiguous ? prepare_host_snapshot(a) : a;
+  auto host_data = row_contiguous ? copy_array_to_host(value) : std::vector<char>{};
+  auto* data = row_contiguous
+      ? reinterpret_cast<const char*>(host_data.data())
+      : nullptr;
   switch (value.dtype()) {
     case mx::bool_:
-      return to_list<bool>(value, 0, 0);
+      return to_list<bool>(
+          row_contiguous ? reinterpret_cast<const bool*>(data) : value.data<bool>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::uint8:
-      return to_list<uint8_t>(value, 0, 0);
+      return to_list<uint8_t>(
+          row_contiguous ? reinterpret_cast<const uint8_t*>(data)
+                         : value.data<uint8_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::uint16:
-      return to_list<uint16_t>(value, 0, 0);
+      return to_list<uint16_t>(
+          row_contiguous ? reinterpret_cast<const uint16_t*>(data)
+                         : value.data<uint16_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::uint32:
-      return to_list<uint32_t>(value, 0, 0);
+      return to_list<uint32_t>(
+          row_contiguous ? reinterpret_cast<const uint32_t*>(data)
+                         : value.data<uint32_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::uint64:
-      return to_list<uint64_t>(value, 0, 0);
+      return to_list<uint64_t>(
+          row_contiguous ? reinterpret_cast<const uint64_t*>(data)
+                         : value.data<uint64_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::int8:
-      return to_list<int8_t>(value, 0, 0);
+      return to_list<int8_t>(
+          row_contiguous ? reinterpret_cast<const int8_t*>(data)
+                         : value.data<int8_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::int16:
-      return to_list<int16_t>(value, 0, 0);
+      return to_list<int16_t>(
+          row_contiguous ? reinterpret_cast<const int16_t*>(data)
+                         : value.data<int16_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::int32:
-      return to_list<int32_t>(value, 0, 0);
+      return to_list<int32_t>(
+          row_contiguous ? reinterpret_cast<const int32_t*>(data)
+                         : value.data<int32_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::int64:
-      return to_list<int64_t>(value, 0, 0);
+      return to_list<int64_t>(
+          row_contiguous ? reinterpret_cast<const int64_t*>(data)
+                         : value.data<int64_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::float16:
-      return to_list<mx::float16_t, float>(value, 0, 0);
+      return to_list<mx::float16_t, float>(
+          row_contiguous ? reinterpret_cast<const mx::float16_t*>(data)
+                         : value.data<mx::float16_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::float32:
-      return to_list<float>(value, 0, 0);
+      return to_list<float>(
+          row_contiguous ? reinterpret_cast<const float*>(data) : value.data<float>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::bfloat16:
-      return to_list<mx::bfloat16_t, float>(value, 0, 0);
+      return to_list<mx::bfloat16_t, float>(
+          row_contiguous ? reinterpret_cast<const mx::bfloat16_t*>(data)
+                         : value.data<mx::bfloat16_t>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::float64:
-      return to_list<double>(value, 0, 0);
+      return to_list<double>(
+          row_contiguous ? reinterpret_cast<const double*>(data)
+                         : value.data<double>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     case mx::complex64:
-      return to_list<std::complex<float>>(value, 0, 0);
+      return to_list<std::complex<float>>(
+          row_contiguous ? reinterpret_cast<const std::complex<float>*>(data)
+                         : value.data<std::complex<float>>(),
+          value.shape(),
+          value.strides(),
+          0,
+          0);
     default:
       throw nb::type_error("data type cannot be converted to Python list.");
   }

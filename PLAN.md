@@ -29,6 +29,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 - [ ] Build `MLX_BUILD_VULKAN=ON` on Linux and verify `import mlx.core` succeeds without macOS-specific packaging steps.
 - [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_amd_bringup.py`:
       covers import, GPU detection, core ops, CPU-fallback output paths, and linalg fallbacks; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_AMD=1` for strict AMD runner gating.
+      Latest expansion: also checks Python bridge safety (`memoryview`, NumPy export, and `tolist()`) against the freshly built extension.
 - [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:
       includes stages 3a-25, fixes the outdated Stage 17 entry, supports `PYTHON_BIN`, and no longer aborts on skipped stages under `set -e`.
 - [ ] Confirm runtime detection on AMD with the new smoke gate: `is_available(gpu)`, `device_count(gpu)`, `device_info(gpu)`, and the Stage 25 Python smoke test.
@@ -46,6 +47,8 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 - [x] First-pass synchronization hardening for GPU-stream CPU fallbacks in `backend/vulkan/primitives.cpp` and `backend/vulkan/copy.cpp`.
       Added `synchronize()` before compiled fallback, linalg CPU fallbacks, quantize CPU/readback paths, and dynamic offset CPU reads.
 - [x] Added explicit Vulkan host transfer helpers (`copy_from_host` / `copy_to_host`) and migrated backend call sites away from direct mapped-pointer writes where practical.
+- [x] Disabled unsafe Vulkan no-copy host pointer wrapping:
+      `backend/vulkan/allocator.cpp::make_buffer()` now returns `nullptr` until true host-memory import exists, forcing NumPy/raw host pointer construction onto the safe copy path instead of misinterpreting host pointers as internal `VulkanBuffer*` handles.
 - [x] Centralized host-to-buffer initialization for the main MLX inference/model-loading path:
       shared array constructors, common scalar/load helpers, GGUF tensor import, and GGUF quantized unpacking now use allocator-level host copies instead of assuming Vulkan allocations are directly writable through `data<T>()`.
 - [x] Removed the simple fresh-allocation direct-write assumptions in CPU fallback helpers:
@@ -54,7 +57,11 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       CPU fallback kernels that write through `data<T>()` on GPU-backed outputs now push those host-side writes back through allocator staging before returning to the Vulkan evaluator.
 - [x] Patched shared serialization/readback paths to use allocator host copies:
       `export.cpp`, `.npy` save, safetensors save, GGUF save, compile scalar folding, and debug printing no longer read Vulkan-backed arrays through direct `data<T>()` pointers.
-- [ ] Remove or downgrade overstated readiness claims:
+- [x] Hardened Python bridge host reads for discrete-memory safety:
+      `python/src/buffer.h` and `python/src/convert.cpp` now expose host-owned snapshots for row-contiguous buffer protocol, NumPy export, scalar conversion, and `tolist()` paths instead of dereferencing backend memory directly; the Python buffer protocol is explicitly read-only on those snapshot-backed exports.
+- [ ] Non-row-contiguous Python export/readback still needs explicit follow-up:
+      reversed / strided view export remains on the old direct-pointer path for correctness on the current MoltenVK build, so it is not yet part of the discrete-memory-safe AMD bring-up contract.
+- [x] Remove or downgrade overstated readiness claims:
       `VK_EXT_external_memory_host` zero-copy, Vulkan `mx.compile()` GPU fusion, SDPA coverage, and full FFT surface coverage.
 - [ ] Re-audit MoltenVK-only fallback assumptions before AMD bring-up:
       linalg fallbacks, dynamic offset reads, quantized dequant readback, and any direct `data<T>()` access on GPU-backed arrays.

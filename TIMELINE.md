@@ -60,7 +60,23 @@
      - GGUF save smoke,
      - `str(array)` / formatter path.
 
-9. **Remaining gap**:
+9. **Python bridge hardened for host-snapshot reads** (`python/src/buffer.h`, `python/src/convert.cpp`, `tests/vulkan/test_stage25_amd_bringup.py`):
+   - Replaced direct `data<T>()` dereferences in the row-contiguous Python buffer protocol, NumPy export, scalar conversion, and `tolist()` paths with allocator-level host copies.
+   - Buffer protocol exports are now explicitly read-only when they expose host snapshots rather than aliased backend storage.
+   - Expanded the Stage 25 bring-up smoke to cover:
+     - `memoryview(...)` shape/read-only behavior,
+     - NumPy export via `np.asarray(...)`,
+     - nested `tolist()` and scalar `tolist()` on contiguous arrays,
+     - NumPy-backed array construction on the freshly built Vulkan extension.
+   - Verified locally against the freshly built extension loaded through `MLX_CORE_SO`.
+   - Follow-up note: reversed / non-row-contiguous Python exports still rely on the old direct-pointer path for now and remain outside the discrete-memory-safe AMD bring-up gate.
+
+10. **Unsafe Vulkan no-copy host wrapping disabled** (`backend/vulkan/allocator.cpp`):
+   - `VulkanAllocator::make_buffer()` no longer treats arbitrary raw host pointers as if they were internal `VulkanBuffer*` handles.
+   - Until true host-memory import exists, the path now returns `nullptr` so shared MLX array construction falls back to an explicit copy.
+   - This closes a real discrete-memory bring-up hazard for NumPy / host-buffer input on Vulkan.
+
+11. **Remaining gap**:
    - The simple fresh-allocation zero-fill/scalar cases are now covered, encoder-managed GPU-stream CPU fallback outputs are flushed centrally, and the shared serialization/readback helpers are staged safely.
    - The remaining work before a full device-local allocator flip is a final audit for direct host access that still bypasses those paths.
    - Non-core paths like distributed backends remain outside the validated AMD bring-up gate.

@@ -41,9 +41,6 @@ const char* dtype_name(Dtype dtype);
 // subsequent compute reads
 void insert_buffer_barrier(VkCommandBuffer cmd, VkBuffer buffer);
 
-// Insert barrier for all output buffers of an array
-void insert_buffer_barrier(VkCommandBuffer cmd, const array& arr);
-
 // Check VkResult and throw on error
 void vk_check(VkResult result, const char* msg);
 

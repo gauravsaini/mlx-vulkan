@@ -1,10 +1,14 @@
 // Copyright © 2024 Apple Inc.
 #pragma once
+#include <cstring>
 #include <optional>
+#include <vector>
 
 #include <nanobind/nanobind.h>
 
+#include "mlx/allocator.h"
 #include "mlx/array.h"
+#include "mlx/ops.h"
 #include "mlx/utils.h"
 
 // Only defined in >= Python 3.9
@@ -60,14 +64,17 @@ struct buffer_info {
   std::string format;
   std::vector<Py_ssize_t> shape;
   std::vector<Py_ssize_t> strides;
+  std::vector<char> host_data;
 
   buffer_info(
       std::string format,
       std::vector<Py_ssize_t> shape_in,
-      std::vector<Py_ssize_t> strides_in)
+      std::vector<Py_ssize_t> strides_in,
+      std::vector<char> host_data_in)
       : format(std::move(format)),
         shape(std::move(shape_in)),
-        strides(std::move(strides_in)) {}
+        strides(std::move(strides_in)),
+        host_data(std::move(host_data_in)) {}
 
   buffer_info(const buffer_info&) = delete;
   buffer_info& operator=(const buffer_info&) = delete;
@@ -80,6 +87,7 @@ struct buffer_info {
     format = std::move(rhs.format);
     shape = std::move(rhs.shape);
     strides = std::move(rhs.strides);
+    host_data = std::move(rhs.host_data);
     return *this;
   }
 };
@@ -87,27 +95,46 @@ struct buffer_info {
 extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   std::memset(view, 0, sizeof(Py_buffer));
   auto a = nb::cast<mx::array>(nb::handle(obj));
+  auto row_contiguous = a.flags().row_contiguous;
+  auto value = row_contiguous ? mx::copy(a, mx::Device::cpu) : a;
 
   {
     nb::gil_scoped_release nogil;
-    a.eval();
+    value.eval();
   }
 
-  std::vector<Py_ssize_t> shape(a.shape().begin(), a.shape().end());
-  std::vector<Py_ssize_t> strides(a.strides().begin(), a.strides().end());
-  for (auto& s : strides) {
-    s *= a.itemsize();
+  if (value.has_primitive() && !value.is_tracer()) {
+    value.detach();
   }
-  buffer_info* info =
-      new buffer_info(buffer_format(a), std::move(shape), std::move(strides));
+
+  std::vector<Py_ssize_t> shape(value.shape().begin(), value.shape().end());
+  std::vector<Py_ssize_t> strides(value.strides().begin(), value.strides().end());
+  for (auto& s : strides) {
+    s *= value.itemsize();
+  }
+  std::vector<char> host_data;
+  if (row_contiguous) {
+    host_data.resize(value.nbytes());
+  }
+  if (!host_data.empty()) {
+    mx::allocator::copy_to_host(
+        value.buffer(), host_data.data(), host_data.size(), value.offset());
+  }
+  buffer_info* info = new buffer_info(
+      buffer_format(value),
+      std::move(shape),
+      std::move(strides),
+      std::move(host_data));
 
   view->obj = obj;
-  view->ndim = a.ndim();
+  view->ndim = value.ndim();
   view->internal = info;
-  view->buf = a.data<void>();
-  view->itemsize = a.itemsize();
-  view->len = a.nbytes();
-  view->readonly = false;
+  view->buf = row_contiguous
+      ? (info->host_data.empty() ? nullptr : info->host_data.data())
+      : value.data<void>();
+  view->itemsize = value.itemsize();
+  view->len = value.nbytes();
+  view->readonly = row_contiguous;
   if ((flags & PyBUF_FORMAT) == PyBUF_FORMAT) {
     view->format = const_cast<char*>(info->format.c_str());
   }

@@ -99,6 +99,33 @@ def main():
         if not np.allclose(got, ref, atol=1e-4):
             raise RuntimeError(f"softmax mismatch: got {got.tolist()}")
 
+    def check_python_bridge():
+        a = mx.array([[1.0, 2.0], [3.0, 4.0]], dtype=mx.float32)
+        mv = memoryview(a)
+        if not mv.readonly:
+            raise RuntimeError("memoryview unexpectedly writable")
+        if tuple(mv.shape) != (2, 2):
+            raise RuntimeError(f"memoryview shape mismatch: got {mv.shape}")
+
+        np_val = np.asarray(a)
+        np_ref = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+        if not np.allclose(np_val, np_ref, atol=1e-4):
+            raise RuntimeError(f"numpy export mismatch: got {np_val.tolist()}")
+
+        list_val = mx.arange(6, dtype=mx.int32).reshape(2, 3).tolist()
+        if list_val != [[0, 1, 2], [3, 4, 5]]:
+            raise RuntimeError(f"tolist mismatch: got {list_val}")
+
+        scalar_val = mx.array(7, dtype=mx.int32).tolist()
+        if scalar_val != 7:
+            raise RuntimeError(f"scalar tolist mismatch: got {scalar_val}")
+
+        np_in = np.array([[9.0, 8.0], [7.0, 6.0]], dtype=np.float32)
+        from_np = mx.array(np_in)
+        got_np_in = np.asarray(from_np)
+        if not np.allclose(got_np_in, np_in, atol=1e-4):
+            raise RuntimeError(f"numpy import mismatch: got {got_np_in.tolist()}")
+
     def check_cpu_fallback_outputs():
         x = mx.isinf(mx.array([1, 2, 3], dtype=mx.int32))
         mx.eval(x)
@@ -139,6 +166,7 @@ def main():
 
     check("gpu detect", check_gpu, errors)
     check("core ops", check_core_ops, errors)
+    check("python bridge", check_python_bridge, errors)
     check("cpu fallback outputs", check_cpu_fallback_outputs, errors)
     check("linalg fallbacks", check_linalg_fallbacks, errors)
 

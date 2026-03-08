@@ -272,28 +272,13 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 allocator::Buffer VulkanAllocator::make_buffer(void* ptr, size_t size) {
-  // `ptr` is expected to be a `VulkanBuffer*` from a previous `malloc` call.
-  // We create a new `VulkanBuffer` wrapper that shares the underlying Vulkan
-  // resources but does NOT own them.
-  auto* src_buf = static_cast<VulkanBuffer*>(ptr);
-  if (!src_buf) {
-    return allocator::Buffer{nullptr};
-  }
-
-  // Create a new wrapper pointing to the same Vulkan resources.
-  // Crucially, when `release` is called on this new wrapper, we will ONLY
-  // delete the wrapper (`new_buf`), not the underlying Vulkan memory.
-  auto* new_buf = new VulkanBuffer{
-      src_buf->buffer,
-      src_buf->allocation,
-      size,
-      src_buf->mapped_ptr,
-      src_buf->cpu_readback_ptr,
-      false,
-      false,
-      src_buf->memory_properties};
-
-  return allocator::Buffer{new_buf};
+  (void)ptr;
+  (void)size;
+  // Vulkan does not yet implement host-memory import / true no-copy wrapping
+  // for arbitrary CPU pointers. Force the generic array constructor to take
+  // the safe copy path instead of misinterpreting a host pointer as a
+  // VulkanBuffer handle.
+  return allocator::Buffer{nullptr};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,13 +286,8 @@ allocator::Buffer VulkanAllocator::make_buffer(void* ptr, size_t size) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VulkanAllocator::release(allocator::Buffer buffer) {
-  // This is called for buffers created via `make_buffer`.
-  // We only delete the `VulkanBuffer` tracking struct. We DO NOT call
-  // `vmaDestroyBuffer` because this wrapper doesn't own the memory.
-  auto* buf = static_cast<VulkanBuffer*>(buffer.ptr());
-  if (buf) {
-    delete buf;
-  }
+  (void)buffer;
+  // No-op until host-memory import / no-copy wrapping is implemented.
 }
 
 void VulkanAllocator::copy_from_host(
