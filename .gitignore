@@ -57,6 +57,7 @@ tests/Testing/
 CMakeLists_test.txt
 
 # Scratch / experiment files
+scripts/
 test.cpp
 test_out.txt
 test_segfault.cpp

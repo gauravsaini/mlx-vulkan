@@ -12,42 +12,80 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
-**Current device**: Apple M1 via MoltenVK (macOS development)
-**Last verified**: 2026-03-07
+**Current device**: Apple M1 via MoltenVK (macOS development), plus live AMD `g4ad.xlarge` validation on Linux
+**Last verified**: 2026-03-09
 
 ---
 
 ## Current Priority (as of 2026-03-09)
 
-**Top milestone**: first successful end-to-end MLX execution on a real Linux NVIDIA GPU using the Vulkan backend.
+**Top milestone**: reach practical MLX training compatibility on Vulkan.
 
-**Current status**: Not there yet. The backend has strong MoltenVK stage coverage, but Linux/NVIDIA execution is still unvalidated, the full Vulkan-linked pytest story is not yet green, and the remaining failures are still concentrated in discrete-memory safety, fallback lifetime, and correctness paths that will matter on a discrete GPU.
+**Minimum bar**: a tiny transformer trains and converges on the Vulkan backend without CPU fallback.
 
-### NVIDIA/Linux Bring-up Checklist
+**Current status**: Real AMD/Linux Vulkan execution is now proven for core tensor ops, autograd, and a tiny 2-layer MLP training loop. The remaining gap is no longer “does Vulkan run at all,” but “which missing MLX features and fallback paths still block end-to-end transformer and LLM training.”
 
-- [ ] Provision a real Linux NVIDIA machine or runner and make it the primary validation target.
-- [ ] Build `MLX_BUILD_VULKAN=ON` on Linux and verify `import mlx.core` succeeds without macOS-specific packaging steps.
+### Live Validation Snapshot (AMD/Linux)
+
+- [x] Real Linux AMD Vulkan runtime provisioned and validated on AWS `g4ad.xlarge`:
+      `amdgpu` loaded, `/dev/dri/renderD128` present, `vulkaninfo` reports `RADV NAVI12`.
+- [x] Vulkan Python build succeeds on Linux with `python3.11`.
+- [x] `mlx.core` imports and selects the Vulkan GPU on real AMD hardware.
+- [x] Simple shader-backed MLX op executes correctly on Vulkan:
+      vector add returned the expected result and created a fresh Vulkan pipeline cache file.
+- [x] Autograd smoke passes on Vulkan:
+      `mx.value_and_grad(sum(x*x))` matched the expected scalar loss and gradient.
+- [x] Tiny MLP training smoke passes on Vulkan:
+      `Linear -> ReLU -> Linear` with SGD showed stable loss decrease on real AMD Vulkan.
+- [ ] CPU-fallback linalg correctness still fails on real AMD Vulkan:
+      `qr`, `svd`, `cholesky`, `eigh`, and `inv` currently return zeros or fail in the discrete-GPU fallback path.
+- [ ] Tiny transformer training without CPU fallback is not yet demonstrated.
+- [ ] LoRA / small-LLM fine-tuning path is not yet demonstrated.
+
+### Functional Success Criteria
+
+| Stage | What We Run | Success | Current State |
+| --- | --- | --- | --- |
+| Tensor Ops | Large matmul, elementwise ops | Runs on Vulkan GPU without CPU fallback | In progress; core ops proven, broader MLX tensor coverage still pending |
+| Autograd | Gradient tests on simple loss | Gradients match CPU backend within tolerance | ✅ Proven on AMD Vulkan |
+| Optimizers | Adam / SGD updates | Parameters update correctly | ✅ SGD proven in tiny MLP smoke; Adam still needs explicit validation |
+| Neural Net Training | Small MLP or CNN | Loss decreases consistently | ✅ Tiny 2-layer MLP proven |
+| Transformer Training | Tiny transformer | Training converges without CPU fallback | ❌ Not yet proven |
+| LLM Finetuning | LoRA on a small LLM | Runs for long training windows | ❌ Not yet proven |
+| Stability | Long training run | No leaks, no device resets | ❌ Not yet proven |
+
+### Performance Success Criteria
+
+| Metric | Baseline | Minimum Acceptable | Current State |
+| --- | --- | --- | --- |
+| GPU utilization | CUDA / Metal reference | >50% | Not yet measured on real AMD |
+| Matmul throughput | CUDA / Metal reference | >=40% of CUDA / Metal | Not yet measured on real AMD |
+| Tiny transformer training throughput | Metal MLX reference | >=30-40% | Not yet measured |
+| Memory efficiency | CUDA / Metal usage | <=1.5x memory | Not yet measured |
+| Long-run kernel stability | No crashes | Occasional recoverable errors at worst | Not yet measured |
+
+### Compatibility-First Roadmap
+
+- [x] Prove the Vulkan backend can execute real MLX training primitives on a discrete GPU.
+- [x] Prove backward pass and optimizer updates on real AMD Vulkan.
+- [ ] Eliminate the remaining CPU-fallback correctness blockers that break MLX compatibility on discrete GPUs:
+      linalg fallback writeback/copy path, unsafe direct host access, and any fallback that still assumes unified memory.
+- [ ] Add a tiny transformer smoke that uses only supported Vulkan paths and verify convergence.
+- [ ] Audit transformer-critical ops for fallback-free execution:
+      `matmul`, `addmm`, `softmax`, `layer_norm`, `rope`, embeddings, masking, indexing, optimizer updates.
+- [ ] Identify and remove training blockers for real LLM workloads:
+      attention path coverage, norm backward coverage, optimizer coverage, sequence masking, and long-run stability.
+- [ ] After compatibility is real, measure throughput and memory behavior on real AMD and NVIDIA hardware.
+
+### Cross-Vendor Validation Checklist
+
 - [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_linux_vulkan_bringup.py`:
       covers import, GPU detection, core ops, CPU-fallback output paths, and Python bridge safety; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_VENDOR=amd|nvidia|intel` for strict runner gating.
-      Latest expansion: linalg fallback checks remain available behind `MLX_VULKAN_INCLUDE_LINALG=1`, but are no longer part of the default first-pass NVIDIA bring-up contract.
-- [x] Added `tests/vulkan/google_colab_nvidia_smoke.sh` as the first disposable Linux/NVIDIA lane:
-      installs Vulkan build prerequisites on a Colab-style Ubuntu runtime, builds the Python extension in place with Vulkan enabled, and either runs Stage 25 with `MLX_VULKAN_REQUIRE_VENDOR=nvidia` on a GPU runtime or falls back to a compile/import-only probe when Colab has no attached NVIDIA GPU.
-      Colab/Jammy follow-up: installs `glslang-tools` plus `spirv-tools` and synthesizes a `glslc` compatibility wrapper from `glslangValidator` when the image does not provide a standalone `glslc` package.
-      Colab/T4 follow-up: exports `XDG_RUNTIME_DIR`, relaxes LAPACK header discovery for MKL-backed Linux builds, and treats `llvmpipe` Vulkan exposure as an environment limitation rather than a backend failure.
-      Cooperative-matrix follow-up: Vulkan shader build now probes whether `glslc` actually supports `GL_KHR_cooperative_matrix` before attempting the coop shader variants, so unsupported Linux toolchains fall back to dummy `.spv` outputs instead of aborting the build.
-      Header follow-up: explicitly installs `liblapack-dev` and `liblapacke-dev` on Colab/Jammy so the CPU backend can compile `lapack.h`-based code even when BLAS/LAPACK libraries are being provided from a different preloaded stack.
-      Diagnostics follow-up: the Colab smoke script now prints environment/toolchain summaries, Vulkan ICD visibility, explicit build commands, built artifact paths, and supports `MLX_COLAB_TRACE=1` for shell xtrace.
-      FFT compile follow-up: fixed `backend/vulkan/fft.cpp` to return `std::pair` instead of `std::tuple`, which was blocking Linux/Colab compilation in `compute_bluestein_constants(...)`.
-      Wrapper follow-up: the synthetic `glslc` shim now handles `--version` / `--help` cleanly so toolchain introspection does not fail before the build starts.
-- [x] Added `notebooks/nvidia_colab_smoke.ipynb`:
-      provides a shareable Colab notebook that links to this repo, clones `main`, detects whether the runtime actually has an NVIDIA GPU, runs the smoke wrapper, and keeps the stricter linalg fallback check as a separate optional follow-up cell.
-- [x] Updated `tests/vulkan/run_all_stages.sh` to reflect the current stage ladder through Stage 25:
-      includes stages 3a-25, fixes the outdated Stage 17 entry, supports `PYTHON_BIN`, and no longer aborts on skipped stages under `set -e`.
-- [ ] Confirm runtime detection on NVIDIA with the new smoke gate: `is_available(gpu)`, `device_count(gpu)`, `device_info(gpu)`, and the Stage 25 Python smoke test.
-- [ ] Run the Vulkan stage suite on NVIDIA and fix any discrete-GPU-only failures first.
-- [ ] Run targeted MLX coverage on NVIDIA: `test_ops.py`, `test_array.py`, `test_random.py`, and a small inference-oriented smoke path (`matmul`, `softmax`, `layer_norm`, `rope`).
-- [ ] Prioritize anything blocking that path: staging-buffer correctness, synchronization, allocator lifetime, CPU fallback safety, and teardown stability.
-- [ ] Defer AMD-specific tuning, cooperative matrix work, distributed ops, and non-essential feature work until the NVIDIA bring-up path is stable.
+      Latest expansion: linalg fallback checks remain available behind `MLX_VULKAN_INCLUDE_LINALG=1`, but are no longer part of the default first-pass contract.
+- [ ] Keep a real NVIDIA machine or runner as the next hardware target so the same MLX compatibility gates are proven across both major discrete-GPU vendors.
+- [ ] Run the same compatibility ladder on NVIDIA:
+      Stage 25, autograd smoke, tiny MLP training, tiny transformer training.
+- [ ] Defer vendor-specific tuning and cooperative-matrix optimization until the training-compatibility bar is met.
 
 ### Pre-NVIDIA Blockers From Static Code Review
 
@@ -82,11 +120,12 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ### Exit Criteria For This Milestone
 
-- [ ] Linux NVIDIA build succeeds from a clean checkout.
-- [ ] `mlx.core` imports and sees the Vulkan GPU on NVIDIA.
-- [ ] No segfaults, bus errors, or teardown crashes in the targeted NVIDIA validation path.
-- [ ] Stage suite passes on NVIDIA or fails only for explicitly documented unsupported paths.
-- [ ] Core MLX smoke workload runs on the Vulkan backend on NVIDIA without manual intervention.
+- [x] Real discrete-GPU Vulkan execution is proven on at least one Linux hardware target.
+- [x] Core MLX tensor ops, autograd, and a tiny MLP training loop run on Vulkan.
+- [ ] Tiny transformer training converges without CPU fallback.
+- [ ] Transformer-critical ops are either native Vulkan paths or discrete-GPU-safe fallbacks with verified correctness.
+- [ ] No segfaults, teardown crashes, or unbounded memory growth in the targeted training path.
+- [ ] Cross-vendor validation exists on both AMD and NVIDIA hardware.
 
 ---
 
@@ -839,7 +878,7 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ---
 
-## Pending Work — Prioritized For AMD/Linux Bring-up (as of 2026-03-08)
+## Pending Work — Prioritized For MLX Training Compatibility (as of 2026-03-09)
 
 > Based on live audit: 134 tests in `test_ops.py`, 24 shaders, full `primitives.cpp` code review.
 
