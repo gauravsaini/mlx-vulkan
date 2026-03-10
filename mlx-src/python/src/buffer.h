@@ -165,7 +165,10 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
       : (info->host_data.data() + snapshot.logical_byte_offset);
   view->itemsize = value.itemsize();
   view->len = value.nbytes();
-  view->readonly = true;
+  // Expose the host snapshot as writable to preserve the existing MLX buffer
+  // protocol contract. Writes mutate the exported snapshot, not the original
+  // backend allocation.
+  view->readonly = false;
   if ((flags & PyBUF_FORMAT) == PyBUF_FORMAT) {
     view->format = const_cast<char*>(info->format.c_str());
   }

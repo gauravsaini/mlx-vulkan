@@ -226,7 +226,7 @@ int op_int(int a, int b) {
         case BINARY_DIV:         return b != 0 ? a / b : 0;
         case BINARY_MAX:         return max(a, b);
         case BINARY_MIN:         return min(a, b);
-        case BINARY_POW:         return int(pow(float(a), float(b)));
+        case BINARY_POW:         return int(round(pow(float(a), float(b))));
         case BINARY_REMAINDER:   return b != 0 ? a % b : 0;
         case BINARY_FLOOR_DIV:   return b != 0 ? a / b : 0;
         case BINARY_BITWISE_AND: return a & b;
@@ -245,6 +245,7 @@ uint op_uint(uint a, uint b) {
         case BINARY_DIV:         return b != 0u ? a / b : 0u;
         case BINARY_MAX:         return max(a, b);
         case BINARY_MIN:         return min(a, b);
+        case BINARY_POW:         return uint(round(pow(float(a), float(b))));
         case BINARY_REMAINDER:   return b != 0u ? a % b : 0u;
         case BINARY_FLOOR_DIV:   return b != 0u ? a / b : 0u;
         case BINARY_BITWISE_AND: return a & b;

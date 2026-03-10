@@ -221,9 +221,9 @@ array::~array() {
     // If all siblings have siblings.size() references except
     // the one we are currently destroying (which has siblings.size() + 1)
     // then there are no more external references
-    do_detach &= (array_desc_.use_count() == (n + 1));
+    do_detach &= (array_desc_.use_count() <= (n + 2));
     for (auto& s : siblings()) {
-      do_detach &= (s.array_desc_.use_count() == n);
+      do_detach &= (s.array_desc_.use_count() <= n);
       if (!do_detach) {
         break;
       }
@@ -235,8 +235,15 @@ array::~array() {
           // for siblings
           ss.array_desc_ = nullptr;
         }
+        s.array_desc_->primitive = nullptr;
+        s.array_desc_->inputs.clear();
         s.array_desc_->siblings.clear();
+        s.array_desc_->position = 0;
       }
+      array_desc_->primitive = nullptr;
+      array_desc_->inputs.clear();
+      array_desc_->siblings.clear();
+      array_desc_->position = 0;
     }
   }
 }
@@ -272,15 +279,65 @@ array::ArrayDesc::ArrayDesc(
 }
 
 array::ArrayDesc::~ArrayDesc() {
-  // Break sibling cycles explicitly and then let shared_ptr ownership release
-  // the input graph naturally. The previous manual recursive reaper was
-  // corrupting shared subgraphs when multiple live roots were collected
-  // together.
+  // When an array description is destroyed it may release a deep input graph.
+  // Releasing that graph recursively overflows the stack on sibling-heavy
+  // graphs (for example concatenate(split(x, 2)) repeated many times), so
+  // destroy reachable input descriptions iteratively instead.
+  if (inputs.empty()) {
+    for (auto& s : siblings) {
+      s.array_desc_ = nullptr;
+    }
+    siblings.clear();
+    return;
+  }
+
+  std::vector<std::shared_ptr<ArrayDesc>> for_deletion;
+
+  auto append_deletable_inputs = [&for_deletion](ArrayDesc& ad) {
+    std::unordered_map<std::uintptr_t, array> input_map;
+    for (array& a : ad.inputs) {
+      if (a.array_desc_) {
+        input_map.insert({a.id(), a});
+        for (auto& s : a.siblings()) {
+          input_map.insert({s.id(), s});
+        }
+      }
+    }
+    ad.inputs.clear();
+    for (auto& [_, a] : input_map) {
+      bool is_deletable =
+          (a.array_desc_.use_count() <= a.siblings().size() + 1);
+      for (auto& s : a.siblings()) {
+        if (!is_deletable) {
+          break;
+        }
+        int is_input = (input_map.find(s.id()) != input_map.end());
+        is_deletable &=
+            s.array_desc_.use_count() <= a.siblings().size() + is_input;
+      }
+      if (is_deletable) {
+        for_deletion.push_back(std::move(a.array_desc_));
+      }
+    }
+  };
+
+  append_deletable_inputs(*this);
+
+  while (!for_deletion.empty()) {
+    auto top = std::move(for_deletion.back());
+    for_deletion.pop_back();
+    append_deletable_inputs(*top);
+
+    for (auto& s : top->siblings) {
+      s.array_desc_ = nullptr;
+    }
+    top->siblings.clear();
+  }
+
   for (auto& s : siblings) {
     s.array_desc_ = nullptr;
   }
   siblings.clear();
-  inputs.clear();
 }
 
 array::ArrayIterator::ArrayIterator(const array& arr, int idx)

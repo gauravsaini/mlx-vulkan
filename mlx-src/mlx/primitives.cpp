@@ -2404,7 +2404,55 @@ std::vector<array> Gather::vjp(
     } else {
       auto src = zeros_like(primals[0], stream());
       std::vector<array> inds(primals.begin() + 1, primals.end());
-      vjps.push_back(scatter_add(src, inds, cotangents[0], axes_, stream()));
+
+      bool can_use_scatter_axis =
+          inds.size() == 1 && axes_.size() == 1 &&
+          slice_sizes_.size() == primals[0].ndim();
+      if (can_use_scatter_axis) {
+        for (int i = 0; i < primals[0].ndim(); ++i) {
+          auto expected =
+              (i == axes_[0]) ? 1 : static_cast<ShapeElem>(primals[0].shape(i));
+          if (slice_sizes_[i] != expected) {
+            can_use_scatter_axis = false;
+            break;
+          }
+        }
+      }
+
+      if (can_use_scatter_axis) {
+        auto axis = axes_[0] < 0 ? axes_[0] + src.ndim() : axes_[0];
+        auto idx = astype(inds[0], int32, stream());
+        auto updates = cotangents[0];
+        auto slice_axis = axis + idx.ndim();
+        if (updates.ndim() == src.ndim() + idx.ndim() &&
+            slice_axis < updates.ndim() && updates.shape(slice_axis) == 1) {
+          updates = squeeze(updates, {static_cast<int>(slice_axis)}, stream());
+        }
+        auto mask_shape = Shape(updates.ndim(), 1);
+        for (int i = 0; i < idx.ndim(); ++i) {
+          mask_shape[axis + i] = idx.shape(i);
+        }
+        std::vector<array> grad_slices;
+        grad_slices.reserve(src.shape(axis));
+        for (int j = 0; j < src.shape(axis); ++j) {
+          auto mask = broadcast_to(
+              reshape(
+                  equal(idx, array(static_cast<int32_t>(j)), stream()),
+                  mask_shape,
+                  stream()),
+              updates.shape(),
+              stream());
+          auto grad_slice =
+              multiply(astype(mask, updates.dtype(), stream()), updates, stream());
+          for (int i = 0; i < idx.ndim(); ++i) {
+            grad_slice = sum(grad_slice, axis, false, stream());
+          }
+          grad_slices.push_back(grad_slice);
+        }
+        vjps.push_back(stack(grad_slices, axis, stream()));
+      } else {
+        vjps.push_back(scatter_add(src, inds, cotangents[0], axes_, stream()));
+      }
     }
   }
   return vjps;
@@ -2468,11 +2516,8 @@ std::vector<array> GatherAxis::vjp(
           zeros(primals[argnum].shape(), primals[argnum].dtype(), stream()));
     } else {
       auto src = zeros_like(primals[0], stream());
-      vjps.push_back(array(
-          src.shape(),
-          src.dtype(),
-          std::make_shared<ScatterAxis>(stream(), ScatterAxis::Sum, axis_),
-          {src, primals[1], cotangents[0]}));
+      vjps.push_back(
+          scatter_add_axis(src, primals[1], cotangents[0], axis_, stream()));
     }
   }
   return vjps;
