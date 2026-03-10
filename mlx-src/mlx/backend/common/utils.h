@@ -185,6 +185,10 @@ inline auto check_contiguity(const Shape& shape, const Strides& strides) {
 inline bool is_donatable(const array& in, const array& out) {
   constexpr size_t donation_extra = 16384;
 
+  if (allocator::cpu_allocator_override_enabled()) {
+    return false;
+  }
+
   return in.is_donatable() && in.itemsize() == out.itemsize() &&
       in.buffer_size() <= out.nbytes() + donation_extra;
 }

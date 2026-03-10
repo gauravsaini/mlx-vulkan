@@ -80,6 +80,27 @@ class MLX_API Allocator {
 };
 
 MLX_API Allocator& allocator();
+MLX_API void push_cpu_allocator_override();
+MLX_API void pop_cpu_allocator_override();
+MLX_API bool cpu_allocator_override_enabled();
+
+class ScopedCpuAllocatorOverride {
+ public:
+  explicit ScopedCpuAllocatorOverride(bool enabled = true) : enabled_(enabled) {
+    if (enabled_) {
+      push_cpu_allocator_override();
+    }
+  }
+
+  ~ScopedCpuAllocatorOverride() {
+    if (enabled_) {
+      pop_cpu_allocator_override();
+    }
+  }
+
+ private:
+  bool enabled_;
+};
 
 inline Buffer malloc(size_t size) {
   return allocator().malloc(size);

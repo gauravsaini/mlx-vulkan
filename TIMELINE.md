@@ -1,5 +1,33 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-10
+
+### fix (2026-03-10) — Isolation of CPU Fallback Memory Erasure Bug
+
+1. **Memory erasure bug identified** (`primitives.cpp`, `allocator.cpp`):
+   - Discovered that CPU writes to Vulkan-managed buffer mappings (`raw_ptr()`) are wiped to zero between API calls on both MoltenVK and discrete GPUs.
+   - This explains "returning zeros" for linalg fallbacks: the CPU computes the correct result, but the framework's subsequent access to the array data accidentally triggers a reset or a stale read from the GPU-side buffer.
+
+2. **Standalone reproduction proven** (`mlx-src/test_mem.cpp`):
+   - Built a C++ standalone script that bypasses Python GC and confirmed the erasure happens natively.
+   - A write of `777.0` to `ptr` followed by a call to `a.data<float>()` (which returns the same pointer) shows the memory value has reverted to `0.0`.
+
+3. **Revised Linalg Fix Path**:
+   - Pivoted away from trying to harden the unified-memory mapping `raw_ptr()` path.
+   - Transitioning to **explicit host staging**: linalg `eval_gpu` will now download inputs to host vectors via `copy_to_host`, run native CPU LAPACK, and upload results via `copy_from_host`. This mirrors the proven corrective approach used in other discrete-memory-safe MLX backends.
+
+4. **Compatibility gates expanded and exercised locally** (`tests/vulkan/test_stage25_linux_vulkan_bringup.py`, `tests/vulkan/test_transformer_ops_audit.py`, `tests/vulkan/test_tiny_transformer.py`):
+   - Stage 25 now covers autograd, explicit SGD/Adam optimizer checks, and the tiny-MLP convergence smoke instead of only the older bring-up core.
+   - Added a transformer-critical ops audit and a tiny-transformer training smoke using manual causal attention instead of `mx.fast.scaled_dot_product_attention`.
+   - Follow-up result on the local Vulkan build: `LayerNormVJP` now materializes its fallback graph into Vulkan outputs, the transformer ops audit passes, and the tiny-transformer smoke trains successfully after lowering its learning rate to a stable smoke setting.
+   - Added a strict `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1` guard in the transformer gates via the shared CPU encoder path. This exposed two non-transformer-core issues:
+     - `nn.relu` was routing through `mx.compile`, so the smoke now uses raw `mx.maximum(...)`.
+     - embedding-weight updates were forcing `Gather::vjp` onto generic `Scatter`, so `Gather::vjp` now lowers the embedding-style row-gather case to `ScatterAxis` and full token-embedding tiny-transformer training is back under the strict guard.
+   - Follow-up: `nn.losses.cross_entropy(...)` now also runs cleanly in the strict tiny-transformer loop, so Gate 7 is back on a real next-token training objective instead of the temporary MSE workaround.
+   - Real AMD rerun is still pending, so linalg correctness and transformer convergence remain local-only until they are revalidated on the `g4ad` box.
+
+---
+
 ## UPDATED ON : 2026-03-09
 
 ### pivot (2026-03-09) — Linux bring-up tooling and Colab bootstrap

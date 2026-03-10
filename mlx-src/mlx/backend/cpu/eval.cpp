@@ -9,6 +9,8 @@ namespace mlx::core::cpu {
 
 void eval(array& arr) {
   auto s = arr.primitive().stream();
+  allocator::ScopedCpuAllocatorOverride cpu_allocator_scope(
+      s.device == Device::cpu);
 
   auto outputs = arr.outputs();
   {

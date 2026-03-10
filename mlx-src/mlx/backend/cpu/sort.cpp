@@ -4,7 +4,9 @@
 #include <cassert>
 #include <cmath>
 #include <numeric>
+#include <vector>
 
+#include "mlx/allocator.h"
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/cpu/copy.h"
 #include "mlx/backend/cpu/encoder.h"
@@ -117,25 +119,25 @@ struct StridedIterator {
 };
 
 template <typename T>
-void sort(array& out, int axis) {
+void sort_buffer(T* out_ptr, const Shape& shape, const Strides& strides, int axis) {
   // Get axis, shape and stride info
-  axis = axis < 0 ? axis + out.ndim() : axis;
-  size_t in_size = out.size();
-  size_t n_rows = in_size / out.shape(axis);
+  axis = axis < 0 ? axis + shape.size() : axis;
+  size_t in_size =
+      std::accumulate(shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>());
+  size_t n_rows = in_size / shape[axis];
 
-  auto remaining_shape = out.shape();
+  auto remaining_shape = shape;
   remaining_shape.erase(remaining_shape.begin() + axis);
 
-  auto remaining_strides = out.strides();
+  auto remaining_strides = strides;
   remaining_strides.erase(remaining_strides.begin() + axis);
 
-  auto axis_stride = out.strides()[axis];
-  auto axis_size = out.shape(axis);
+  auto axis_stride = strides[axis];
+  auto axis_size = shape[axis];
 
   // Perform sorting in place
   ContiguousIterator src_it(
       remaining_shape, remaining_strides, remaining_shape.size());
-  auto out_ptr = out.data<T>();
   for (int i = 0; i < n_rows; i++) {
     T* data_ptr = out_ptr + src_it.loc;
 
@@ -148,34 +150,44 @@ void sort(array& out, int axis) {
 }
 
 template <typename T, typename IdxT = uint32_t>
-void argsort(const array& in, array& out, int axis) {
+void argsort_buffer(
+    const T* in_ptr,
+    const Shape& in_shape,
+    const Strides& in_strides,
+    IdxT* out_ptr,
+    const Shape& out_shape,
+    const Strides& out_strides,
+    int axis) {
   // Get axis, shape and stride info
-  axis = axis < 0 ? axis + in.ndim() : axis;
-  size_t n_rows = in.size() / in.shape(axis);
+  axis = axis < 0 ? axis + in_shape.size() : axis;
+  size_t n_rows = std::accumulate(
+                      in_shape.begin(),
+                      in_shape.end(),
+                      size_t{1},
+                      std::multiplies<size_t>()) /
+      in_shape[axis];
 
-  auto in_remaining_shape = in.shape();
+  auto in_remaining_shape = in_shape;
   in_remaining_shape.erase(in_remaining_shape.begin() + axis);
 
-  auto in_remaining_strides = in.strides();
+  auto in_remaining_strides = in_strides;
   in_remaining_strides.erase(in_remaining_strides.begin() + axis);
 
-  auto out_remaining_shape = out.shape();
+  auto out_remaining_shape = out_shape;
   out_remaining_shape.erase(out_remaining_shape.begin() + axis);
 
-  auto out_remaining_strides = out.strides();
+  auto out_remaining_strides = out_strides;
   out_remaining_strides.erase(out_remaining_strides.begin() + axis);
 
-  auto in_stride = in.strides()[axis];
-  auto out_stride = out.strides()[axis];
-  auto axis_size = in.shape(axis);
+  auto in_stride = in_strides[axis];
+  auto out_stride = out_strides[axis];
+  auto axis_size = in_shape[axis];
 
   // Perform sorting
   ContiguousIterator in_it(
       in_remaining_shape, in_remaining_strides, in_remaining_shape.size());
   ContiguousIterator out_it(
       out_remaining_shape, out_remaining_strides, out_remaining_shape.size());
-  auto in_ptr = in.data<T>();
-  auto out_ptr = out.data<IdxT>();
   for (int i = 0; i < n_rows; i++) {
     const T* data_ptr = in_ptr + in_it.loc;
     IdxT* idx_ptr = out_ptr + out_it.loc;
@@ -211,27 +223,32 @@ void argsort(const array& in, array& out, int axis) {
 }
 
 template <typename T>
-void partition(array& out, int axis, int kth) {
+void partition_buffer(
+    T* out_ptr,
+    const Shape& shape,
+    const Strides& strides,
+    int axis,
+    int kth) {
   // Get axis, shape and stride info
-  axis = axis < 0 ? axis + out.ndim() : axis;
-  size_t in_size = out.size();
-  size_t n_rows = in_size / out.shape(axis);
+  axis = axis < 0 ? axis + shape.size() : axis;
+  size_t in_size =
+      std::accumulate(shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>());
+  size_t n_rows = in_size / shape[axis];
 
-  auto remaining_shape = out.shape();
+  auto remaining_shape = shape;
   remaining_shape.erase(remaining_shape.begin() + axis);
 
-  auto remaining_strides = out.strides();
+  auto remaining_strides = strides;
   remaining_strides.erase(remaining_strides.begin() + axis);
 
-  auto axis_stride = out.strides()[axis];
-  int axis_size = out.shape(axis);
+  auto axis_stride = strides[axis];
+  int axis_size = shape[axis];
 
   kth = kth < 0 ? kth + axis_size : kth;
 
   // Perform partition in place
   ContiguousIterator src_it(
       remaining_shape, remaining_strides, remaining_shape.size());
-  auto out_ptr = out.data<T>();
   for (int i = 0; i < n_rows; i++) {
     T* data_ptr = out_ptr + src_it.loc;
     src_it.step();
@@ -245,26 +262,39 @@ void partition(array& out, int axis, int kth) {
 }
 
 template <typename T, typename IdxT = uint32_t>
-void argpartition(const array& in, array& out, int axis, int kth) {
+void argpartition_buffer(
+    const T* in_ptr,
+    const Shape& in_shape,
+    const Strides& in_strides,
+    IdxT* out_ptr,
+    const Shape& out_shape,
+    const Strides& out_strides,
+    int axis,
+    int kth) {
   // Get axis, shape and stride info
-  axis = axis < 0 ? axis + in.ndim() : axis;
-  size_t n_rows = in.size() / in.shape(axis);
+  axis = axis < 0 ? axis + in_shape.size() : axis;
+  size_t n_rows = std::accumulate(
+                      in_shape.begin(),
+                      in_shape.end(),
+                      size_t{1},
+                      std::multiplies<size_t>()) /
+      in_shape[axis];
 
-  auto in_remaining_shape = in.shape();
+  auto in_remaining_shape = in_shape;
   in_remaining_shape.erase(in_remaining_shape.begin() + axis);
 
-  auto in_remaining_strides = in.strides();
+  auto in_remaining_strides = in_strides;
   in_remaining_strides.erase(in_remaining_strides.begin() + axis);
 
-  auto out_remaining_shape = out.shape();
+  auto out_remaining_shape = out_shape;
   out_remaining_shape.erase(out_remaining_shape.begin() + axis);
 
-  auto out_remaining_strides = out.strides();
+  auto out_remaining_strides = out_strides;
   out_remaining_strides.erase(out_remaining_strides.begin() + axis);
 
-  auto in_stride = in.strides()[axis];
-  auto out_stride = out.strides()[axis];
-  auto axis_size = in.shape(axis);
+  auto in_stride = in_strides[axis];
+  auto out_stride = out_strides[axis];
+  auto axis_size = in_shape[axis];
 
   kth = kth < 0 ? kth + axis_size : kth;
 
@@ -273,9 +303,6 @@ void argpartition(const array& in, array& out, int axis, int kth) {
       in_remaining_shape, in_remaining_strides, in_remaining_shape.size());
   ContiguousIterator out_it(
       out_remaining_shape, out_remaining_strides, out_remaining_shape.size());
-
-  auto in_ptr = in.data<T>();
-  auto out_ptr = out.data<IdxT>();
 
   for (int i = 0; i < n_rows; i++) {
     const T* data_ptr = in_ptr + in_it.loc;
@@ -322,40 +349,155 @@ void ArgSort::eval_cpu(const std::vector<array>& inputs, array& out) {
 
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_input_array(in);
-  encoder.set_input_array(out);
+  encoder.set_output_array(out);
   encoder.dispatch([in = array::unsafe_weak_copy(in),
                     out = array::unsafe_weak_copy(out),
                     axis_ = axis_]() mutable {
+    std::vector<uint32_t> host_out(out.size());
     switch (in.dtype()) {
       case bool_:
-        return argsort<bool>(in, out, axis_);
+        argsort_buffer<bool>(
+            in.data<bool>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case uint8:
-        return argsort<uint8_t>(in, out, axis_);
+        argsort_buffer<uint8_t>(
+            in.data<uint8_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case uint16:
-        return argsort<uint16_t>(in, out, axis_);
+        argsort_buffer<uint16_t>(
+            in.data<uint16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case uint32:
-        return argsort<uint32_t>(in, out, axis_);
+        argsort_buffer<uint32_t>(
+            in.data<uint32_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case uint64:
-        return argsort<uint64_t>(in, out, axis_);
+        argsort_buffer<uint64_t>(
+            in.data<uint64_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case int8:
-        return argsort<int8_t>(in, out, axis_);
+        argsort_buffer<int8_t>(
+            in.data<int8_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case int16:
-        return argsort<int16_t>(in, out, axis_);
+        argsort_buffer<int16_t>(
+            in.data<int16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case int32:
-        return argsort<int32_t>(in, out, axis_);
+        argsort_buffer<int32_t>(
+            in.data<int32_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case int64:
-        return argsort<int64_t>(in, out, axis_);
+        argsort_buffer<int64_t>(
+            in.data<int64_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case float32:
-        return argsort<float>(in, out, axis_);
+        argsort_buffer<float>(
+            in.data<float>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case float64:
-        return argsort<double>(in, out, axis_);
+        argsort_buffer<double>(
+            in.data<double>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case float16:
-        return argsort<float16_t>(in, out, axis_);
+        argsort_buffer<float16_t>(
+            in.data<float16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case bfloat16:
-        return argsort<bfloat16_t>(in, out, axis_);
+        argsort_buffer<bfloat16_t>(
+            in.data<bfloat16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
       case complex64:
-        return argsort<complex64_t>(in, out, axis_);
+        argsort_buffer<complex64_t>(
+            in.data<complex64_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_);
+        break;
     }
+    allocator::copy_from_host(
+        out.buffer(), host_out.data(), host_out.size() * sizeof(uint32_t));
   });
 }
 
@@ -378,7 +520,14 @@ void Sort::eval_cpu(const std::vector<array>& inputs, array& out) {
   encoder.set_output_array(out);
   encoder.dispatch([out = array::unsafe_weak_copy(out), axis]() mutable {
     dispatch_all_types(out.dtype(), [&](auto type_tag) {
-      sort<MLX_GET_TYPE(type_tag)>(out, axis);
+      using T = MLX_GET_TYPE(type_tag);
+      std::vector<uint8_t> host_bytes(out.size() * sizeof(T));
+      auto* host_out = reinterpret_cast<T*>(host_bytes.data());
+      allocator::copy_to_host(
+          out.buffer(), host_out, host_bytes.size());
+      sort_buffer<T>(host_out, out.shape(), out.strides(), axis);
+      allocator::copy_from_host(
+          out.buffer(), host_out, host_bytes.size());
     });
   });
 }
@@ -392,41 +541,170 @@ void ArgPartition::eval_cpu(const std::vector<array>& inputs, array& out) {
 
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_input_array(in);
-  encoder.set_input_array(out);
+  encoder.set_output_array(out);
   encoder.dispatch([in = array::unsafe_weak_copy(in),
                     out = array::unsafe_weak_copy(out),
                     axis_ = axis_,
                     kth_ = kth_]() mutable {
+    std::vector<uint32_t> host_out(out.size());
     switch (in.dtype()) {
       case bool_:
-        return argpartition<bool>(in, out, axis_, kth_);
+        argpartition_buffer<bool>(
+            in.data<bool>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case uint8:
-        return argpartition<uint8_t>(in, out, axis_, kth_);
+        argpartition_buffer<uint8_t>(
+            in.data<uint8_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case uint16:
-        return argpartition<uint16_t>(in, out, axis_, kth_);
+        argpartition_buffer<uint16_t>(
+            in.data<uint16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case uint32:
-        return argpartition<uint32_t>(in, out, axis_, kth_);
+        argpartition_buffer<uint32_t>(
+            in.data<uint32_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case uint64:
-        return argpartition<uint64_t>(in, out, axis_, kth_);
+        argpartition_buffer<uint64_t>(
+            in.data<uint64_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case int8:
-        return argpartition<int8_t>(in, out, axis_, kth_);
+        argpartition_buffer<int8_t>(
+            in.data<int8_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case int16:
-        return argpartition<int16_t>(in, out, axis_, kth_);
+        argpartition_buffer<int16_t>(
+            in.data<int16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case int32:
-        return argpartition<int32_t>(in, out, axis_, kth_);
+        argpartition_buffer<int32_t>(
+            in.data<int32_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case int64:
-        return argpartition<int64_t>(in, out, axis_, kth_);
+        argpartition_buffer<int64_t>(
+            in.data<int64_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case float32:
-        return argpartition<float>(in, out, axis_, kth_);
+        argpartition_buffer<float>(
+            in.data<float>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case float64:
-        return argpartition<double>(in, out, axis_, kth_);
+        argpartition_buffer<double>(
+            in.data<double>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case float16:
-        return argpartition<float16_t>(in, out, axis_, kth_);
+        argpartition_buffer<float16_t>(
+            in.data<float16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case bfloat16:
-        return argpartition<bfloat16_t>(in, out, axis_, kth_);
+        argpartition_buffer<bfloat16_t>(
+            in.data<bfloat16_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
       case complex64:
-        return argpartition<complex64_t>(in, out, axis_, kth_);
+        argpartition_buffer<complex64_t>(
+            in.data<complex64_t>(),
+            in.shape(),
+            in.strides(),
+            host_out.data(),
+            out.shape(),
+            out.strides(),
+            axis_,
+            kth_);
+        break;
     }
+    allocator::copy_from_host(
+        out.buffer(), host_out.data(), host_out.size() * sizeof(uint32_t));
   });
 }
 
@@ -447,33 +725,169 @@ void Partition::eval_cpu(const std::vector<array>& inputs, array& out) {
                     kth_ = kth_]() mutable {
     switch (out.dtype()) {
       case bool_:
-        return partition<bool>(out, axis_, kth_);
+        {
+          std::vector<uint8_t> host_bytes(out.size() * sizeof(bool));
+          auto* host_out = reinterpret_cast<bool*>(host_bytes.data());
+          allocator::copy_to_host(out.buffer(), host_out, host_bytes.size());
+          partition_buffer<bool>(host_out, out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(out.buffer(), host_out, host_bytes.size());
+          return;
+        }
       case uint8:
-        return partition<uint8_t>(out, axis_, kth_);
+        {
+          std::vector<uint8_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint8_t));
+          partition_buffer<uint8_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint8_t));
+          return;
+        }
       case uint16:
-        return partition<uint16_t>(out, axis_, kth_);
+        {
+          std::vector<uint16_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint16_t));
+          partition_buffer<uint16_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint16_t));
+          return;
+        }
       case uint32:
-        return partition<uint32_t>(out, axis_, kth_);
+        {
+          std::vector<uint32_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint32_t));
+          partition_buffer<uint32_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint32_t));
+          return;
+        }
       case uint64:
-        return partition<uint64_t>(out, axis_, kth_);
+        {
+          std::vector<uint64_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint64_t));
+          partition_buffer<uint64_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(uint64_t));
+          return;
+        }
       case int8:
-        return partition<int8_t>(out, axis_, kth_);
+        {
+          std::vector<int8_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int8_t));
+          partition_buffer<int8_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int8_t));
+          return;
+        }
       case int16:
-        return partition<int16_t>(out, axis_, kth_);
+        {
+          std::vector<int16_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int16_t));
+          partition_buffer<int16_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int16_t));
+          return;
+        }
       case int32:
-        return partition<int32_t>(out, axis_, kth_);
+        {
+          std::vector<int32_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int32_t));
+          partition_buffer<int32_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int32_t));
+          return;
+        }
       case int64:
-        return partition<int64_t>(out, axis_, kth_);
+        {
+          std::vector<int64_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int64_t));
+          partition_buffer<int64_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(int64_t));
+          return;
+        }
       case float32:
-        return partition<float>(out, axis_, kth_);
+        {
+          std::vector<float> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(float));
+          partition_buffer<float>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(float));
+          return;
+        }
       case float64:
-        return partition<double>(out, axis_, kth_);
+        {
+          std::vector<double> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(double));
+          partition_buffer<double>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(), host_out.data(), host_out.size() * sizeof(double));
+          return;
+        }
       case float16:
-        return partition<float16_t>(out, axis_, kth_);
+        {
+          std::vector<float16_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(),
+              host_out.data(),
+              host_out.size() * sizeof(float16_t));
+          partition_buffer<float16_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(),
+              host_out.data(),
+              host_out.size() * sizeof(float16_t));
+          return;
+        }
       case bfloat16:
-        return partition<bfloat16_t>(out, axis_, kth_);
+        {
+          std::vector<bfloat16_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(),
+              host_out.data(),
+              host_out.size() * sizeof(bfloat16_t));
+          partition_buffer<bfloat16_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(),
+              host_out.data(),
+              host_out.size() * sizeof(bfloat16_t));
+          return;
+        }
       case complex64:
-        return partition<complex64_t>(out, axis_, kth_);
+        {
+          std::vector<complex64_t> host_out(out.size());
+          allocator::copy_to_host(
+              out.buffer(),
+              host_out.data(),
+              host_out.size() * sizeof(complex64_t));
+          partition_buffer<complex64_t>(
+              host_out.data(), out.shape(), out.strides(), axis_, kth_);
+          allocator::copy_from_host(
+              out.buffer(),
+              host_out.data(),
+              host_out.size() * sizeof(complex64_t));
+          return;
+        }
     }
   });
 }

@@ -1,5 +1,6 @@
 #include <nanobind/nanobind.h>
 #include "mlx/array.h"
+#include <cstdint>
 #include <unistd.h>
 
 namespace nb = nanobind;
@@ -22,6 +23,18 @@ void init_dummy_ptr(nb::module_& m) {
             fflush(stdout);
         }
     }); // close print_value
+
+    m.def("print_buffer_debug", [](mlx::core::array& a) {
+        auto raw_buffer = a.buffer().ptr();
+        auto raw_ptr = a.buffer().raw_ptr();
+        uint64_t tag = raw_buffer ? *reinterpret_cast<const uint64_t*>(raw_buffer) : 0;
+        printf(
+            "[print_buffer_debug] buffer=%p raw=%p tag=0x%016llx\n",
+            raw_buffer,
+            raw_ptr,
+            static_cast<unsigned long long>(tag));
+        fflush(stdout);
+    });
     
     m.def("test_write_read", [](mlx::core::array& a) {
         volatile float* ptr = a.data<float>();

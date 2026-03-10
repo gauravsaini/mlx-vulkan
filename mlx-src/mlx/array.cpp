@@ -235,15 +235,9 @@ array::~array() {
           // for siblings
           ss.array_desc_ = nullptr;
         }
-        s.array_desc_->primitive = nullptr;
-        s.array_desc_->inputs.clear();
         s.array_desc_->siblings.clear();
-        s.array_desc_->position = 0;
       }
-      array_desc_->primitive = nullptr;
-      array_desc_->inputs.clear();
       array_desc_->siblings.clear();
-      array_desc_->position = 0;
     }
   }
 }

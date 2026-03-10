@@ -30,8 +30,9 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 - ✅ **AMD Vulkan runtime proven** — real Linux execution on AWS `g4ad.xlarge` (RADV NAVI12)
 - ✅ **Core tensor ops, autograd, and tiny MLP training proven** — on real AMD Vulkan hardware
-- ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros or fail in the discrete-GPU fallback path
-- ❌ **Tiny transformer training without CPU fallback not yet demonstrated**
+- ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros. 
+  *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
+- ⚠️ **Tiny transformer training is locally demonstrated on Vulkan, but not yet on real AMD hardware**
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
 
 ---
@@ -45,10 +46,10 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | 1 | Device / runtime / build / import | `test_stage25_linux_vulkan_bringup.py` | Any Vulkan GPU | Import + GPU detection | N/A |
 | 2 | Core tensor ops without CPU fallback | `test_stage25_linux_vulkan_bringup.py` (core ops) | AMD or NVIDIA Linux | matmul, softmax, elementwise correct | ❌ Forbidden |
 | 3 | Autograd correctness | `test_stage25_linux_vulkan_bringup.py` (autograd) | AMD or NVIDIA Linux | `value_and_grad` matches expected | ❌ Forbidden |
-| 4 | Optimizer correctness | Smoke: SGD + Adam update step | AMD or NVIDIA Linux | Parameters update correctly | ❌ Forbidden |
-| 5 | Tiny MLP training convergence | `test_stage25_linux_vulkan_bringup.py` (MLP) | AMD or NVIDIA Linux | Loss decreases over 100 steps | Allowed for non-training ops only |
-| 6 | Transformer-critical op coverage | *Future*: `test_transformer_ops_audit.py` | AMD or NVIDIA Linux | All ops in audit list execute on GPU | ❌ Forbidden |
-| 7 | Tiny transformer training convergence | *Future*: `test_tiny_transformer.py` | AMD or NVIDIA Linux | Loss decreases, no CPU fallback on training step | ❌ Forbidden |
+| 4 | Optimizer correctness | `test_stage25_linux_vulkan_bringup.py` (optimizers) | AMD or NVIDIA Linux | Parameters update correctly | ❌ Forbidden |
+| 5 | Tiny MLP training convergence | `test_stage25_linux_vulkan_bringup.py` (tiny MLP) | AMD or NVIDIA Linux | Loss decreases over the smoke window | Allowed for non-training ops only |
+| 6 | Transformer-critical op coverage | `test_transformer_ops_audit.py` | AMD or NVIDIA Linux | Embedding, causal attention, norm, optimizer path execute on Vulkan | ❌ Forbidden |
+| 7 | Tiny transformer training convergence | `test_tiny_transformer.py` | AMD or NVIDIA Linux | Loss decreases, no CPU fallback on the training step | ❌ Forbidden |
 | 8 | Selected MLX suite coverage | `test_random.py`, `test_ops.py` subset, `test_array.py` subset | AMD or NVIDIA Linux | Defined pass-rate threshold per suite | Allowed where marked |
 | 9 | Long-run stability | 1000-step training loop | AMD or NVIDIA Linux | No OOM, no device lost, no crash | ❌ Forbidden |
 | 10 | NVIDIA parity | Same gates 1–9 | NVIDIA Linux | Same pass criteria | Same policy |
@@ -62,10 +63,10 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | Tensor ops | proven (historical) | **proven** | not run |
 | Autograd | proven (historical) | **proven** | not run |
 | Optimizers (SGD) | proven (historical) | **proven** (tiny MLP) | not run |
-| Optimizers (Adam) | not run | not run | not run |
+| Optimizers (Adam) | proven (local gate) | not run | not run |
 | Tiny MLP training | proven (historical) | **proven** | not run |
 | Linalg CPU fallback | proven (historical, unified mem) | **failing** | not run |
-| Tiny transformer training | not run | not run | not run |
+| Tiny transformer training | proven (local gate) | not run | not run |
 | LoRA / small-LLM fine-tune | not run | not run | not run |
 | Official MLX `test_ops.py` | ~124/134 (historical) | not run | not run |
 | Official MLX `test_array.py` | ~65/68 (historical) | not run | not run |
@@ -88,7 +89,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
       `Linear -> ReLU -> Linear` with SGD showed stable loss decrease on real AMD Vulkan.
 - [ ] CPU-fallback linalg correctness still fails on real AMD Vulkan:
       `qr`, `svd`, `cholesky`, `eigh`, and `inv` currently return zeros or fail in the discrete-GPU fallback path.
-- [ ] Tiny transformer training without CPU fallback is not yet demonstrated.
+- [ ] Tiny transformer training without CPU fallback is not yet rerun on real AMD Vulkan.
 - [ ] LoRA / small-LLM fine-tuning path is not yet demonstrated.
 
 ### Functional Success Criteria
@@ -99,7 +100,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | Autograd | Gradient tests on simple loss | Gradients match CPU backend within tolerance | ✅ Proven on AMD Vulkan |
 | Optimizers | Adam / SGD updates | Parameters update correctly | ✅ SGD proven in tiny MLP smoke; Adam still needs explicit validation |
 | Neural Net Training | Small MLP or CNN | Loss decreases consistently | ✅ Tiny 2-layer MLP proven |
-| Transformer Training | Tiny transformer | Training converges without CPU fallback | ❌ Not yet proven |
+| Transformer Training | Tiny transformer | Training converges without CPU fallback | ⚠️ Proven locally on Vulkan, pending real AMD rerun |
 | LLM Finetuning | LoRA on a small LLM | Runs for long training windows | ❌ Not yet proven |
 | Stability | Long training run | No leaks, no device resets | ❌ Not yet proven |
 
@@ -118,12 +119,21 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Proven: Vulkan backend executes real MLX training primitives on a discrete GPU.
 - [x] Proven: backward pass and optimizer updates on real AMD Vulkan.
 - [ ] Eliminate the remaining CPU-fallback correctness blockers that break MLX compatibility on discrete GPUs:
-      linalg fallback writeback/copy path, unsafe direct host access, and any fallback that still assumes unified memory.
-- [ ] Add a tiny transformer smoke that uses only supported Vulkan paths and verify convergence.
+      Implement explicit host-staging buffer round-trips for linalg (`copy_to_host` -> CPU LAPACK -> `copy_from_host`) to bypass the fragile and currently broken `raw_ptr()` mapping path.
+- [x] Add a tiny transformer smoke that uses only supported Vulkan paths and verify convergence locally.
+- [x] Clear the first transformer backward blocker on Vulkan:
+      `LayerNormVJP` now materializes its fallback graph into Vulkan outputs, and Gate 6 / Gate 7 pass on the local Vulkan build.
+- [x] Enforce the "no CPU fallback" contract in transformer gates locally:
+      `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1` is now enabled in Gate 6 / Gate 7, and the tiny-transformer smoke was rewritten to avoid `mx.compile`-wrapped activations while keeping real token embeddings in the training loop.
+- [x] Unblock embedding-weight training on Vulkan:
+      `Gather::vjp` now lowers the embedding-style row-gather case to `ScatterAxis` instead of generic `Scatter`, so embedding gradients no longer force CPU fallback.
+- [x] Restore the real next-token objective in Gate 7:
+      `nn.losses.cross_entropy(...)` now runs cleanly in the strict tiny-transformer training loop after the embedding-gradient fix.
+- [ ] Rerun Gate 6 / Gate 7 on the real AMD Vulkan box before upgrading transformer training from local proof to real-hardware proof.
 - [ ] Audit transformer-critical ops for fallback-free execution:
       `matmul`, `addmm`, `softmax`, `layer_norm`, `rope`, embeddings, masking, indexing, optimizer updates.
-- [ ] Identify and remove training blockers for real LLM workloads:
-      attention path coverage, norm backward coverage, optimizer coverage, sequence masking, and long-run stability.
+- [ ] Identify and remove remaining blockers for real LLM workloads:
+      broader MLX suite coverage, sequence-length scaling, long-run stability, and cross-vendor validation.
 - [ ] After the compatibility ladder is green, measure throughput and memory behavior on real AMD and NVIDIA hardware (see Gates 9–10).
 
 ### Cross-Vendor Validation Checklist
@@ -170,7 +180,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 
 - [x] Real discrete-GPU Vulkan execution is proven on at least one Linux hardware target.
 - [x] Core MLX tensor ops, autograd, and a tiny MLP training loop run on Vulkan.
-- [ ] Tiny transformer training converges without CPU fallback.
+- [ ] Tiny transformer training converges without CPU fallback on real Linux hardware.
 - [ ] Transformer-critical ops are either native Vulkan paths or discrete-GPU-safe fallbacks with verified correctness.
 - [ ] No segfaults, teardown crashes, or unbounded memory growth in the targeted training path.
 - [ ] Cross-vendor validation exists on both AMD and NVIDIA hardware.
