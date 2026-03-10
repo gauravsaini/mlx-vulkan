@@ -1,4 +1,7 @@
 #version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+#include "bf16.glsl"
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
@@ -53,8 +56,27 @@ void main() {
         uint uval   = ustart + idx * ustep;
         out_data[idx * 2u]      = uval;
         out_data[idx * 2u + 1u] = 0u;
+    } else if (dtype == DTYPE_FLOAT16 || dtype == DTYPE_BFLOAT16) {
+        // float16/bfloat16 path: two elements packed into one uint32 word.
+        if ((idx & 1u) == 1u) return;
+
+        float val0 = isinf(params.step)
+            ? params.start
+            : params.start + float(idx) * params.step;
+        float val1 = val0;
+        if (idx + 1u < params.n) {
+            val1 = isinf(params.step)
+                ? params.start
+                : params.start + float(idx + 1u) * params.step;
+        }
+
+        uint word_idx = idx >> 1u;
+        uint packed = (dtype == DTYPE_BFLOAT16)
+            ? packBfloat2x16(vec2(val0, val1))
+            : packHalf2x16(vec2(val0, val1));
+        out_data[word_idx] = packed;
     } else {
-        // float32 (and float16/bfloat16 use float32 buffer layout)
+        // float32 path
         // Guard against 0 * inf = NaN for arange with infinite step (n=1 case)
         float val = isinf(params.step)
             ? params.start

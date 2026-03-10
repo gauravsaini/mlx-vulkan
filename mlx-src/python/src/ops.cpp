@@ -368,7 +368,8 @@ void init_ops(nb::module_& m) {
          const ScalarOrArray& b_,
          mx::StreamOrDevice s) {
         auto [a, b] = to_arrays(a_, b_);
-        return mx::divmod(a, b, s);
+        auto out = mx::divmod(a, b, s);
+        return nb::make_tuple(out[0], out[1]);
       },
       nb::arg(),
       nb::arg(),

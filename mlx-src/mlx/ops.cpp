@@ -1771,7 +1771,9 @@ array allclose(
     double atol /* = 1e-8 */,
     bool equal_nan /* = false */,
     StreamOrDevice s /* = {}*/) {
-  return all(isclose(a, b, rtol, atol, equal_nan, s), s);
+  auto close = isclose(a, b, rtol, atol, equal_nan, s);
+  eval(close);
+  return all(close, s);
 }
 
 array isclose(
