@@ -49,6 +49,20 @@ namespace mlx::core {
 
 namespace {
 
+void materialize_fallback_outputs(
+    std::vector<array> fallback_outputs,
+    std::vector<array>& outputs) {
+  if (fallback_outputs.size() != outputs.size()) {
+    throw std::runtime_error(
+        "Vulkan fallback output arity mismatch during materialization.");
+  }
+
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    fallback_outputs[i].eval();
+    outputs[i].copy_shared_buffer(fallback_outputs[i]);
+  }
+}
+
 // Binary op IDs (must match binary.comp)
 enum class BinaryOp : uint32_t {
   Add = 0,
@@ -516,7 +530,25 @@ void Sqrt::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 UNARY_GPU(Sin, Sin)
 UNARY_GPU(Sinh, Sinh)
-UNARY_GPU(Square, Square)
+// The unary shader implements Square with float semantics, which breaks
+// integral dtypes by reinterpreting integer bits as float. Route integer square
+// through the binary Mul path instead.
+void Square::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (inputs[0].dtype() != bool_ && issubdtype(inputs[0].dtype(), integer)) {
+    dispatch_binary(
+        inputs[0],
+        inputs[0],
+        out,
+        static_cast<uint32_t>(BinaryOp::Mul),
+        stream());
+    return;
+  }
+  if (!dispatch_unary(
+          inputs[0], out, static_cast<uint32_t>(UnaryOp::Square), stream())) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+  }
+}
 UNARY_GPU(Tan, Tan)
 UNARY_GPU(Tanh, Tanh)
 
@@ -2039,6 +2071,7 @@ void ScatterAxis::eval_gpu(const std::vector<array>& inputs, array& out) {
   pc.dst_offset = static_cast<uint32_t>(out.offset() * out.itemsize());
   pc.src_ax_size =
       static_cast<uint32_t>(out.shape(axis_)); // axis size for neg-idx wrap
+  pc.inner = static_cast<uint32_t>(idx.shape(axis_));
   pc.src_outer_stride = 1u; // ScatterAxis is always element-wise
 
   indexing_dispatch(
@@ -4372,73 +4405,226 @@ void Hadamard::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Linear algebra -- CPU fallbacks (unified memory / MoltenVK)
+// Linear algebra -- CPU fallbacks with explicit host staging
 //
-// On MoltenVK (Apple Silicon unified memory) the VMA-allocated buffers are
-// CPU-accessible through their mapped pointer, so calling eval_cpu from inside
-// eval_gpu works directly.  The cpu::CommandEncoder::dispatch() path already
-// detects a GPU stream and executes the lambda synchronously (see encoder.h).
-//
-// TODO: On discrete GPUs (AMD/NVIDIA) these ops would need an explicit
-//       staging-buffer round-trip before delegating to eval_cpu.
+// LAPACK routines need direct host memory access. On a GPU stream the
+// primitive implementations still allocate Vulkan buffers, but we can make the
+// fallback discrete-GPU-safe by staging each input through host memory first
+// and then uploading the host-written outputs back into fresh Vulkan buffers.
 // ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Materialize a GPU array into a host-shadow array by downloading its backing
+// bytes and then seeding a fresh buffer with that host copy. This lets the
+// existing CPU LAPACK implementations keep using data<T>().
+array linalg_to_host(const array& gpu_arr, const Stream& gpu_s) {
+  if (gpu_arr.size() == 0) {
+    array host(gpu_arr.shape(), gpu_arr.dtype(), nullptr, {});
+    host.set_data(allocator::malloc(0));
+    return host;
+  }
+
+  // Stage 1: download GPU buffer contents to a temporary host vector.
+  size_t bytes = gpu_arr.nbytes();
+  std::vector<char> buf(bytes);
+  vulkan::copy_to_host(gpu_arr, buf.data(), bytes, gpu_s);
+
+  // Stage 2: seed a fresh buffer with the downloaded host bytes so the CPU
+  // implementation can operate via data<T>() on a stable host snapshot.
+  array host(gpu_arr.shape(), gpu_arr.dtype(), nullptr, {});
+  host.set_data(
+      allocator::malloc(bytes),
+      gpu_arr.data_size(),
+      gpu_arr.strides(),
+      gpu_arr.flags());
+  allocator::copy_from_host(host.buffer(), buf.data(), bytes);
+  return host;
+}
+
+// Upload a host-shadow output array into a fresh Vulkan-backed output while
+// preserving the logical layout (flags/strides/data_size) chosen by eval_cpu.
+void linalg_upload_output(
+    const array& host_arr,
+    array& gpu_out,
+    const Stream& gpu_s) {
+  if (host_arr.size() == 0) {
+    gpu_out.set_data(allocator::malloc(0));
+    return;
+  }
+
+  auto bytes = host_arr.buffer_size();
+  gpu_out.set_data(
+      allocator::malloc(bytes),
+      host_arr.data_size(),
+      host_arr.strides(),
+      host_arr.flags(),
+      [](allocator::Buffer buffer) { allocator::free(buffer); });
+  vulkan::copy_from_host(
+      gpu_out,
+      const_cast<array&>(host_arr).buffer().raw_ptr(),
+      bytes,
+      gpu_s);
+}
+
+} // namespace
 
 // -- Multi-output ops ---------------------------------------------------------
 
 void LUF::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // eval_cpu allocates lu / pivots / row_indices internally.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, outputs);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  // Download inputs to host.
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  std::vector<array> host_outputs;
+  host_outputs.reserve(outputs.size());
+  for (size_t i = 0; i < outputs.size(); i++) {
+    host_outputs.push_back(array(outputs[i].shape(), outputs[i].dtype(), nullptr, {}));
+  }
+  eval_cpu(host_inputs, host_outputs);
+
+  // Upload host outputs to GPU.
+  for (size_t i = 0; i < outputs.size(); i++) {
+    linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
+  }
 }
 
 void QRF::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // eval_cpu allocates Q and R internally via set_data.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, outputs);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  std::vector<array> host_outputs;
+  host_outputs.reserve(outputs.size());
+  for (size_t i = 0; i < outputs.size(); i++) {
+    host_outputs.push_back(array(outputs[i].shape(), outputs[i].dtype(), nullptr, {}));
+  }
+  eval_cpu(host_inputs, host_outputs);
+
+  for (size_t i = 0; i < outputs.size(); i++) {
+    linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
+  }
 }
 
 void SVD::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // eval_cpu allocates U, S, Vt (or just S) internally.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, outputs);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  std::vector<array> host_outputs;
+  host_outputs.reserve(outputs.size());
+  for (size_t i = 0; i < outputs.size(); i++) {
+    host_outputs.push_back(array(outputs[i].shape(), outputs[i].dtype(), nullptr, {}));
+  }
+  eval_cpu(host_inputs, host_outputs);
+
+  for (size_t i = 0; i < outputs.size(); i++) {
+    linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
+  }
 }
 
 void Eig::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // eval_cpu allocates eigenvalues / eigenvectors internally.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, outputs);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  std::vector<array> host_outputs;
+  host_outputs.reserve(outputs.size());
+  for (size_t i = 0; i < outputs.size(); i++) {
+    host_outputs.push_back(array(outputs[i].shape(), outputs[i].dtype(), nullptr, {}));
+  }
+  eval_cpu(host_inputs, host_outputs);
+
+  for (size_t i = 0; i < outputs.size(); i++) {
+    linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
+  }
 }
 
 void Eigh::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // eval_cpu allocates eigenvalues and copies input to eigenvectors internally.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, outputs);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  std::vector<array> host_outputs;
+  host_outputs.reserve(outputs.size());
+  for (size_t i = 0; i < outputs.size(); i++) {
+    host_outputs.push_back(array(outputs[i].shape(), outputs[i].dtype(), nullptr, {}));
+  }
+  eval_cpu(host_inputs, host_outputs);
+
+  for (size_t i = 0; i < outputs.size(); i++) {
+    linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
+  }
 }
 
 // -- Single-output ops --------------------------------------------------------
 
 void Inverse::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // eval_cpu calls copy_cpu which invokes set_copy_output_data -> allocates
-  // out.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, out);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  array host_out(out.shape(), out.dtype(), nullptr, {});
+  eval_cpu(host_inputs, host_out);
+
+  linalg_upload_output(host_out, out, gpu_s);
 }
 
 void Cholesky::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // eval_cpu calls copy_cpu which invokes set_copy_output_data -> allocates
-  // out.
-  vulkan::device(stream().device).synchronize(stream());
-  eval_cpu(inputs, out);
+  auto& gpu_s = stream();
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
+
+  std::vector<array> host_inputs;
+  host_inputs.reserve(inputs.size());
+  for (auto& in : inputs) {
+    host_inputs.push_back(linalg_to_host(in, gpu_s));
+  }
+
+  array host_out(out.shape(), out.dtype(), nullptr, {});
+  eval_cpu(host_inputs, host_out);
+
+  linalg_upload_output(host_out, out, gpu_s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4540,7 +4726,7 @@ void LayerNorm::eval_gpu(
       24,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
-    fallback_(inputs);
+    materialize_fallback_outputs(fallback_(inputs), outputs);
     return;
   }
 
@@ -4598,7 +4784,11 @@ void LayerNorm::eval_gpu(
   }
 }
 
-NO_GPU_MULTI(LayerNormVJP)
+void LayerNormVJP::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  materialize_fallback_outputs(fallback_(inputs), outputs);
+}
 
 // ─── RMSNorm GPU dispatch ───────────────────────────────────────────────────
 
@@ -4662,7 +4852,7 @@ void RMSNorm::eval_gpu(
       24,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
-    fallback_(inputs);
+    materialize_fallback_outputs(fallback_(inputs), outputs);
     return;
   }
 
@@ -4720,7 +4910,11 @@ void RMSNorm::eval_gpu(
   }
 }
 
-NO_GPU_MULTI(RMSNormVJP)
+void RMSNormVJP::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  materialize_fallback_outputs(fallback_(inputs), outputs);
+}
 
 // ─── RoPE GPU dispatch ──────────────────────────────────────────────────────
 
@@ -4736,7 +4930,7 @@ void RoPE::eval_gpu(
 
   // inputs: [x, cos_freqs, sin_freqs]
   if (inputs.size() < 3) {
-    fallback_(inputs);
+    materialize_fallback_outputs(fallback_(inputs), outputs);
     return;
   }
 
@@ -4763,7 +4957,7 @@ void RoPE::eval_gpu(
       12,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
-    fallback_(inputs);
+    materialize_fallback_outputs(fallback_(inputs), outputs);
     return;
   }
 

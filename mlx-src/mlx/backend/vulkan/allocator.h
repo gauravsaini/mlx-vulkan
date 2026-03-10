@@ -18,6 +18,8 @@ namespace vulkan {
 
 // Internal buffer tracking struct
 struct VulkanBuffer {
+  static constexpr uint64_t kMagic = 0x4d4c58564b425546ULL; // "MLXVKBUF"
+  uint64_t magic{kMagic};
   VkBuffer buffer{VK_NULL_HANDLE};
   VmaAllocation allocation{VK_NULL_HANDLE};
   size_t size{0};
@@ -25,6 +27,7 @@ struct VulkanBuffer {
   void* cpu_readback_ptr{nullptr}; // heap snapshot for non-host-visible readback
   bool owns_vma_mapping{false};
   bool owns_allocation{true};
+  bool submitted_to_gpu{false};
   VkMemoryPropertyFlags memory_properties{0};
 };
 

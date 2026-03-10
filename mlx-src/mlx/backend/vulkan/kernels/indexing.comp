@@ -79,7 +79,15 @@ void main() {
         }
         int dst_idx = idx_data[i_off + idx_pos];
         if (dst_idx < 0) dst_idx += int(params.src_ax_size);
-        uint dst_pos = uint(dst_idx) * params.dst_stride + (tid % params.src_stride);
+        uint within = tid % params.src_stride;
+        uint dst_pos;
+        if (params.src_outer_stride == 1u) {
+            uint outer = tid / (params.src_stride * params.inner);
+            dst_pos = outer * (params.src_ax_size * params.dst_stride) +
+                      uint(dst_idx) * params.dst_stride + within;
+        } else {
+            dst_pos = uint(dst_idx) * params.dst_stride + within;
+        }
         dst_data[d_off + dst_pos] = src_data[s_off + tid];
 
     } else if (params.op == INDEX_SCATTER_ADD) {
@@ -92,7 +100,15 @@ void main() {
         }
         int dst_idx = idx_data[i_off + idx_pos];
         if (dst_idx < 0) dst_idx += int(params.src_ax_size);
-        uint dst_pos = uint(dst_idx) * params.dst_stride + (tid % params.src_stride);
+        uint within = tid % params.src_stride;
+        uint dst_pos;
+        if (params.src_outer_stride == 1u) {
+            uint outer = tid / (params.src_stride * params.inner);
+            dst_pos = outer * (params.src_ax_size * params.dst_stride) +
+                      uint(dst_idx) * params.dst_stride + within;
+        } else {
+            dst_pos = uint(dst_idx) * params.dst_stride + within;
+        }
         dst_data[d_off + dst_pos] += src_data[s_off + tid];
 
     } else if (params.op == INDEX_GATHER_GEN) {

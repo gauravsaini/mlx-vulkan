@@ -73,6 +73,8 @@ def main():
             mlx.core = mx
         else:
             import mlx.core as mx
+        import mlx.nn as nn
+        import mlx.optimizers as optim
     except Exception as exc:
         print(f"FAIL: Cannot import mlx.core: {exc}")
         print("Install/build MLX first, for example: pip install -e mlx-src/")
@@ -127,6 +129,92 @@ def main():
         ref = ref / ref.sum()
         if not np.allclose(got, ref, atol=1e-4):
             raise RuntimeError(f"softmax mismatch: got {got.tolist()}")
+
+    def check_autograd():
+        x = mx.array([1.0, 2.0, 3.0], dtype=mx.float32)
+
+        def loss_fn(t):
+            return mx.sum(t * t)
+
+        loss, grad = mx.value_and_grad(loss_fn)(x)
+        mx.eval(loss, grad)
+        if not np.isclose(float(loss.tolist()), 14.0, atol=1e-4):
+            raise RuntimeError(f"loss mismatch: got {loss.tolist()}")
+        got = np.array(grad.tolist(), dtype=np.float32)
+        ref = np.array([2.0, 4.0, 6.0], dtype=np.float32)
+        if not np.allclose(got, ref, atol=1e-4):
+            raise RuntimeError(f"gradient mismatch: got {got.tolist()}")
+
+    def check_optimizers():
+        params = {"w": mx.array([1.0, -2.0], dtype=mx.float32)}
+        grads = {"w": mx.array([0.5, -0.25], dtype=mx.float32)}
+
+        sgd = optim.SGD(learning_rate=0.1)
+        sgd.init(params)
+        sgd_params = sgd.apply_gradients(grads, params)
+        got_sgd = np.array(sgd_params["w"].tolist(), dtype=np.float32)
+        ref_sgd = np.array([0.95, -1.975], dtype=np.float32)
+        if not np.allclose(got_sgd, ref_sgd, atol=1e-5):
+            raise RuntimeError(f"SGD mismatch: got {got_sgd.tolist()}")
+
+        adam = optim.Adam(learning_rate=0.1)
+        adam.init(params)
+        adam_params = adam.apply_gradients(grads, params)
+        got_adam = np.array(adam_params["w"].tolist(), dtype=np.float32)
+        if np.allclose(got_adam, np.array(params["w"].tolist(), dtype=np.float32), atol=1e-6):
+            raise RuntimeError("Adam parameters did not change")
+        if not np.isfinite(got_adam).all():
+            raise RuntimeError(f"Adam produced non-finite values: {got_adam.tolist()}")
+
+    def check_tiny_mlp():
+        class TinyMLP(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.l1 = nn.Linear(4, 8)
+                self.l2 = nn.Linear(8, 1)
+
+            def __call__(self, x):
+                return self.l2(nn.relu(self.l1(x)))
+
+        mx.random.seed(7)
+        model = TinyMLP()
+        optimizer = optim.SGD(learning_rate=0.1)
+        optimizer.init(model.parameters())
+
+        x = mx.array(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ],
+            dtype=mx.float32,
+        )
+        y = mx.sum(x, axis=1, keepdims=True)
+
+        def loss_fn(params):
+            model.update(params)
+            pred = model(x)
+            diff = pred - y
+            return mx.mean(diff * diff)
+
+        loss_and_grad = mx.value_and_grad(loss_fn)
+        params = model.parameters()
+        losses = []
+        for _ in range(25):
+            loss, grads = loss_and_grad(params)
+            params = optimizer.apply_gradients(grads, params)
+            mx.eval(loss)
+            losses.append(float(loss.tolist()))
+
+        if not losses[-1] < losses[0]:
+            raise RuntimeError(f"MLP loss did not decrease: {losses[0]} -> {losses[-1]}")
+        if min(losses[-5:]) > losses[0]:
+            raise RuntimeError(f"MLP convergence too weak: {losses}")
 
     def check_python_bridge():
         a = mx.array([[1.0, 2.0], [3.0, 4.0]], dtype=mx.float32)
@@ -207,8 +295,25 @@ def main():
         if not np.allclose(inv_val, inv_ref, atol=1e-4):
             raise RuntimeError(f"inverse mismatch: got {inv_val.tolist()}")
 
+        chol = mx.linalg.cholesky(a)
+        mx.eval(chol)
+        chol_val = np.array(chol.tolist(), dtype=np.float32)
+        chol_ref = np.linalg.cholesky(np.array(a.tolist(), dtype=np.float32))
+        if not np.allclose(chol_val, chol_ref, atol=1e-4):
+            raise RuntimeError(f"cholesky mismatch: got {chol_val.tolist()}")
+
+        eigvals, eigvecs = mx.linalg.eigh(a)
+        mx.eval(eigvals, eigvecs)
+        eigvals_val = np.array(eigvals.tolist(), dtype=np.float32)
+        eigvals_ref, _ = np.linalg.eigh(np.array(a.tolist(), dtype=np.float32))
+        if not np.allclose(eigvals_val, eigvals_ref, atol=1e-4):
+            raise RuntimeError(f"eigh eigenvalues mismatch: got {eigvals_val.tolist()}")
+
     check("gpu detect", check_gpu, errors)
     check("core ops", check_core_ops, errors)
+    check("autograd", check_autograd, errors)
+    check("optimizers", check_optimizers, errors)
+    check("tiny mlp", check_tiny_mlp, errors)
     check("python bridge", check_python_bridge, errors)
     check("cpu fallback outputs", check_cpu_fallback_outputs, errors)
     if include_linalg:

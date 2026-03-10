@@ -194,7 +194,13 @@ float op_float(float a, float b) {
         case BINARY_DIV:        return a / b;
         case BINARY_MAX:        return (isnan(a) || isnan(b)) ? (0.0 / 0.0) : max(a, b);
         case BINARY_MIN:        return (isnan(a) || isnan(b)) ? (0.0 / 0.0) : min(a, b);
-        case BINARY_POW:        return pow(a, b);
+        case BINARY_POW:
+            // Match MLX/Numpy semantics for x**0, including 0**0 and nan**0,
+            // and keep the common small-integer exponents exact in float32.
+            if (b == 0.0) return 1.0;
+            if (b == 1.0) return a;
+            if (b == 2.0) return a * a;
+            return pow(a, b);
         case BINARY_LOGADDEXP: {
             if (isnan(a) || isnan(b)) return (0.0 / 0.0);
             float m = max(a, b);

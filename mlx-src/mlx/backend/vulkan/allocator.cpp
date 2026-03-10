@@ -46,6 +46,10 @@ void copy_from_host_buffer(
   auto& dev = device(s.device);
   if (vk_buf->mapped_ptr) {
     std::memcpy(static_cast<char*>(vk_buf->mapped_ptr) + base_offset, src, bytes);
+    if (vk_buf->cpu_readback_ptr) {
+      std::memcpy(
+          static_cast<char*>(vk_buf->cpu_readback_ptr) + base_offset, src, bytes);
+    }
     if (!(vk_buf->memory_properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
       vmaFlushAllocation(
           dev.vma_allocator(), vk_buf->allocation, base_offset, bytes);
@@ -58,8 +62,13 @@ void copy_from_host_buffer(
     throw std::runtime_error("[vulkan::copy_from_host] staging allocation failed");
   }
   std::memcpy(staging->mapped_ptr, src, bytes);
+  if (vk_buf->cpu_readback_ptr) {
+    std::memcpy(
+        static_cast<char*>(vk_buf->cpu_readback_ptr) + base_offset, src, bytes);
+  }
 
   auto& enc = get_command_encoder(s);
+  vk_buf->submitted_to_gpu = true;
   VkBufferCopy region{
       0, static_cast<VkDeviceSize>(base_offset), static_cast<VkDeviceSize>(bytes)};
   vkCmdCopyBuffer(enc.cmd, staging->buffer, vk_buf->buffer, 1, &region);
@@ -157,7 +166,8 @@ VulkanAllocator::VulkanAllocator() {
 allocator::Buffer VulkanAllocator::malloc(size_t size) {
   if (size == 0) {
     return allocator::Buffer{new VulkanBuffer{
-        VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr, nullptr, false, true, 0}};
+        VulkanBuffer::kMagic,
+        VK_NULL_HANDLE, VK_NULL_HANDLE, 0, nullptr, nullptr, false, true, false, 0}};
   }
 
   // Pad to 4 bytes so that shaders can read/write 32-bit uints safely
@@ -206,6 +216,7 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
   }
 
   auto* vk_buf = new VulkanBuffer{
+      VulkanBuffer::kMagic,
       vk_buffer,
       allocation,
       size,
@@ -213,6 +224,7 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
       nullptr,
       mapped != nullptr,
       true,
+      false,
       mem_flags};
 
   {
@@ -239,30 +251,34 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
 
   auto stream = Stream{0, mlx::core::Device{mlx::core::Device::gpu, 0}};
   auto& dev = device(stream.device);
-  auto& encoder = get_command_encoder(stream);
+  auto destroy_now = [buf, dev = &dev]() {
+    if (buf->owns_vma_mapping && buf->mapped_ptr) {
+      vmaUnmapMemory(dev->vma_allocator(), buf->allocation);
+    }
+    if (buf->cpu_readback_ptr) {
+      std::free(buf->cpu_readback_ptr);
+    }
+    if (buf->owns_allocation) {
+      vmaDestroyBuffer(dev->vma_allocator(), buf->buffer, buf->allocation);
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(allocator().mutex_);
+      allocator().active_memory_ -= buf->size;
+    }
+    delete buf;
+  };
+
+  if (!buf->submitted_to_gpu) {
+    destroy_now();
+    return;
+  }
 
   // We must defer destruction until the GPU has finished executing all commands
   // that might be referencing this buffer. Apple Metal achieves this implicitly
   // via pooled reference counting; for Vulkan, we push it to the completion
   // handler.
-  vulkan::device(stream.device)
-      .add_completed_handler(stream, [buf, dev = &dev]() {
-        if (buf->owns_vma_mapping && buf->mapped_ptr) {
-          vmaUnmapMemory(dev->vma_allocator(), buf->allocation);
-        }
-        if (buf->cpu_readback_ptr) {
-          std::free(buf->cpu_readback_ptr);
-        }
-        if (buf->owns_allocation) {
-          vmaDestroyBuffer(dev->vma_allocator(), buf->buffer, buf->allocation);
-        }
-
-        {
-          std::lock_guard<std::mutex> lk(allocator().mutex_);
-          allocator().active_memory_ -= buf->size;
-        }
-        delete buf;
-      });
+  vulkan::device(stream.device).add_completed_handler(stream, destroy_now);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -296,6 +312,9 @@ void VulkanAllocator::copy_from_host(
   auto s = default_stream(mlx::core::Device::gpu);
   copy_from_host_buffer(buffer, offset, src, bytes, s);
   device(s.device).synchronize(s);
+  if (auto* vk_buf = unwrap_buffer(buffer)) {
+    vk_buf->submitted_to_gpu = false;
+  }
 }
 
 void VulkanAllocator::copy_to_host(
@@ -361,6 +380,7 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
   }
 
   return new VulkanBuffer{
+      VulkanBuffer::kMagic,
       vk_buffer,
       allocation,
       size,
@@ -368,6 +388,7 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
       nullptr,
       vma_info.pMappedData != nullptr,
       true,
+      false,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
 }
 
@@ -399,8 +420,39 @@ VkBuffer VulkanAllocator::vk_buffer(allocator::Buffer buf) const {
 
 // Free function: get VkBuffer from array
 VkBuffer get_buffer(const array& arr) {
-  auto* vk_buf =
-      static_cast<VulkanBuffer*>(const_cast<void*>(arr.buffer().ptr()));
+  auto uploaded = [&arr]() -> allocator::Buffer {
+    auto classify = [&arr]() {
+      if (arr.buffer().ptr() == nullptr) {
+        return 0ULL;
+      }
+      return *reinterpret_cast<const uint64_t*>(arr.buffer().ptr());
+    };
+
+    switch (classify()) {
+      case 0x4d4c5843564b414cULL:
+        break;
+      case vulkan::VulkanBuffer::kMagic:
+        static_cast<VulkanBuffer*>(const_cast<void*>(arr.buffer().ptr()))
+            ->submitted_to_gpu = true;
+        return arr.buffer();
+      default:
+        return allocator::Buffer{nullptr};
+    }
+
+    auto uploaded = vulkan::allocator().malloc(arr.buffer_size());
+    auto* src =
+        static_cast<const char*>(const_cast<allocator::Buffer&>(arr.buffer()).raw_ptr());
+    if (src == nullptr) {
+      allocator::free(uploaded);
+      return allocator::Buffer{nullptr};
+    }
+    Stream upload_stream{0, mlx::core::Device{mlx::core::Device::gpu, 0}};
+    copy_from_host_buffer(uploaded, 0, src, arr.buffer_size(), upload_stream);
+    vulkan::device(upload_stream.device).add_completed_handler(
+        upload_stream, [uploaded]() mutable { allocator::free(uploaded); });
+    return uploaded;
+  }();
+  auto* vk_buf = static_cast<VulkanBuffer*>(const_cast<void*>(uploaded.ptr()));
   if (!vk_buf)
     return VK_NULL_HANDLE;
   return vk_buf->buffer;
@@ -631,9 +683,127 @@ CommonAllocator& common_allocator() {
   return allocator_;
 }
 
+thread_local int cpu_allocator_override_depth = 0;
+
 bool use_cpu_allocator() {
-  return !gpu::is_available();
+  return cpu_allocator_override_depth > 0 || !gpu::is_available();
 }
+
+enum class BufferBackend {
+  unknown,
+  cpu,
+  vulkan,
+};
+
+BufferBackend classify_buffer(const Buffer& buffer) {
+  if (buffer.ptr() == nullptr) {
+    return BufferBackend::unknown;
+  }
+  auto tag = *reinterpret_cast<const uint64_t*>(buffer.ptr());
+  if (tag == CpuAllocHeader::kMagic) {
+    return BufferBackend::cpu;
+  }
+  if (tag == vulkan::VulkanBuffer::kMagic) {
+    return BufferBackend::vulkan;
+  }
+  return BufferBackend::unknown;
+}
+
+class BridgeAllocator : public Allocator {
+ public:
+  Buffer malloc(size_t size) override {
+    if (use_cpu_allocator()) {
+      return common_allocator().malloc(size);
+    }
+    return vulkan::allocator().malloc(size);
+  }
+
+  void free(Buffer buffer) override {
+    switch (classify_buffer(buffer)) {
+      case BufferBackend::cpu:
+        common_allocator().free(buffer);
+        return;
+      case BufferBackend::vulkan:
+        vulkan::allocator().free(buffer);
+        return;
+      case BufferBackend::unknown:
+        return;
+    }
+  }
+
+  size_t size(Buffer buffer) const override {
+    switch (classify_buffer(buffer)) {
+      case BufferBackend::cpu:
+        return common_allocator().size(buffer);
+      case BufferBackend::vulkan:
+        return vulkan::allocator().size(buffer);
+      case BufferBackend::unknown:
+        return 0;
+    }
+  }
+
+  Buffer make_buffer(void* ptr, size_t size) override {
+    if (use_cpu_allocator()) {
+      return common_allocator().make_buffer(ptr, size);
+    }
+    return vulkan::allocator().make_buffer(ptr, size);
+  }
+
+  void release(Buffer buffer) override {
+    switch (classify_buffer(buffer)) {
+      case BufferBackend::cpu:
+        common_allocator().release(buffer);
+        return;
+      case BufferBackend::vulkan:
+        vulkan::allocator().release(buffer);
+        return;
+      case BufferBackend::unknown:
+        return;
+    }
+  }
+
+  void copy_from_host(
+      Buffer buffer,
+      const void* src,
+      size_t size,
+      size_t offset = 0) override {
+    switch (classify_buffer(buffer)) {
+      case BufferBackend::cpu:
+        common_allocator().copy_from_host(buffer, src, size, offset);
+        return;
+      case BufferBackend::vulkan:
+        vulkan::allocator().copy_from_host(buffer, src, size, offset);
+        return;
+      case BufferBackend::unknown:
+        if (size != 0) {
+          throw std::runtime_error(
+              "[allocator::copy_from_host] unknown buffer backend");
+        }
+        return;
+    }
+  }
+
+  void copy_to_host(
+      Buffer buffer,
+      void* dst,
+      size_t size,
+      size_t offset = 0) override {
+    switch (classify_buffer(buffer)) {
+      case BufferBackend::cpu:
+        common_allocator().copy_to_host(buffer, dst, size, offset);
+        return;
+      case BufferBackend::vulkan:
+        vulkan::allocator().copy_to_host(buffer, dst, size, offset);
+        return;
+      case BufferBackend::unknown:
+        if (size != 0) {
+          throw std::runtime_error(
+              "[allocator::copy_to_host] unknown buffer backend");
+        }
+        return;
+    }
+  }
+};
 
 } // namespace
 
@@ -642,18 +812,35 @@ bool use_cpu_allocator() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Allocator& allocator() {
-  if (use_cpu_allocator()) {
-    return common_allocator();
+  static BridgeAllocator allocator_;
+  return allocator_;
+}
+
+void push_cpu_allocator_override() {
+  cpu_allocator_override_depth++;
+}
+
+void pop_cpu_allocator_override() {
+  if (cpu_allocator_override_depth > 0) {
+    cpu_allocator_override_depth--;
   }
-  return vulkan::allocator();
+}
+
+bool cpu_allocator_override_enabled() {
+  return cpu_allocator_override_depth > 0;
 }
 
 void* Buffer::raw_ptr() {
   if (!ptr_)
     return nullptr;
 
-  if (use_cpu_allocator()) {
-    return cpu_header(ptr_) + 1;
+  switch (classify_buffer(*this)) {
+    case BufferBackend::cpu:
+      return cpu_header(ptr_) + 1;
+    case BufferBackend::unknown:
+      return nullptr;
+    case BufferBackend::vulkan:
+      break;
   }
 
   auto* vk_buf = static_cast<vulkan::VulkanBuffer*>(ptr_);
@@ -667,15 +854,19 @@ void* Buffer::raw_ptr() {
     return vk_buf->mapped_ptr;
   }
 
-  // For device-local without host-visible memory (discrete GPU),
-  // we need a staging copy. Map via VMA with a forced mapping.
+  if (vk_buf->cpu_readback_ptr) {
+    return vk_buf->cpu_readback_ptr;
+  }
+
   auto& dev = vulkan::device(mlx::core::Device{mlx::core::Device::gpu, 0});
-  void* mapped = nullptr;
-  VkResult res = vmaMapMemory(dev.vma_allocator(), vk_buf->allocation, &mapped);
-  if (res == VK_SUCCESS) {
-    vk_buf->mapped_ptr = mapped;
-    vk_buf->owns_vma_mapping = true;
-    return mapped;
+  if (vk_buf->memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+    void* mapped = nullptr;
+    VkResult res = vmaMapMemory(dev.vma_allocator(), vk_buf->allocation, &mapped);
+    if (res == VK_SUCCESS) {
+      vk_buf->mapped_ptr = mapped;
+      vk_buf->owns_vma_mapping = true;
+      return mapped;
+    }
   }
 
   // Fallback: allocate staging, copy, and return
