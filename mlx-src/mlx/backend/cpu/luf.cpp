@@ -58,6 +58,9 @@ void luf_impl(
       [a_ptr, pivots_ptr, row_indices_ptr, num_matrices, M, N, K]() mutable {
         int info;
         for (size_t i = 0; i < num_matrices; ++i) {
+          printf("[LUF::eval_cpu] a_ptr addr=%p, p_ptr=%p, r_ptr=%p, a_ptr[0]=%f\n", 
+                 (void*)a_ptr, (void*)pivots_ptr, (void*)row_indices_ptr, (float)a_ptr[0]);
+          fflush(stdout);
           // Compute LU factorization of A
           getrf<T>(
               /* m */ &M,
@@ -91,6 +94,10 @@ void luf_impl(
             row_indices_ptr[j] = t1;
             row_indices_ptr[piv] = t2;
           }
+
+          printf("[LUF::eval_cpu] END: r_ptr[0]=%u, r_ptr[1]=%u, r_ptr[2]=%u\n", 
+                 row_indices_ptr[0], row_indices_ptr[1], row_indices_ptr[2]);
+          fflush(stdout);
 
           // Advance pointers to the next matrix
           a_ptr += M * N;

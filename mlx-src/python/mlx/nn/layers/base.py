@@ -399,6 +399,8 @@ class Module(dict):
         Returns:
             The module instance after updating the submodules.
         """
+        if isinstance(modules, (dict, list)) and len(modules) == 0:
+            return self
         _update_modules(self, modules, strict)
         return self
 
@@ -637,6 +639,16 @@ def _update_modules(dst, modules, strict):
                 raise ValueError(f"Received invalid type: {type(new_value).__name__}.")
     elif strict:
         raise ValueError(f"Received invalid type: {type(modules).__name__}.")
+
+
+def _module_update_modules(self, modules: dict, strict: bool = True) -> Module:
+    if isinstance(modules, (dict, list)) and len(modules) == 0:
+        return self
+    _update_modules(self, modules, strict)
+    return self
+
+
+Module.update_modules = _module_update_modules
 
 
 def _unwrap(model, value_key, value, filter_fn, map_fn, is_leaf_fn):

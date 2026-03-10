@@ -20,6 +20,13 @@ def _reduce(loss: mx.array, reduction: Reduction = "none"):
         return loss
 
 
+def _float_compute_dtype(*arrays: mx.array):
+    dtypes = [a.dtype for a in arrays]
+    if all(dt == dtypes[0] for dt in dtypes) and mx.issubdtype(dtypes[0], mx.inexact):
+        return dtypes[0]
+    return mx.float32
+
+
 def cross_entropy(
     logits: mx.array,
     targets: mx.array,
@@ -416,6 +423,12 @@ def triplet_loss(
         array: Computed triplet loss. If reduction is "none", returns a tensor of the same shape as input;
                   if reduction is "mean" or "sum", returns a scalar tensor.
     """
+    compute_dtype = _float_compute_dtype(anchors, positives, negatives)
+
+    anchors = anchors.astype(compute_dtype)
+    positives = positives.astype(compute_dtype)
+    negatives = negatives.astype(compute_dtype)
+
     loss = mx.maximum(
         mx.sqrt(mx.power(anchors - positives, p).sum(axis) + eps)
         - mx.sqrt(mx.power(anchors - negatives, p).sum(axis) + eps)
@@ -603,6 +616,12 @@ def margin_ranking_loss(
             f"inputs1.shape={inputs1.shape}, inputs2.shape={inputs2.shape}, and "
             f"targets.shape={targets.shape}."
         )
+
+    compute_dtype = _float_compute_dtype(inputs1, inputs2, targets)
+
+    inputs1 = inputs1.astype(compute_dtype)
+    inputs2 = inputs2.astype(compute_dtype)
+    targets = targets.astype(compute_dtype)
 
     differences = inputs1 - inputs2
     loss = mx.maximum(0, -targets * differences + margin)

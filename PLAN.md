@@ -17,13 +17,62 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ---
 
-## Current Priority (as of 2026-03-09)
+## Current Priority (as of 2026-03-10)
 
 **Top milestone**: reach practical MLX training compatibility on Vulkan.
 
 **Minimum bar**: a tiny transformer trains and converges on the Vulkan backend without CPU fallback.
 
-**Current status**: Real AMD/Linux Vulkan execution is now proven for core tensor ops, autograd, and a tiny 2-layer MLP training loop. The remaining gap is no longer “does Vulkan run at all,” but “which missing MLX features and fallback paths still block end-to-end transformer and LLM training.”
+### Current Truth
+
+> [!IMPORTANT]
+> These are the only claims that are currently backed by real-hardware evidence.
+
+- ✅ **AMD Vulkan runtime proven** — real Linux execution on AWS `g4ad.xlarge` (RADV NAVI12)
+- ✅ **Core tensor ops, autograd, and tiny MLP training proven** — on real AMD Vulkan hardware
+- ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros or fail in the discrete-GPU fallback path
+- ❌ **Tiny transformer training without CPU fallback not yet demonstrated**
+- ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
+
+---
+
+### Authoritative Compatibility Gates
+
+Default policy: CPU fallback is **allowed** for early bring-up gates only when explicitly marked. CPU fallback is **forbidden** starting at the transformer gate (Gate 7).
+
+| Gate | Name | Test Entrypoint | Hardware | Pass Condition | CPU Fallback |
+|------|------|----------------|----------|----------------|-------------|
+| 1 | Device / runtime / build / import | `test_stage25_linux_vulkan_bringup.py` | Any Vulkan GPU | Import + GPU detection | N/A |
+| 2 | Core tensor ops without CPU fallback | `test_stage25_linux_vulkan_bringup.py` (core ops) | AMD or NVIDIA Linux | matmul, softmax, elementwise correct | ❌ Forbidden |
+| 3 | Autograd correctness | `test_stage25_linux_vulkan_bringup.py` (autograd) | AMD or NVIDIA Linux | `value_and_grad` matches expected | ❌ Forbidden |
+| 4 | Optimizer correctness | Smoke: SGD + Adam update step | AMD or NVIDIA Linux | Parameters update correctly | ❌ Forbidden |
+| 5 | Tiny MLP training convergence | `test_stage25_linux_vulkan_bringup.py` (MLP) | AMD or NVIDIA Linux | Loss decreases over 100 steps | Allowed for non-training ops only |
+| 6 | Transformer-critical op coverage | *Future*: `test_transformer_ops_audit.py` | AMD or NVIDIA Linux | All ops in audit list execute on GPU | ❌ Forbidden |
+| 7 | Tiny transformer training convergence | *Future*: `test_tiny_transformer.py` | AMD or NVIDIA Linux | Loss decreases, no CPU fallback on training step | ❌ Forbidden |
+| 8 | Selected MLX suite coverage | `test_random.py`, `test_ops.py` subset, `test_array.py` subset | AMD or NVIDIA Linux | Defined pass-rate threshold per suite | Allowed where marked |
+| 9 | Long-run stability | 1000-step training loop | AMD or NVIDIA Linux | No OOM, no device lost, no crash | ❌ Forbidden |
+| 10 | NVIDIA parity | Same gates 1–9 | NVIDIA Linux | Same pass criteria | Same policy |
+
+---
+
+### Cross-Platform Compatibility Matrix
+
+| Capability | MoltenVK / macOS | AMD / Linux (real HW) | NVIDIA / Linux (real HW) |
+|---|---|---|---|
+| Tensor ops | proven (historical) | **proven** | not run |
+| Autograd | proven (historical) | **proven** | not run |
+| Optimizers (SGD) | proven (historical) | **proven** (tiny MLP) | not run |
+| Optimizers (Adam) | not run | not run | not run |
+| Tiny MLP training | proven (historical) | **proven** | not run |
+| Linalg CPU fallback | proven (historical, unified mem) | **failing** | not run |
+| Tiny transformer training | not run | not run | not run |
+| LoRA / small-LLM fine-tune | not run | not run | not run |
+| Official MLX `test_ops.py` | ~124/134 (historical) | not run | not run |
+| Official MLX `test_array.py` | ~65/68 (historical) | not run | not run |
+| Official MLX `test_random.py` | 14/14 (historical) | not run | not run |
+| Long-run stability | not run | not run | not run |
+
+---
 
 ### Live Validation Snapshot (AMD/Linux)
 
@@ -66,8 +115,8 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ### Compatibility-First Roadmap
 
-- [x] Prove the Vulkan backend can execute real MLX training primitives on a discrete GPU.
-- [x] Prove backward pass and optimizer updates on real AMD Vulkan.
+- [x] Proven: Vulkan backend executes real MLX training primitives on a discrete GPU.
+- [x] Proven: backward pass and optimizer updates on real AMD Vulkan.
 - [ ] Eliminate the remaining CPU-fallback correctness blockers that break MLX compatibility on discrete GPUs:
       linalg fallback writeback/copy path, unsafe direct host access, and any fallback that still assumes unified memory.
 - [ ] Add a tiny transformer smoke that uses only supported Vulkan paths and verify convergence.
@@ -75,16 +124,15 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
       `matmul`, `addmm`, `softmax`, `layer_norm`, `rope`, embeddings, masking, indexing, optimizer updates.
 - [ ] Identify and remove training blockers for real LLM workloads:
       attention path coverage, norm backward coverage, optimizer coverage, sequence masking, and long-run stability.
-- [ ] After compatibility is real, measure throughput and memory behavior on real AMD and NVIDIA hardware.
+- [ ] After the compatibility ladder is green, measure throughput and memory behavior on real AMD and NVIDIA hardware (see Gates 9–10).
 
 ### Cross-Vendor Validation Checklist
 
 - [x] Added a dedicated bring-up smoke script at `tests/vulkan/test_stage25_linux_vulkan_bringup.py`:
       covers import, GPU detection, core ops, CPU-fallback output paths, and Python bridge safety; supports `MLX_CORE_SO=...` for fresh builds and `MLX_VULKAN_REQUIRE_VENDOR=amd|nvidia|intel` for strict runner gating.
       Latest expansion: linalg fallback checks remain available behind `MLX_VULKAN_INCLUDE_LINALG=1`, but are no longer part of the default first-pass contract.
-- [ ] Keep a real NVIDIA machine or runner as the next hardware target so the same MLX compatibility gates are proven across both major discrete-GPU vendors.
-- [ ] Run the same compatibility ladder on NVIDIA:
-      Stage 25, autograd smoke, tiny MLP training, tiny transformer training.
+- [ ] NVIDIA is a planned validation target after the AMD compatibility ladder is fully green.
+      Run the same compatibility ladder on NVIDIA: Stage 25, autograd smoke, tiny MLP training, tiny transformer training.
 - [ ] Defer vendor-specific tuning and cooperative-matrix optimization until the training-compatibility bar is met.
 
 ### Pre-NVIDIA Blockers From Static Code Review
@@ -131,7 +179,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 ## Build Status (as of 2026-03-03)
 
-> This section is a MoltenVK/macOS validation snapshot. It does not by itself imply Linux/NVIDIA readiness.
+> ⚠️ **Historical snapshot**: MoltenVK/macOS validation only. Does not imply Linux/NVIDIA readiness. See the Cross-Platform Compatibility Matrix above for current status.
 
 **Build dir**: `build/temp.macosx-15.0-arm64-cpython-311/mlx.core/`
 **Python**: 3.11 (`python3.11`) — `.so` is `core.cpython-311-darwin.so`
@@ -183,7 +231,7 @@ or simply run the full `cmake --build build_vulkan -j4` (rebuilds shaders too).
 
 ## Codebase Gap Analysis — Verified 2026-03-07
 
-> Based on live run of all 134 `test_ops.py` tests with `MLX_DISABLE_METAL=1` on Apple M1 via MoltenVK.
+> ⚠️ **Historical snapshot (2026-03-07)**: Based on MoltenVK/macOS run. Not revalidated on AMD/Linux hardware. See the Compatibility Matrix above for current real-hardware status.
 
 ### test_ops.py Results: 124/134 PASS, 10 FAIL
 
@@ -212,6 +260,8 @@ logical_not, isinf, isnan, isneginf, nan_to_num, maximum, minimum, logaddexp, lo
 ---
 
 ## Known Issues / Critical Bugs Fixed
+
+> 📜 **Historical reference**: Bug fixes applied to codebase. Status reflects code changes, not current real-hardware test results.
 
 ### Fixed (2026-03-08) — CPU Scan Fallback Stability + Vulkan Availability Gate
 
@@ -452,6 +502,8 @@ This completely breaks for `int32` which might have negative sign bits evaluated
 - **Memory Tracking**: Background `commit` thread synchronization vs allocator stats — second pass needed.
 
 ---
+
+> 📜 **Historical reference**: Phases 0–9 below are implementation logs. Status checkmarks reflect code completion, not current real-hardware validation. See the Authoritative Compatibility Gates above for the live validation framework.
 
 ## Phase 0: Repository Setup ✅ COMPLETE
 
@@ -839,6 +891,8 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ---
 
+> 📜 **Historical reference**: CI uses lavapipe (software Vulkan). Not a substitute for real-hardware validation.
+
 ## Phase 10: Continuous Integration ✅ COMPLETE (lavapipe)
 
 - [x] `.github/workflows/vulkan.yml` — ubuntu-22.04 + lavapipe software Vulkan, no GPU required
@@ -878,7 +932,9 @@ Implement `eval_gpu()` for every primitive. Pattern per op:
 
 ---
 
-## Pending Work — Prioritized For MLX Training Compatibility (as of 2026-03-09)
+## Pending Work — Historical Priority Snapshot (as of 2026-03-09)
+
+> ⚠️ **Needs revalidation**: Priority order below is superseded by the Authoritative Compatibility Gates above. Individual items remain relevant but must be sequenced through the gate framework.
 
 > Based on live audit: 134 tests in `test_ops.py`, 24 shaders, full `primitives.cpp` code review.
 
@@ -1111,6 +1167,8 @@ These stages timeout after 20s. A hang blocks the entire test suite.
 
 ---
 
+> 📜 **Historical reference**: Gap analysis from earlier milestones. Items not yet incorporated into the compatibility ladder are deferred.
+
 ## Phase 11: Production Readiness (from Architectural Review 2026-03-01)
 
 Gaps identified in REVIEW.md, assessed against current implementation:
@@ -1199,6 +1257,8 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 - [x] Compiled repeated calls — 5 successive invocations
 
 ---
+
+> 📜 **Historical reference**: Gap analysis snapshot from 2026-03-02. Some items (BF16, sort, scan) have since been completed. See the compatibility ladder for current sequencing.
 
 ## Phase 12: Production Readiness Gaps (Identified 2026-03-02)
 
@@ -1328,6 +1388,8 @@ by the Vulkan Loader — transparent to apps. Not a linkable compute library.
 | 6 | Scan > 1024 multi-pass | Edge cases |
 
 ---
+
+> ⚠️ **Superseded**: Replaced by the Authoritative Compatibility Gates at the top of this document. Kept for reference only.
 
 ## Prod Readiness Checklist (Target: MLX Vulkan MVP)
 

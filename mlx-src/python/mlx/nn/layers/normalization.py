@@ -205,8 +205,13 @@ class GroupNorm(Module):
         x = x.reshape(batch, -1, num_groups, group_size)
         x = x.transpose(0, 2, 1, 3).reshape(batch, num_groups, -1)
 
-        # Normalize
-        x = mx.fast.layer_norm(x, eps=self.eps, weight=None, bias=None)
+        # Normalize explicitly instead of routing through fast.layer_norm.
+        # The Vulkan fast path is currently only trustworthy on contiguous
+        # last-axis layouts, while this PyTorch-compatible grouping introduces
+        # a transpose-backed view before the reduction.
+        mean = mx.mean(x, axis=-1, keepdims=True)
+        var = mx.var(x, axis=-1, keepdims=True)
+        x = (x - mean) * mx.rsqrt(var + self.eps)
 
         x = x.reshape(batch, num_groups, -1, group_size)
         x = x.transpose(0, 2, 1, 3).reshape(batch, *rest, dims)

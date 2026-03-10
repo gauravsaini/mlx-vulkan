@@ -2,11 +2,12 @@
 
 ## UPDATED ON : 2026-03-09
 
-### pivot (2026-03-09) — NVIDIA-first Linux bring-up and Colab bootstrap
+### pivot (2026-03-09) — Linux bring-up tooling and Colab bootstrap
 
-1. **Top milestone switched to NVIDIA** (`PLAN.md`, `TIMELINE.md`):
-   - Replaced the AMD-first bring-up wording in the tracker with a Linux/NVIDIA-first milestone.
-   - NVIDIA is now the primary validation target; AMD is deferred until after the first discrete-GPU Linux bring-up path is proven on NVIDIA.
+1. **Linux bring-up tooling expanded** (`PLAN.md`, `TIMELINE.md`):
+   - Added NVIDIA Colab tooling as the next planned hardware validation target.
+   - AMD remains the first proven vendor; both AMD and NVIDIA will be validated through the same compatibility ladder.
+   - *(Note: earlier wording described this as "NVIDIA-first"; the live program is compatibility-first with AMD already proven.)*
 
 2. **Stage 25 renamed and generalized** (`tests/vulkan/test_stage25_linux_vulkan_bringup.py`, `tests/vulkan/run_all_stages.sh`):
    - Renamed the Stage 25 smoke from the AMD-specific filename to a generic Linux Vulkan bring-up gate.

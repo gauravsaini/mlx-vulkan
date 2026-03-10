@@ -3,6 +3,7 @@
 
 #include "mlx/primitives.h"
 #include "mlx/allocator.h"
+#include "mlx/backend/cpu/threefry.h"
 #include "mlx/backend/common/hadamard.h"
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/gpu/copy.h"
@@ -366,6 +367,14 @@ bool dispatch_unary(
     return false;
   }
 
+  array src = in;
+  // The unary shader reads linearly from buffer[0] and does not encode array
+  // offsets or arbitrary logical strides. Materialize views first so sliced
+  // tensors like split(x, 2)[1] produce correct results on Vulkan.
+  if (src.offset() != 0 || !src.flags().row_contiguous) {
+    src = contiguous_copy_gpu(src, stream);
+  }
+
   out.set_data(allocator::malloc(out.nbytes()));
 
   // Nothing to do for empty arrays
@@ -377,7 +386,7 @@ bool dispatch_unary(
   auto& dev = vulkan::device(stream.device);
   encoder.op_count++;
 
-  VkBuffer in_buf = vulkan::get_buffer(in);
+  VkBuffer in_buf = vulkan::get_buffer(src);
   VkBuffer out_buf = vulkan::get_buffer(out);
 
   VkPipelineLayout layout;
@@ -423,7 +432,7 @@ bool dispatch_unary(
   } pc{
       static_cast<uint32_t>(out.size()),
       op_id,
-      in.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(in.itemsize()),
+      src.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(src.itemsize()),
       static_cast<uint32_t>(out.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -469,7 +478,19 @@ bool dispatch_unary(
     }                                                                        \
   }
 
-UNARY_GPU(Abs, Abs)
+void Abs::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (inputs[0].dtype() != bool_ && issubdtype(inputs[0].dtype(), integer) &&
+      !issubdtype(inputs[0].dtype(), unsignedinteger)) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+  if (!dispatch_unary(
+          inputs[0], out, static_cast<uint32_t>(UnaryOp::Abs), stream())) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+  }
+}
 UNARY_GPU(ArcCos, Arccos)
 UNARY_GPU(ArcCosh, Arccosh)
 UNARY_GPU(ArcSin, Arcsin)
@@ -2935,92 +2956,49 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (out.size() == 0) {
     return;
   }
+  std::vector<uint32_t> host_keys(keys.size());
+  vulkan::copy_to_host(keys, host_keys.data(), keys.nbytes(), stream());
 
-  uint32_t out_per_key = (bytes_per_key + 4 - 1) / 4;
-  uint32_t half_size = out_per_key / 2;
-  uint32_t odd = out_per_key % 2;
+  std::vector<char> host_out(out.nbytes());
+  auto* cptr = host_out.data();
 
-  auto& s = stream();
-  auto& encoder = vulkan::get_command_encoder(s);
-  auto& dev = vulkan::device(s.device);
+  auto copy_remaining = [&](char* base, size_t loc, uint32_t v) {
+    if (4 * loc + 4 <= bytes_per_key) {
+      reinterpret_cast<uint32_t*>(base)[loc] = v;
+    } else {
+      std::copy(
+          reinterpret_cast<char*>(&v),
+          reinterpret_cast<char*>(&v) + bytes_per_key - 4 * loc,
+          base + 4 * loc);
+    }
+  };
 
-  encoder.op_count++;
+  size_t out_skip = (bytes_per_key + 4 - 1) / 4;
+  size_t half_size = out_skip / 2;
+  bool even = out_skip % 2 == 0;
 
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline(
-      "rbits",
-      layout,
-      ds_layout,
-      2,
-      12,
-      vulkan::get_default_specialization_info(dev));
-  if (pipeline == VK_NULL_HANDLE) {
-    vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
+  for (size_t i = 0; i < num_keys; ++i, cptr += bytes_per_key) {
+    auto* ptr = reinterpret_cast<uint32_t*>(cptr);
+    auto key = std::make_pair(host_keys[2 * i], host_keys[2 * i + 1]);
+
+    std::pair<uintptr_t, uintptr_t> count{0, half_size + !even};
+    for (; count.first + 1 < half_size; count.first++, count.second++) {
+      std::tie(ptr[count.first], ptr[count.second]) =
+          random::threefry2x32_hash(key, count);
+    }
+    if (count.first < half_size) {
+      auto rb = random::threefry2x32_hash(key, count);
+      ptr[count.first++] = rb.first;
+      copy_remaining(cptr, count.second, rb.second);
+    }
+    if (!even) {
+      count.second = 0;
+      copy_remaining(
+          cptr, half_size, random::threefry2x32_hash(key, count).first);
+    }
   }
 
-  uint32_t grid_y = half_size + odd;
-  uint32_t grid_x = vulkan::div_ceil(num_keys, 256u);
-  if (grid_y == 0)
-    grid_y = 1; // avoid zero dispatch
-
-  VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
-  VkBuffer keys_buf = vulkan::get_buffer(keys);
-  VkBuffer out_buf = vulkan::get_buffer(out);
-
-  VkDescriptorBufferInfo keys_info{keys_buf, 0, VK_WHOLE_SIZE};
-  VkDescriptorBufferInfo out_info{out_buf, 0, VK_WHOLE_SIZE};
-
-  VkWriteDescriptorSet writes[2]{};
-  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[0].dstSet = ds;
-  writes[0].dstBinding = 0;
-  writes[0].descriptorCount = 1;
-  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  writes[0].pBufferInfo = &keys_info;
-
-  writes[1] = writes[0];
-  writes[1].dstBinding = 1;
-  writes[1].pBufferInfo = &out_info;
-
-  vkUpdateDescriptorSets(dev.vk_device(), 2, writes, 0, nullptr);
-
-  struct PushConst {
-    uint32_t odd;
-    uint32_t bytes_per_key;
-    uint32_t ndim;
-    uint32_t num_keys;
-  } pc{
-      odd,
-      static_cast<uint32_t>(bytes_per_key),
-      static_cast<uint32_t>(keys.ndim()),
-      static_cast<uint32_t>(num_keys)};
-
-  VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(
-      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(
-      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-
-  vkCmdDispatch(cmd, grid_x, grid_y, 1);
-
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      1,
-      &barrier,
-      0,
-      nullptr,
-      0,
-      nullptr);
+  vulkan::copy_from_host(out, host_out.data(), out.nbytes(), stream());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4664,9 +4642,13 @@ void LayerNorm::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   auto& out = outputs[0];
-  const auto& in = inputs[0];
+  array in = inputs[0];
 
   bool use_temp = in.dtype() != float32;
+
+  if (in.offset() != 0 || !in.flags().row_contiguous) {
+    in = contiguous_copy_gpu(in, stream());
+  }
 
   std::optional<array> temp_in;
   std::optional<array> temp_weight;
@@ -4679,15 +4661,23 @@ void LayerNorm::eval_gpu(
     copy_gpu(in, *temp_in, CopyType::General, stream());
 
     if (inputs.size() > 1 && inputs[1].size() > 0) {
-      temp_weight = array(inputs[1].shape(), float32, nullptr, {});
+      array weight = inputs[1];
+      if (weight.offset() != 0 || !weight.flags().row_contiguous) {
+        weight = contiguous_copy_gpu(weight, stream());
+      }
+      temp_weight = array(weight.shape(), float32, nullptr, {});
       temp_weight->set_data(allocator::malloc(temp_weight->nbytes()));
-      copy_gpu(inputs[1], *temp_weight, CopyType::General, stream());
+      copy_gpu(weight, *temp_weight, CopyType::General, stream());
     }
 
     if (inputs.size() > 2 && inputs[2].size() > 0) {
-      temp_bias = array(inputs[2].shape(), float32, nullptr, {});
+      array bias = inputs[2];
+      if (bias.offset() != 0 || !bias.flags().row_contiguous) {
+        bias = contiguous_copy_gpu(bias, stream());
+      }
+      temp_bias = array(bias.shape(), float32, nullptr, {});
       temp_bias->set_data(allocator::malloc(temp_bias->nbytes()));
-      copy_gpu(inputs[2], *temp_bias, CopyType::General, stream());
+      copy_gpu(bias, *temp_bias, CopyType::General, stream());
     }
 
     temp_out = array(out.shape(), float32, nullptr, {});
@@ -5043,9 +5033,10 @@ void Quantize::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   if (!dequantize_) {
-    // Quantize path (float -> packed): eval_cpu handles all 3 outputs.
-    vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, outputs);
+    // Quantize path (float -> packed): materialize the fallback outputs
+    // explicitly so the Vulkan-backed output buffers preserve the logical
+    // shapes/strides chosen by the fallback graph.
+    materialize_fallback_outputs(fallback_(inputs), outputs);
     return;
   }
 

@@ -1771,9 +1771,14 @@ array allclose(
     double atol /* = 1e-8 */,
     bool equal_nan /* = false */,
     StreamOrDevice s /* = {}*/) {
-  auto close = isclose(a, b, rtol, atol, equal_nan, s);
+  auto a_copy = copy(a, s);
+  auto b_copy = copy(b, s);
+  eval(a_copy, b_copy);
+  auto close = isclose(a_copy, b_copy, rtol, atol, equal_nan, s);
   eval(close);
-  return all(close, s);
+  auto close_copy = copy(close, s);
+  eval(close_copy);
+  return all(close_copy, s);
 }
 
 array isclose(
@@ -2570,6 +2575,11 @@ array logsumexp(
 }
 
 array abs(const array& a, StreamOrDevice s /* = {} */) {
+  if (a.dtype() != bool_ && issubdtype(a.dtype(), integer) &&
+      !issubdtype(a.dtype(), unsignedinteger)) {
+    auto neg = subtract(zeros_like(a, s), a, s);
+    return maximum(a, neg, s);
+  }
   auto out =
       array(a.shape(), a.dtype(), std::make_shared<Abs>(to_stream(s)), {a});
   if (a.dtype() == complex64) {
@@ -3621,33 +3631,84 @@ array softmax(
     throw std::invalid_argument(
         "[softmax] Received non-empty axes for array with 0 dimensions.");
   }
-  bool reduce_last_dim =
-      !axes.empty() && (axes.back() == a.ndim() - 1 || axes.back() == -1);
-  if (reduce_last_dim) {
-    // For more than 2 axes check if axes is [0, 1, ..., NDIM - 1] and shape
-    // is [1, 1, ..., N].
-    for (int i = axes.size() - 2; i >= 0; --i) {
-      if ((axes[i] + 1 != axes[i + 1]) || (a.shape(axes[i]) != 1)) {
-        reduce_last_dim = false;
-        break;
+  bool is_complex = issubdtype(a.dtype(), complexfloating);
+  if (!is_complex) {
+    auto target_stream = to_stream(s);
+    if (target_stream.device == Device::cpu) {
+      auto in = a;
+      if (precise) {
+        in = astype(a, float32, s);
+      }
+      auto a_max = stop_gradient(max(in, axes, /*keepdims = */ true, s), s);
+      auto ex = exp(subtract(in, a_max, s), s);
+      return astype(
+          divide(ex, sum(ex, axes, /*keepdims = */ true, s), s), a.dtype(), s);
+    }
+
+    auto [_, sorted_axes, _is_noop] = compute_reduce_shape(axes, a.shape());
+    auto compute_dtype = precise ? float32
+                                 : ((a.dtype() == float16 || a.dtype() == bfloat16)
+                                        ? float32
+                                        : at_least_float(a.dtype()));
+    auto in = (compute_dtype == a.dtype()) ? a : astype(a, compute_dtype, s);
+    bool trailing_block = !sorted_axes.empty();
+    for (int i = static_cast<int>(sorted_axes.size()) - 1; i >= 0; --i) {
+      trailing_block &= (sorted_axes[i] == a.ndim() - static_cast<int>(sorted_axes.size()) + i);
+    }
+    if (compute_dtype != a.dtype() && !trailing_block) {
+      // Match MLX's expected half/bfloat semantics on non-last-axis softmaxes
+      // until the generic Vulkan reduction path is numerically aligned.
+      auto cpu_out = softmax(a, axes, precise, default_stream(Device::cpu));
+      eval(cpu_out);
+      return copy(std::move(cpu_out), s);
+    }
+
+    std::vector<int> perm;
+    perm.reserve(a.ndim());
+    std::vector<bool> is_reduced(a.ndim(), false);
+    for (auto ax : sorted_axes) {
+      is_reduced[ax] = true;
+    }
+    for (int i = 0; i < a.ndim(); ++i) {
+      if (!is_reduced[i]) {
+        perm.push_back(i);
       }
     }
-  }
-  bool is_complex = issubdtype(a.dtype(), complexfloating);
-  if (!is_complex && reduce_last_dim) {
-    auto dtype = at_least_float(a.dtype());
-    return array(
-        a.shape(),
-        dtype,
-        std::make_shared<Softmax>(to_stream(s), precise),
-        {astype(a, dtype, s)});
-  } else {
-    auto in = a;
-    if (precise && !is_complex) {
-      in = astype(a, float32, s);
+    perm.insert(perm.end(), sorted_axes.begin(), sorted_axes.end());
+
+    std::vector<int> inverse_perm(a.ndim());
+    bool perm_identity = true;
+    for (int i = 0; i < a.ndim(); ++i) {
+      inverse_perm[perm[i]] = i;
+      perm_identity &= (perm[i] == i);
     }
-    auto a_max = stop_gradient(max(in, axes, /*keepdims = */ true, s), s);
-    auto ex = exp(subtract(in, a_max, s), s);
+
+    auto transposed = perm_identity ? in : transpose(in, perm, s);
+    auto transposed_shape = transposed.shape();
+
+    int n_rows = 1;
+    int axis_size = 1;
+    for (int i = 0; i < transposed.ndim() - static_cast<int>(sorted_axes.size()); ++i) {
+      n_rows *= transposed_shape[i];
+    }
+    for (int i = transposed.ndim() - static_cast<int>(sorted_axes.size());
+         i < transposed.ndim();
+         ++i) {
+      axis_size *= transposed_shape[i];
+    }
+
+    auto flat = reshape(transposed, {n_rows, axis_size}, s);
+    auto flat_out = array(
+        flat.shape(),
+        compute_dtype,
+        std::make_shared<Softmax>(to_stream(s), precise),
+        {flat});
+    auto reshaped = reshape(flat_out, transposed_shape, s);
+    auto out = perm_identity ? reshaped : transpose(reshaped, inverse_perm, s);
+    return astype(out, a.dtype(), s);
+  } else {
+    auto a_max = stop_gradient(max(a, axes, /*keepdims = */ true, s), s);
+    auto ex = exp(subtract(a, a_max, s), s);
     return astype(
         divide(ex, sum(ex, axes, /*keepdims = */ true, s), s), a.dtype(), s);
   }
