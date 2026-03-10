@@ -665,7 +665,10 @@ class TestFast(mlx_tests.MLXTestCase):
         )(x)
         self.assertTrue(mx.allclose(vmap_out, vmap_fast_out))
 
-    @unittest.skipIf(not mx.is_available(mx.gpu), "No GPU available")
+    @unittest.skipIf(
+        not (mx.metal.is_available() or mx.cuda.is_available()),
+        "Custom kernels require Metal or CUDA",
+    )
     def test_custom_kernel_basic(self):
         if mx.metal.is_available():
             source = """
@@ -698,7 +701,10 @@ class TestFast(mlx_tests.MLXTestCase):
         )
         self.assertTrue(mx.allclose(out[0], a))
 
-    @unittest.skipIf(not mx.is_available(mx.gpu), "No GPU available")
+    @unittest.skipIf(
+        not (mx.metal.is_available() or mx.cuda.is_available()),
+        "Custom kernels require Metal or CUDA",
+    )
     def test_custom_kernel_args(self):
         if mx.metal.is_available():
             source = """
@@ -757,7 +763,10 @@ class TestFast(mlx_tests.MLXTestCase):
         self.assertTrue(mx.allclose(out[0], mx.full((3, 2), 14.0484)))
         self.assertTrue(mx.allclose(out[1], mx.full((3, 2), -2, dtype=mx.int32)))
 
-    @unittest.skipIf(not mx.is_available(mx.gpu), "No GPU available")
+    @unittest.skipIf(
+        not (mx.metal.is_available() or mx.cuda.is_available()),
+        "Custom kernels require Metal or CUDA",
+    )
     def test_custom_kernel_strides(self):
         if mx.metal.is_available():
             source = """
@@ -811,7 +820,10 @@ class TestFast(mlx_tests.MLXTestCase):
             )
             self.assertTrue(mx.allclose(mx.exp(a) * 32, outputs[0]))
 
-    @unittest.skipIf(not mx.is_available(mx.gpu), "No GPU available")
+    @unittest.skipIf(
+        not (mx.metal.is_available() or mx.cuda.is_available()),
+        "Custom kernels require Metal or CUDA",
+    )
     def test_custom_kernel_helper(self):
         if mx.metal.is_available():
             header = """
@@ -857,7 +869,10 @@ class TestFast(mlx_tests.MLXTestCase):
         )
         self.assertTrue(mx.allclose(out[0], mx.exp(a)))
 
-    @unittest.skipIf(not mx.is_available(mx.gpu), "No GPU available")
+    @unittest.skipIf(
+        not (mx.metal.is_available() or mx.cuda.is_available()),
+        "Custom kernels require Metal or CUDA",
+    )
     def test_custom_kernel_attributes(self):
         if mx.metal.is_available():
             source = "out[0] = threads_per_threadgroup.x;"

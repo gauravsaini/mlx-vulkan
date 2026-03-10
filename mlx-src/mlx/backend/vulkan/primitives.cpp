@@ -4643,11 +4643,23 @@ void LayerNorm::eval_gpu(
     std::vector<array>& outputs) {
   auto& out = outputs[0];
   array in = inputs[0];
+  bool has_weight = inputs.size() > 1 && inputs[1].ndim() > 0 &&
+      inputs[1].size() > 0;
+  bool has_bias = inputs.size() > 2 && inputs[2].ndim() > 0 &&
+      inputs[2].size() > 0;
+  array weight = has_weight ? inputs[1] : in;
+  array bias = has_bias ? inputs[2] : in;
 
   bool use_temp = in.dtype() != float32;
 
   if (in.offset() != 0 || !in.flags().row_contiguous) {
     in = contiguous_copy_gpu(in, stream());
+  }
+  if (has_weight && (weight.offset() != 0 || !weight.flags().row_contiguous)) {
+    weight = contiguous_copy_gpu(weight, stream());
+  }
+  if (has_bias && (bias.offset() != 0 || !bias.flags().row_contiguous)) {
+    bias = contiguous_copy_gpu(bias, stream());
   }
 
   std::optional<array> temp_in;
@@ -4660,21 +4672,13 @@ void LayerNorm::eval_gpu(
     temp_in->set_data(allocator::malloc(temp_in->nbytes()));
     copy_gpu(in, *temp_in, CopyType::General, stream());
 
-    if (inputs.size() > 1 && inputs[1].size() > 0) {
-      array weight = inputs[1];
-      if (weight.offset() != 0 || !weight.flags().row_contiguous) {
-        weight = contiguous_copy_gpu(weight, stream());
-      }
+    if (has_weight) {
       temp_weight = array(weight.shape(), float32, nullptr, {});
       temp_weight->set_data(allocator::malloc(temp_weight->nbytes()));
       copy_gpu(weight, *temp_weight, CopyType::General, stream());
     }
 
-    if (inputs.size() > 2 && inputs[2].size() > 0) {
-      array bias = inputs[2];
-      if (bias.offset() != 0 || !bias.flags().row_contiguous) {
-        bias = contiguous_copy_gpu(bias, stream());
-      }
+    if (has_bias) {
       temp_bias = array(bias.shape(), float32, nullptr, {});
       temp_bias->set_data(allocator::malloc(temp_bias->nbytes()));
       copy_gpu(bias, *temp_bias, CopyType::General, stream());
@@ -4695,15 +4699,12 @@ void LayerNorm::eval_gpu(
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  bool has_weight = inputs.size() > 1 && inputs[1].size() > 0;
-  bool has_bias = inputs.size() > 2 && inputs[2].size() > 0;
-
   VkBuffer in_buf = vulkan::get_buffer(use_temp ? *temp_in : in);
   VkBuffer weight_buf = has_weight
-      ? vulkan::get_buffer(use_temp ? *temp_weight : inputs[1])
+      ? vulkan::get_buffer(use_temp ? *temp_weight : weight)
       : in_buf;
   VkBuffer bias_buf =
-      has_bias ? vulkan::get_buffer(use_temp ? *temp_bias : inputs[2]) : in_buf;
+      has_bias ? vulkan::get_buffer(use_temp ? *temp_bias : bias) : in_buf;
   VkBuffer out_buf = vulkan::get_buffer(use_temp ? *temp_out : out);
 
   VkPipelineLayout layout;
@@ -4777,7 +4778,27 @@ void LayerNorm::eval_gpu(
 void LayerNormVJP::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  materialize_fallback_outputs(fallback_(inputs), outputs);
+  auto fallback_outputs = fallback_(inputs);
+  if (outputs.size() == fallback_outputs.size()) {
+    for (size_t i = 0; i < outputs.size(); ++i) {
+      fallback_outputs[i].eval();
+      outputs[i].copy_shared_buffer(fallback_outputs[i]);
+    }
+    return;
+  }
+  if (argnums_.size() != outputs.size()) {
+    throw std::runtime_error(
+        "LayerNormVJP fallback output arity mismatch during materialization.");
+  }
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    auto idx = static_cast<size_t>(argnums_[i]);
+    if (idx >= fallback_outputs.size()) {
+      throw std::runtime_error(
+          "LayerNormVJP fallback output index out of range.");
+    }
+    fallback_outputs[idx].eval();
+    outputs[i].copy_shared_buffer(fallback_outputs[idx]);
+  }
 }
 
 // ─── RMSNorm GPU dispatch ───────────────────────────────────────────────────
@@ -4790,9 +4811,18 @@ void RMSNorm::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   auto& out = outputs[0];
-  const auto& in = inputs[0];
+  array in = inputs[0];
+  bool has_weight = inputs.size() > 1 && inputs[1].ndim() > 0 &&
+      inputs[1].size() > 0;
+  array weight = has_weight ? inputs[1] : in;
 
   bool use_temp = in.dtype() != float32;
+  if (in.offset() != 0 || !in.flags().row_contiguous) {
+    in = contiguous_copy_gpu(in, stream());
+  }
+  if (has_weight && (weight.offset() != 0 || !weight.flags().row_contiguous)) {
+    weight = contiguous_copy_gpu(weight, stream());
+  }
 
   std::optional<array> temp_in;
   std::optional<array> temp_weight;
@@ -4803,10 +4833,10 @@ void RMSNorm::eval_gpu(
     temp_in->set_data(allocator::malloc(temp_in->nbytes()));
     copy_gpu(in, *temp_in, CopyType::General, stream());
 
-    if (inputs.size() > 1 && inputs[1].size() > 0) {
-      temp_weight = array(inputs[1].shape(), float32, nullptr, {});
+    if (has_weight) {
+      temp_weight = array(weight.shape(), float32, nullptr, {});
       temp_weight->set_data(allocator::malloc(temp_weight->nbytes()));
-      copy_gpu(inputs[1], *temp_weight, CopyType::General, stream());
+      copy_gpu(weight, *temp_weight, CopyType::General, stream());
     }
 
     temp_out = array(out.shape(), float32, nullptr, {});
@@ -4824,11 +4854,9 @@ void RMSNorm::eval_gpu(
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  bool has_weight = inputs.size() > 1 && inputs[1].size() > 0;
-
   VkBuffer in_buf = vulkan::get_buffer(use_temp ? *temp_in : in);
   VkBuffer weight_buf = has_weight
-      ? vulkan::get_buffer(use_temp ? *temp_weight : inputs[1])
+      ? vulkan::get_buffer(use_temp ? *temp_weight : weight)
       : in_buf;
   VkBuffer out_buf = vulkan::get_buffer(use_temp ? *temp_out : out);
 
@@ -4903,7 +4931,27 @@ void RMSNorm::eval_gpu(
 void RMSNormVJP::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  materialize_fallback_outputs(fallback_(inputs), outputs);
+  auto fallback_outputs = fallback_(inputs);
+  if (outputs.size() == fallback_outputs.size()) {
+    for (size_t i = 0; i < outputs.size(); ++i) {
+      fallback_outputs[i].eval();
+      outputs[i].copy_shared_buffer(fallback_outputs[i]);
+    }
+    return;
+  }
+  if (argnums_.size() != outputs.size()) {
+    throw std::runtime_error(
+        "RMSNormVJP fallback output arity mismatch during materialization.");
+  }
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    auto idx = static_cast<size_t>(argnums_[i]);
+    if (idx >= fallback_outputs.size()) {
+      throw std::runtime_error(
+          "RMSNormVJP fallback output index out of range.");
+    }
+    fallback_outputs[idx].eval();
+    outputs[i].copy_shared_buffer(fallback_outputs[idx]);
+  }
 }
 
 // ─── RoPE GPU dispatch ──────────────────────────────────────────────────────
@@ -4915,91 +4963,9 @@ bool RoPE::use_fallback(Stream s) {
 void RoPE::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  auto& out = outputs[0];
-  const auto& in = inputs[0];
-
-  // inputs: [x, cos_freqs, sin_freqs]
-  if (inputs.size() < 3) {
-    materialize_fallback_outputs(fallback_(inputs), outputs);
-    return;
-  }
-
-  out.set_data(allocator::malloc(out.nbytes()));
-  if (out.size() == 0)
-    return;
-
-  auto& encoder = vulkan::get_command_encoder(stream());
-  auto& dev = vulkan::device(stream().device);
-  encoder.op_count++;
-
-  VkBuffer in_buf = vulkan::get_buffer(in);
-  VkBuffer cos_buf = vulkan::get_buffer(inputs[1]);
-  VkBuffer sin_buf = vulkan::get_buffer(inputs[2]);
-  VkBuffer out_buf = vulkan::get_buffer(out);
-
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  VkPipeline pipeline = dev.get_pipeline(
-      "rope",
-      layout,
-      ds_layout,
-      4,
-      12,
-      vulkan::get_default_specialization_info(dev));
-  if (pipeline == VK_NULL_HANDLE) {
-    materialize_fallback_outputs(fallback_(inputs), outputs);
-    return;
-  }
-
-  VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
-  VkDescriptorBufferInfo infos[4]{
-      {in_buf, 0, VK_WHOLE_SIZE},
-      {cos_buf, 0, VK_WHOLE_SIZE},
-      {sin_buf, 0, VK_WHOLE_SIZE},
-      {out_buf, 0, VK_WHOLE_SIZE}};
-  VkWriteDescriptorSet writes[4]{};
-  for (int i = 0; i < 4; i++) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = ds;
-    writes[i].dstBinding = i;
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
-
-  uint32_t D = static_cast<uint32_t>(dims_);
-  uint32_t n_heads = static_cast<uint32_t>(in.size() / D);
-
-  struct PushConst {
-    uint32_t n;
-    uint32_t D;
-    uint32_t n_heads;
-  } pc{static_cast<uint32_t>(in.size()), D, n_heads};
-
-  VkCommandBuffer cmd = encoder.cmd;
-  vkCmdPushConstants(
-      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(
-      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  vkCmdDispatch(
-      cmd, vulkan::div_ceil(in.size() / 2, vulkan::WORKGROUP_SIZE), 1, 1);
-
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      1,
-      &barrier,
-      0,
-      nullptr,
-      0,
-      nullptr);
+  // The fast primitive carries [x, offset, optional freqs]; reuse the
+  // fallback graph until a Vulkan-specialized path is added for those inputs.
+  materialize_fallback_outputs(fallback_(inputs), outputs);
 }
 NO_GPU_MULTI(ScaledDotProductAttention)
 NO_GPU_MULTI(ScaledDotProductAttentionVJP)

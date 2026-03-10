@@ -76,8 +76,11 @@ class RMSNormVJP : public Custom {
   RMSNormVJP(
       Stream stream,
       std::function<std::vector<array>(std::vector<array>)> fallback,
-      float eps)
-      : Custom(stream, std::move(fallback)), eps_(eps) {}
+      float eps,
+      std::vector<int> argnums)
+      : Custom(stream, std::move(fallback)),
+        eps_(eps),
+        argnums_(std::move(argnums)) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override {
@@ -89,11 +92,12 @@ class RMSNormVJP : public Custom {
   DEFINE_NAME(RMSNormVJP)
   bool is_equivalent(const Primitive& other) const override;
   auto state() const {
-    return std::make_pair(nullptr, eps_);
+    return std::make_tuple(nullptr, eps_, argnums_);
   }
 
  private:
   float eps_;
+  std::vector<int> argnums_;
 };
 
 class LayerNorm : public Custom {
@@ -135,8 +139,11 @@ class LayerNormVJP : public Custom {
   LayerNormVJP(
       Stream stream,
       std::function<std::vector<array>(std::vector<array>)> fallback,
-      float eps)
-      : Custom(stream, std::move(fallback)), eps_(eps) {}
+      float eps,
+      std::vector<int> argnums)
+      : Custom(stream, std::move(fallback)),
+        eps_(eps),
+        argnums_(std::move(argnums)) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override {
@@ -148,11 +155,12 @@ class LayerNormVJP : public Custom {
   DEFINE_NAME(LayerNormVJP)
   bool is_equivalent(const Primitive& other) const override;
   auto state() const {
-    return std::make_pair(nullptr, eps_);
+    return std::make_tuple(nullptr, eps_, argnums_);
   }
 
  private:
   float eps_;
+  std::vector<int> argnums_;
 };
 
 class RoPE : public Custom {

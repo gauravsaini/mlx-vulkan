@@ -166,7 +166,7 @@ std::vector<array> RMSNorm::vjp(
   auto vjps = array::make_arrays(
       {primals[0].shape(), primals[1].shape()},
       {primals[0].dtype(), primals[1].dtype()},
-      std::make_shared<RMSNormVJP>(s, fallback, eps_),
+      std::make_shared<RMSNormVJP>(s, fallback, eps_, argnums),
       {primals[0], primals[1], cotangents[0]});
 
   std::vector<array> returned_vjps;
@@ -184,7 +184,7 @@ bool RMSNorm::is_equivalent(const Primitive& other) const {
 
 bool RMSNormVJP::is_equivalent(const Primitive& other) const {
   const RMSNormVJP& a_other = static_cast<const RMSNormVJP&>(other);
-  return eps_ == a_other.eps_;
+  return eps_ == a_other.eps_ && argnums_ == a_other.argnums_;
 }
 
 array layer_norm(
@@ -343,7 +343,7 @@ std::vector<array> LayerNorm::vjp(
   auto vjps = array::make_arrays(
       {primals[0].shape(), primals[1].shape(), primals[2].shape()},
       {primals[0].dtype(), primals[1].dtype(), primals[2].dtype()},
-      std::make_shared<LayerNormVJP>(s, fallback, eps_),
+      std::make_shared<LayerNormVJP>(s, fallback, eps_, argnums),
       {primals[0], primals[1], primals[2], cotangents[0]});
 
   std::vector<array> returned_vjps;
@@ -361,7 +361,7 @@ bool LayerNorm::is_equivalent(const Primitive& other) const {
 
 bool LayerNormVJP::is_equivalent(const Primitive& other) const {
   const LayerNormVJP& a_other = static_cast<const LayerNormVJP&>(other);
-  return eps_ == a_other.eps_;
+  return eps_ == a_other.eps_ && argnums_ == a_other.argnums_;
 }
 
 array rope(
