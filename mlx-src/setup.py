@@ -5,6 +5,8 @@ import os
 import platform
 import re
 import subprocess
+import sys
+import shutil
 from functools import partial
 from pathlib import Path
 
@@ -76,6 +78,11 @@ class CMakeBuild(build_ext):
         cfg = "Debug" if debug else "Release"
 
         build_temp = Path(self.build_temp) / ext.name
+        cache_file = build_temp / "CMakeCache.txt"
+        if cache_file.exists():
+            cache_text = cache_file.read_text()
+            if sys.executable not in cache_text:
+                shutil.rmtree(build_temp)
         if not build_temp.exists():
             build_temp.mkdir(parents=True)
 
@@ -91,6 +98,7 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
             f"-DMLX_PYTHON_BINDINGS_OUTPUT_DIRECTORY={pybind_out_dir}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
+            f"-DPython_EXECUTABLE={sys.executable}",
             "-DMLX_BUILD_PYTHON_BINDINGS=ON",
             "-DMLX_BUILD_TESTS=OFF",
             "-DMLX_BUILD_BENCHMARKS=OFF",

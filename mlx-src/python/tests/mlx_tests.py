@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 import os
+import sys
+import importlib.util
 
 # Use regular fp32 precision for tests
 os.environ["MLX_ENABLE_TF32"] = "0"
@@ -12,8 +14,30 @@ import platform
 import unittest
 from typing import Any, Callable, List, Tuple, Union
 
-import mlx.core as mx
+import mlx
 import numpy as np
+
+
+def _load_core_override():
+    core_so = os.getenv("MLX_CORE_SO")
+    if not core_so:
+        import mlx.core as mx
+
+        return mx
+    if "mlx.core" in sys.modules:
+        return sys.modules["mlx.core"]
+
+    spec = importlib.util.spec_from_file_location("mlx.core", core_so)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load mlx.core override from {core_so}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sys.modules["mlx.core"] = module
+    mlx.core = module
+    return module
+
+
+mx = _load_core_override()
 
 
 class MLXTestRunner(unittest.TestProgram):

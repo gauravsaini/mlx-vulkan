@@ -187,7 +187,8 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
   // Prefer device-local allocations and rely on explicit staging when direct
   // host access is unavailable. Integrated GPUs may still choose host-visible
   // memory, but discrete bring-up must not depend on it.
-  alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
+  alloc_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
 
   VkBuffer vk_buffer;
   VmaAllocation allocation;
@@ -694,10 +695,8 @@ CommonAllocator& common_allocator() {
   return *allocator_;
 }
 
-thread_local int cpu_allocator_override_depth = 0;
-
 bool use_cpu_allocator() {
-  return cpu_allocator_override_depth > 0 || !gpu::is_available();
+  return allocator::cpu_allocator_override_enabled() || !gpu::is_available();
 }
 
 enum class BufferBackend {
@@ -825,20 +824,6 @@ class BridgeAllocator : public Allocator {
 Allocator& allocator() {
   static auto* allocator_ = new BridgeAllocator();
   return *allocator_;
-}
-
-void push_cpu_allocator_override() {
-  cpu_allocator_override_depth++;
-}
-
-void pop_cpu_allocator_override() {
-  if (cpu_allocator_override_depth > 0) {
-    cpu_allocator_override_depth--;
-  }
-}
-
-bool cpu_allocator_override_enabled() {
-  return cpu_allocator_override_depth > 0;
 }
 
 void* Buffer::raw_ptr() {
