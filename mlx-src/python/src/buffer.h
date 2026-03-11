@@ -88,6 +88,10 @@ struct buffer_owner {
 
 extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   std::memset(view, 0, sizeof(Py_buffer));
+  if ((flags & PyBUF_WRITABLE) == PyBUF_WRITABLE) {
+    PyErr_SetString(PyExc_BufferError, "mlx arrays expose a read-only buffer");
+    return -1;
+  }
   auto a = nb::cast<mx::array>(nb::handle(obj));
   auto value = a;
 
@@ -130,7 +134,7 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   view->buf = info->data;
   view->itemsize = value.itemsize();
   view->len = value.nbytes();
-  view->readonly = false;
+  view->readonly = true;
   if ((flags & PyBUF_FORMAT) == PyBUF_FORMAT) {
     view->format = const_cast<char*>(info->format.c_str());
   }
