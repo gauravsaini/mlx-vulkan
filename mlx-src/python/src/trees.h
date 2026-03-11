@@ -44,6 +44,8 @@ void tree_replace(
  */
 std::vector<mx::array> tree_flatten(nb::handle tree, bool strict = true);
 
+int tree_count_arrays(nb::handle tree);
+
 /**
  * Unflatten a tree from a vector of arrays.
  */

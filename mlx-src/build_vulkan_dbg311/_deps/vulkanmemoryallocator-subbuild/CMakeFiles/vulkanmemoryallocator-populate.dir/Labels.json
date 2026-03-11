@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate-complete.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-build.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-configure.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-download.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-install.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-mkdir.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-patch.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-test.rule"
+		},
+		{
+			"file" : "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"vulkanmemoryallocator-populate"
+		],
+		"name" : "vulkanmemoryallocator-populate"
+	}
+}

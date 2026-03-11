@@ -8,6 +8,44 @@
 
 #include "mlx/ops.h"
 
+namespace {
+mx::array materialize_array_update(const mx::array& value) {
+  mx::array staged = value;
+  staged.eval();
+  mx::allocator::ScopedCpuAllocatorOverride cpu_allocator;
+  mx::array out(staged.shape(), staged.dtype(), nullptr, {});
+  out.set_data(mx::allocator::malloc(staged.nbytes()));
+  if (staged.nbytes() > 0) {
+    std::vector<char> host(staged.nbytes());
+    mx::allocator::copy_to_host(
+        staged.buffer(), host.data(), host.size(), staged.offset());
+    mx::allocator::copy_from_host(out.buffer(), host.data(), host.size());
+  }
+  return out;
+}
+
+mx::array materialize_array_read(const mx::array& value) {
+  if (
+      !value.has_primitive() &&
+      value.status() == mx::array::Status::unscheduled &&
+      value.data_shared_ptr() != nullptr) {
+    const_cast<mx::array&>(value).wait();
+  }
+  if (!value.has_primitive()) {
+    auto cpu_stream = mx::default_stream(mx::Device::cpu);
+    mx::array staged = mx::copy(value, cpu_stream);
+    staged = mx::contiguous(staged, false, cpu_stream);
+    staged.eval();
+    staged.detach();
+    return staged;
+  }
+  mx::array staged = mx::contiguous(value);
+  staged.eval();
+  staged.detach();
+  return staged;
+}
+} // namespace
+
 bool is_none_slice(const nb::slice& in_slice) {
   return (
       nb::getattr(in_slice, "start").is_none() &&
@@ -87,19 +125,30 @@ mx::array mlx_get_item_slice(const mx::array& src, const nb::slice& in_slice) {
 }
 
 mx::array mlx_get_item_array(const mx::array& src, const mx::array& indices) {
+  auto materialized_indices =
+      indices.is_tracer() ? indices : materialize_array_read(indices);
   // Check input and raise error if 0 dim for parity with np
   if (src.ndim() == 0) {
     throw std::invalid_argument(
         "too many indices for array: array is 0-dimensional");
   }
 
-  if (indices.dtype() == mx::bool_) {
+  if (materialized_indices.dtype() == mx::bool_) {
     throw std::invalid_argument("boolean indices are not yet supported");
   }
 
-  // If only one input array is mentioned, we set axis=0 in take
-  // for parity with np
-  return take(src, indices, 0);
+  // Advanced indexing through Python should operate on a concrete source
+  // array for ordinary eager values. This avoids re-entering fragile lazy graph
+  // paths for already-computable intermediates like sorted gather outputs.
+  if (!src.is_tracer()) {
+    auto staged_src = materialize_array_read(src);
+    return take(
+        staged_src,
+        materialized_indices,
+        0,
+        mx::default_stream(mx::Device::cpu));
+  }
+  return take(src, materialized_indices, 0);
 }
 
 mx::array mlx_get_item_int(const mx::array& src, const nb::int_& idx) {
@@ -143,6 +192,9 @@ mx::array mlx_gather_nd(
       gather_indices.push_back(get_int_index(idx, src.shape(i)));
     } else if (nb::isinstance<mx::array>(idx)) {
       auto arr = nb::cast<mx::array>(idx);
+      if (!arr.is_tracer()) {
+        arr = materialize_array_read(arr);
+      }
       max_dims = std::max(static_cast<int>(arr.ndim()), max_dims);
       gather_indices.push_back(arr);
     }
@@ -435,21 +487,22 @@ mx::array mlx_get_item_nd(mx::array src, const nb::tuple& entries) {
 }
 
 mx::array mlx_get_item(const mx::array& src, const nb::object& obj) {
+  auto materialized_src = src.is_tracer() ? src : materialize_array_read(src);
   if (nb::isinstance<nb::slice>(obj)) {
-    return mlx_get_item_slice(src, nb::cast<nb::slice>(obj));
+    return mlx_get_item_slice(materialized_src, nb::cast<nb::slice>(obj));
   } else if (nb::isinstance<mx::array>(obj)) {
-    return mlx_get_item_array(src, nb::cast<mx::array>(obj));
+    return mlx_get_item_array(materialized_src, nb::cast<mx::array>(obj));
   } else if (nb::isinstance<nb::int_>(obj)) {
-    return mlx_get_item_int(src, nb::cast<nb::int_>(obj));
+    return mlx_get_item_int(materialized_src, nb::cast<nb::int_>(obj));
   } else if (nb::isinstance<nb::tuple>(obj)) {
-    return mlx_get_item_nd(src, nb::cast<nb::tuple>(obj));
+    return mlx_get_item_nd(materialized_src, nb::cast<nb::tuple>(obj));
   } else if (nb::isinstance<nb::ellipsis>(obj)) {
-    return src;
+    return materialized_src;
   } else if (obj.is_none()) {
-    return expand_dims(src, 0);
+    return expand_dims(materialized_src, 0);
   } else if (nb::isinstance<nb::list>(obj)) {
     return mlx_get_item_array(
-        src, array_from_list(nb::cast<nb::list>(obj), {}));
+        materialized_src, array_from_list(nb::cast<nb::list>(obj), {}));
   }
   throw std::invalid_argument("Cannot index mlx array using the given type.");
 }
@@ -921,25 +974,38 @@ void mlx_set_item(
     mx::array& src,
     const nb::object& obj,
     const ScalarOrArray& v) {
-  auto [success, out] = mlx_slice_update(src, obj, v);
+  auto commit_result = [&src](mx::array result) {
+    if (!src.is_tracer()) {
+      result.eval();
+      result.detach();
+    }
+    src.overwrite_descriptor(result);
+  };
+
+  ScalarOrArray staged_value = v;
+  if (auto arr = std::get_if<mx::array>(&staged_value); arr != nullptr) {
+    staged_value = materialize_array_update(*arr);
+  }
+
+  auto [success, out] = mlx_slice_update(src, obj, staged_value);
   if (success) {
-    src.overwrite_descriptor(out);
+    commit_result(std::move(out));
     return;
   }
 
   if (auto mask = extract_boolean_mask(obj)) {
-    auto updates = to_array(v, src.dtype());
+    auto updates = to_array(staged_value, src.dtype());
     auto result = masked_scatter(src, *mask, updates);
-    src.overwrite_descriptor(result);
+    commit_result(std::move(result));
     return;
   }
 
-  auto [indices, updates, axes] = mlx_compute_scatter_args(src, obj, v);
+  auto [indices, updates, axes] = mlx_compute_scatter_args(src, obj, staged_value);
   if (indices.size() > 0) {
     auto out = scatter(src, indices, updates, axes);
-    src.overwrite_descriptor(out);
+    commit_result(std::move(out));
   } else {
-    src.overwrite_descriptor(updates);
+    commit_result(std::move(updates));
   }
 }
 

@@ -295,6 +295,11 @@ void Compiled::eval_cpu(
   auto [contiguous, shape, strides] =
       compiled_collapse_contiguous_dims(inputs, outputs[0], is_constant_);
 
+  // Allocate outputs before the encoder retains input data references.
+  // Otherwise those extra shared_ptr references make otherwise eligible inputs
+  // appear non-donatable.
+  compiled_allocate_outputs(inputs, outputs, is_constant_, contiguous);
+
   // Collect function input arguments.
   std::vector<void*> args;
   for (size_t i = 0; i < inputs.size(); ++i) {
@@ -331,8 +336,6 @@ void Compiled::eval_cpu(
     kernel << "}" << std::endl;
     return kernel.str();
   });
-
-  compiled_allocate_outputs(inputs, outputs, is_constant_, contiguous);
 
   for (auto& x : outputs) {
     args.push_back(x.data<void>());

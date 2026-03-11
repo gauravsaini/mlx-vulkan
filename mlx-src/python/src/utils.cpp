@@ -37,7 +37,14 @@ mx::array to_array(
   } else if (auto pv = std::get_if<std::complex<float>>(&v); pv) {
     return mx::array(static_cast<mx::complex64_t>(*pv), mx::complex64);
   } else if (auto pv = std::get_if<mx::array>(&v); pv) {
-    return *pv;
+    auto out = *pv;
+    if (
+        !out.has_primitive() &&
+        out.status() == mx::array::Status::unscheduled &&
+        out.data_shared_ptr() != nullptr) {
+      out.wait();
+    }
+    return out;
   } else if (auto pv = std::get_if<
                  nb::ndarray<nb::ro, nb::c_contig, nb::device::cpu>>(&v);
              pv) {

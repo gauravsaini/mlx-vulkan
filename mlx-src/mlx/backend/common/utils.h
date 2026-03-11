@@ -189,7 +189,20 @@ inline bool is_donatable(const array& in, const array& out) {
     return false;
   }
 
-  return in.is_donatable() && in.itemsize() == out.itemsize() &&
+  bool can_donate = in.is_donatable();
+  if (!can_donate && in.flags().row_contiguous && in.desc_use_count() == 1 &&
+      in.data_use_count() == 2) {
+    can_donate = true;
+  }
+  if (!can_donate && in.flags().row_contiguous && in.has_primitive() &&
+      in.inputs().size() == 1 && in.desc_use_count() <= 2 &&
+      in.data_use_count() == 2) {
+    auto& parent = in.inputs()[0];
+    can_donate = parent.data_shared_ptr() == in.data_shared_ptr() &&
+        parent.desc_use_count() == 1;
+  }
+
+  return can_donate && in.itemsize() == out.itemsize() &&
       in.buffer_size() <= out.nbytes() + donation_extra;
 }
 

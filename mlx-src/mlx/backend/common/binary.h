@@ -40,14 +40,15 @@ inline void set_binary_op_output_data(
     array& out,
     BinaryOpType bopt,
     std::function<allocator::Buffer(size_t)> mallocfn = allocator::malloc) {
-  bool allow_donation = out.dtype() != bool_;
-  bool b_donatable = allow_donation && is_donatable(b, out);
-  bool a_donatable = allow_donation && is_donatable(a, out);
+  if (bopt == BinaryOpType::ScalarScalar) {
+    out.set_data(mallocfn(out.itemsize()), 1, a.strides(), a.flags());
+    return;
+  }
   switch (bopt) {
-    case BinaryOpType::ScalarScalar:
-      out.set_data(mallocfn(out.itemsize()), 1, a.strides(), a.flags());
-      break;
     case BinaryOpType::ScalarVector:
+      {
+      bool allow_donation = out.dtype() != bool_;
+      bool b_donatable = allow_donation && is_donatable(b, out);
       if (b_donatable) {
         out.copy_shared_buffer(b);
       } else {
@@ -58,7 +59,11 @@ inline void set_binary_op_output_data(
             b.flags());
       }
       break;
+      }
     case BinaryOpType::VectorScalar:
+      {
+      bool allow_donation = out.dtype() != bool_;
+      bool a_donatable = allow_donation && is_donatable(a, out);
       if (a_donatable) {
         out.copy_shared_buffer(a);
       } else {
@@ -69,7 +74,12 @@ inline void set_binary_op_output_data(
             a.flags());
       }
       break;
+      }
     case BinaryOpType::VectorVector:
+      {
+      bool allow_donation = out.dtype() != bool_;
+      bool a_donatable = allow_donation && is_donatable(a, out);
+      bool b_donatable = allow_donation && is_donatable(b, out);
       if (a_donatable) {
         out.copy_shared_buffer(a);
       } else if (b_donatable) {
@@ -82,7 +92,12 @@ inline void set_binary_op_output_data(
             a.flags());
       }
       break;
+      }
     case BinaryOpType::General:
+      {
+      bool allow_donation = out.dtype() != bool_;
+      bool a_donatable = allow_donation && is_donatable(a, out);
+      bool b_donatable = allow_donation && is_donatable(b, out);
       if (a_donatable && a.flags().row_contiguous && a.size() == out.size()) {
         out.copy_shared_buffer(a);
       } else if (
@@ -91,6 +106,9 @@ inline void set_binary_op_output_data(
       } else {
         out.set_data(mallocfn(out.nbytes()));
       }
+      break;
+      }
+    case BinaryOpType::ScalarScalar:
       break;
   }
 }

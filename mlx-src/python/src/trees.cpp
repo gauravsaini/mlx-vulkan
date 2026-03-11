@@ -2,6 +2,8 @@
 
 #include "python/src/trees.h"
 
+#include <unordered_set>
+
 template <typename T, typename U, typename V>
 void validate_subtrees(const std::vector<nb::object>& subtrees) {
   int len = nb::cast<T>(subtrees[0]).size();
@@ -235,17 +237,41 @@ void tree_replace(
 
 std::vector<mx::array> tree_flatten(nb::handle tree, bool strict /* = true */) {
   std::vector<mx::array> flat_tree;
+  std::vector<mx::array> hidden_siblings;
+  std::unordered_set<std::uintptr_t> explicit_ids;
+  std::unordered_set<std::uintptr_t> hidden_ids;
 
   tree_visit(tree, [&](nb::handle obj) {
     if (nb::isinstance<mx::array>(obj)) {
-      flat_tree.push_back(nb::cast<mx::array>(obj));
+      auto arr = *nb::cast<mx::array*>(obj);
+      flat_tree.push_back(arr);
+      explicit_ids.insert(arr.id());
+      for (auto& s : arr.siblings()) {
+        if (!explicit_ids.contains(s.id()) && hidden_ids.insert(s.id()).second) {
+          hidden_siblings.push_back(s);
+        }
+      }
     } else if (strict) {
       throw std::invalid_argument(
           "[tree_flatten] The argument should contain only arrays");
     }
   });
 
+  flat_tree.insert(
+      flat_tree.end(),
+      std::make_move_iterator(hidden_siblings.begin()),
+      std::make_move_iterator(hidden_siblings.end()));
   return flat_tree;
+}
+
+int tree_count_arrays(nb::handle tree) {
+  int count = 0;
+  tree_visit(tree, [&](nb::handle obj) {
+    if (nb::isinstance<mx::array>(obj)) {
+      count++;
+    }
+  });
+  return count;
 }
 
 nb::object tree_unflatten(
@@ -279,11 +305,27 @@ std::pair<std::vector<mx::array>, nb::object> tree_flatten_with_structure(
     bool strict /* = true */) {
   auto sentinel = structure_sentinel();
   std::vector<mx::array> flat_tree;
+  std::vector<mx::array> hidden_siblings;
+  std::unordered_set<std::uintptr_t> explicit_ids;
+  std::unordered_set<std::uintptr_t> hidden_ids;
   auto structure = tree_map(
       tree,
-      [&flat_tree, sentinel = std::move(sentinel), strict](nb::handle obj) {
+      [&flat_tree,
+       &hidden_siblings,
+       &explicit_ids,
+       &hidden_ids,
+       sentinel = std::move(sentinel),
+       strict](nb::handle obj) {
         if (nb::isinstance<mx::array>(obj)) {
-          flat_tree.push_back(nb::cast<mx::array>(obj));
+          auto arr = *nb::cast<mx::array*>(obj);
+          flat_tree.push_back(arr);
+          explicit_ids.insert(arr.id());
+          for (auto& s : arr.siblings()) {
+            if (!explicit_ids.contains(s.id()) &&
+                hidden_ids.insert(s.id()).second) {
+              hidden_siblings.push_back(s);
+            }
+          }
           return sentinel;
         } else if (!strict) {
           return nb::cast<nb::object>(obj);
@@ -293,6 +335,10 @@ std::pair<std::vector<mx::array>, nb::object> tree_flatten_with_structure(
         }
       });
 
+  flat_tree.insert(
+      flat_tree.end(),
+      std::make_move_iterator(hidden_siblings.begin()),
+      std::make_move_iterator(hidden_siblings.end()));
   return {flat_tree, structure};
 }
 

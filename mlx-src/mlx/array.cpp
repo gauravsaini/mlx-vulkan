@@ -114,8 +114,10 @@ array::array(allocator::Buffer data, Shape shape, Dtype dtype, Deleter deleter)
 
 void array::detach() {
   array_desc_->primitive = nullptr;
+  array_desc_->status = Status::available;
   for (auto& s : array_desc_->siblings) {
     s.array_desc_->primitive = nullptr;
+    s.array_desc_->status = Status::available;
   }
   for (auto& s : array_desc_->siblings) {
     s.array_desc_->inputs.clear();

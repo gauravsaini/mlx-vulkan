@@ -1,6 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <algorithm>
+#include <atomic>
 #include <numeric>
 #include <sstream>
 #include <unordered_set>
@@ -35,6 +36,11 @@ using StrOrSet = std::variant<std::string, std::unordered_set<std::string>>;
 
 inline std::string type_name_str(const nb::handle& o) {
   return nb::cast<std::string>(nb::type_name(o.type()));
+}
+
+inline bool py_compile_debug_enabled() {
+  static bool enabled = std::getenv("MLX_COMPILE_DEBUG") != nullptr;
+  return enabled;
 }
 
 auto validate_argnums_argnames(
@@ -418,10 +424,21 @@ struct PyCompiledFun {
   struct AttachedData {
     nb::object output_structure;
     int num_outputs;
+    int visible_outputs;
 
-    AttachedData(nb::object output_structure_, int num_outputs_)
-        : output_structure(output_structure_), num_outputs(num_outputs_) {}
+    AttachedData(
+        nb::object output_structure_,
+        int num_outputs_,
+        int visible_outputs_)
+        : output_structure(output_structure_),
+          num_outputs(num_outputs_),
+          visible_outputs(visible_outputs_) {}
   };
+
+  static std::uintptr_t next_fun_id() {
+    static std::atomic<std::uintptr_t> next_id{1};
+    return next_id.fetch_add(1, std::memory_order_relaxed);
+  }
 
   PyCompiledFun(
       const nb::callable& fun,
@@ -429,7 +446,7 @@ struct PyCompiledFun {
       nb::object outputs,
       bool shapeless)
       : fun(fun),
-        fun_id(reinterpret_cast<std::uintptr_t>(fun.ptr())),
+        fun_id(next_fun_id()),
         captured_inputs(inputs),
         captured_outputs(outputs),
         shapeless(shapeless) {}
@@ -439,7 +456,7 @@ struct PyCompiledFun {
   PyCompiledFun& operator=(PyCompiledFun&& other) = delete;
   PyCompiledFun(PyCompiledFun&& other)
       : fun(std::move(other.fun)),
-        fun_id(reinterpret_cast<std::uintptr_t>(fun.ptr())) {
+        fun_id(other.fun_id) {
     other.fun_id = 0;
     captured_inputs = std::move(other.captured_inputs);
     captured_outputs = std::move(other.captured_outputs);
@@ -524,11 +541,61 @@ struct PyCompiledFun {
 
       auto tree_outputs =
           fun(*tree_unflatten(args, a), **tree_unflatten(kwargs, a, num_args));
+      auto visible_outputs = tree_count_arrays(tree_outputs);
+      if (py_compile_debug_enabled()) {
+        if (nb::isinstance<mx::array>(tree_outputs)) {
+          auto& out = *nb::cast<mx::array*>(tree_outputs);
+          std::fprintf(
+              stderr,
+              "[py compile] return scalar id=%llu siblings=%zu pos=%d inputs=%zu\n",
+              static_cast<unsigned long long>(out.id()),
+              out.siblings().size(),
+              out.sibling_position(),
+              out.inputs().size());
+        } else if (nb::isinstance<nb::tuple>(tree_outputs)) {
+          auto tup = nb::cast<nb::tuple>(tree_outputs);
+          std::fprintf(
+              stderr,
+              "[py compile] return tuple size=%zu\n",
+              static_cast<size_t>(tup.size()));
+          for (size_t i = 0; i < static_cast<size_t>(tup.size()); ++i) {
+            if (!nb::isinstance<mx::array>(tup[i])) {
+              continue;
+            }
+            auto& out = *nb::cast<mx::array*>(tup[i]);
+            std::fprintf(
+                stderr,
+                "[py compile] return tuple[%zu] id=%llu siblings=%zu pos=%d inputs=%zu\n",
+                i,
+                static_cast<unsigned long long>(out.id()),
+                out.siblings().size(),
+                out.sibling_position(),
+                out.inputs().size());
+          }
+        }
+      }
       auto [outputs, py_outputs] =
           tree_flatten_with_structure(std::move(tree_outputs), false);
+      if (py_compile_debug_enabled()) {
+        std::fprintf(
+            stderr,
+            "[py compile] flattened outputs=%zu\n",
+            outputs.size());
+        for (size_t i = 0; i < outputs.size(); ++i) {
+          std::fprintf(
+              stderr,
+              "[py compile] flattened[%zu] id=%llu siblings=%zu pos=%d inputs=%zu\n",
+              i,
+              static_cast<unsigned long long>(outputs[i].id()),
+              outputs[i].siblings().size(),
+              outputs[i].sibling_position(),
+              outputs[i].inputs().size());
+        }
+      }
 
       std::shared_ptr<void> extra_data =
-          std::make_shared<AttachedData>(py_outputs, outputs.size());
+          std::make_shared<AttachedData>(
+              py_outputs, outputs.size(), visible_outputs);
 
       if (!captured_outputs.is_none()) {
         auto flat_out_captures = tree_flatten(captured_outputs, false);
@@ -559,6 +626,8 @@ struct PyCompiledFun {
 
     int num_outputs =
         reinterpret_cast<AttachedData*>(extra_data.get())->num_outputs;
+    int visible_outputs =
+        reinterpret_cast<AttachedData*>(extra_data.get())->visible_outputs;
     nb::object py_outputs =
         reinterpret_cast<AttachedData*>(extra_data.get())->output_structure;
 
@@ -567,6 +636,10 @@ struct PyCompiledFun {
           std::make_move_iterator(outputs.begin() + num_outputs),
           std::make_move_iterator(outputs.end()));
       tree_fill(captured_outputs, captures);
+    }
+
+    if (visible_outputs < num_outputs) {
+      return fun(*args, **kwargs);
     }
 
     // Put the outputs back in the container

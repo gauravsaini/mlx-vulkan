@@ -1,0 +1,11 @@
+# Hashes of file build rules.
+5e68313a46de96285297aa96d1838188 CMakeFiles/nanobind-populate
+cac5025d2ed7c39acc3b478a778ab2f6 CMakeFiles/nanobind-populate-complete
+b33edd56edf206c9e22700b74f676d09 nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-build
+592e422448fdd941d50f4f8a3462737b nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-configure
+6be5285a41a53055605cc5ae02404fe3 nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-download
+6e4cdf0b4917ace9019f62abc902f1ff nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-install
+ecae3bf90ca1456289e8d8eb376f2399 nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-mkdir
+63b97aa0a2152e23c62442547ad5f5ea nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-patch
+0a95c73380bd12b49dcbedb3b215f463 nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-test
+8b7cf69260dfdda365f03abf61565067 nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-update

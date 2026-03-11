@@ -1,0 +1,14 @@
+# Target labels
+ nanobind-populate
+# Source files and their labels
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/CMakeFiles/nanobind-populate
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/CMakeFiles/nanobind-populate.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/CMakeFiles/nanobind-populate-complete.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-build.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-configure.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-download.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-install.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-mkdir.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-patch.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-test.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/nanobind-subbuild/nanobind-populate-prefix/src/nanobind-populate-stamp/nanobind-populate-update.rule

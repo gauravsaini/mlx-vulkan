@@ -1,0 +1,23 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-build/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/common/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/cpu/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/distributed/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/distributed/mpi/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/distributed/ring/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/distributed/nccl/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/distributed/jaccl/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/io/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-build/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/gpu/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-build/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-build/cmake_install.cmake",
+		"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

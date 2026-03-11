@@ -72,7 +72,8 @@ HostSnapshot snapshot_array(const mx::array& a) {
   auto itemsize = static_cast<int64_t>(a.itemsize());
   auto span_elems = max_elem_offset - min_elem_offset + 1;
   auto span_bytes = static_cast<size_t>(span_elems * itemsize);
-  auto base_offset = static_cast<size_t>(a.offset() + min_elem_offset * itemsize);
+  auto base_offset =
+      static_cast<size_t>(a.offset() + min_elem_offset * itemsize);
 
   snapshot.host_data.resize(span_bytes);
   mx::allocator::copy_to_host(
@@ -200,18 +201,26 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
     int ndim{0};
     std::vector<size_t> shape;
     std::vector<int64_t> strides;
-    std::vector<char> host_data;
+    mx::array array_ref;
+
+    NdArrayOwner(
+        int ndim_in,
+        std::vector<size_t> shape_in,
+        std::vector<int64_t> strides_in,
+        mx::array array_ref_in)
+        : ndim(ndim_in),
+          shape(std::move(shape_in)),
+          strides(std::move(strides_in)),
+          array_ref(std::move(array_ref_in)) {}
   };
 
   auto value = eval_for_host_read(a);
-  auto owner = std::make_unique<NdArrayOwner>();
-  owner->ndim = value.ndim();
-  owner->shape.assign(value.shape().begin(), value.shape().end());
-  owner->strides.assign(value.strides().begin(), value.strides().end());
-  auto snapshot = snapshot_array(value);
-  owner->host_data = std::move(snapshot.host_data);
-  auto* data_ptr =
-      reinterpret_cast<T*>(owner->host_data.data() + snapshot.logical_byte_offset);
+  auto owner = std::make_unique<NdArrayOwner>(
+      value.ndim(),
+      std::vector<size_t>(value.shape().begin(), value.shape().end()),
+      std::vector<int64_t>(value.strides().begin(), value.strides().end()),
+      value);
+  auto* data_ptr = value.nbytes() == 0 ? nullptr : value.data<T>();
   auto* owner_ptr = owner.get();
   auto capsule = nb::capsule(
       owner.release(),

@@ -1,0 +1,764 @@
+[
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/array.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/array.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/array.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/array.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/compile.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/compile.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/compile.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/compile.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/device.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/device.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/device.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/device.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/dtype.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/dtype.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/dtype.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/dtype.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/dtype_utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/dtype_utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/dtype_utils.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/dtype_utils.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/export.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/export.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/export.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/export.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/einsum.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/einsum.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/einsum.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/einsum.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/fast.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/fast.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/fast.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/fast.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/fft.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/fft.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/fft.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/fft.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/ops.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/ops.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/ops.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/ops.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/graph_utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/graph_utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/graph_utils.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/graph_utils.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/primitives.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/primitives.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/primitives.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/primitives.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/random.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/random.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/random.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/random.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/scheduler.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/scheduler.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/scheduler.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/scheduler.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/transforms.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/transforms.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/transforms.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/transforms.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/utils.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/utils.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/linalg.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/linalg.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/linalg.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/linalg.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/broadcasting.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/broadcasting.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/broadcasting.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/broadcasting.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/compiled.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/compiled.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/compiled.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/compiled.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/common.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/common.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/common.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/common.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/load.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/load.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/load.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/load.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/reduce.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/reduce.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/reduce.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/reduce.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/slicing.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/slicing.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/slicing.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/slicing.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/common/utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/common/utils.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/common/utils.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/device_info.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/device_info.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/device_info.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/device_info.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/arg_reduce.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/arg_reduce.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/arg_reduce.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/arg_reduce.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/binary.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/binary.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/binary.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/binary.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/conv.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/conv.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/conv.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/conv.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/copy.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/copy.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/copy.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/copy.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/distributed.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/distributed.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/distributed.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/distributed.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/eig.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/eig.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/eig.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/eig.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/eigh.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/eigh.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/eigh.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/eigh.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/encoder.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/encoder.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/encoder.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/encoder.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/fft.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/fft.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/fft.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/fft.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/hadamard.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/hadamard.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/hadamard.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/hadamard.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/matmul.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/matmul.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/matmul.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/matmul.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/gemms/cblas.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/gemms/cblas.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/gemms/cblas.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/gemms/cblas.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/masked_mm.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/masked_mm.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/masked_mm.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/masked_mm.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/primitives.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/primitives.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/primitives.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/primitives.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/quantized.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/quantized.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/quantized.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/quantized.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/reduce.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/reduce.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/reduce.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/reduce.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/scan.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/scan.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/scan.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/scan.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/select.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/select.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/select.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/select.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/softmax.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/softmax.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/softmax.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/softmax.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/logsumexp.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/logsumexp.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/logsumexp.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/logsumexp.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/sort.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/sort.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/sort.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/sort.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/threefry.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/threefry.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/threefry.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/threefry.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/indexing.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/indexing.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/indexing.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/indexing.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/luf.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/luf.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/luf.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/luf.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/qrf.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/qrf.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/qrf.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/qrf.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/svd.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/svd.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/svd.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/svd.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/inverse.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/inverse.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/inverse.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/inverse.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/cholesky.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/cholesky.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/cholesky.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/cholesky.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/unary.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/unary.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/unary.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/unary.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/eval.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/eval.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/eval.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/eval.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/compiled_preamble.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/cpu/compiled_preamble.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/cpu/compiled_preamble.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/compiled_preamble.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/gemms/bnns.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/gemms/bnns.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/gemms/bnns.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/gemms/bnns.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/compiled.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/compiled.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/compiled.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/compiled.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cpu/jit_compiler.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/jit_compiler.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cpu/jit_compiler.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cpu/jit_compiler.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/primitives.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/primitives.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/primitives.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/primitives.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/ops.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/ops.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/ops.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/ops.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/distributed.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/distributed.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/distributed.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/distributed.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/utils.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/utils.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/mpi/mpi.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/mpi/mpi.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/mpi/mpi.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/mpi/mpi.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/ring/ring.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/ring/ring.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/ring/ring.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/ring/ring.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/nccl/no_nccl.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/nccl/no_nccl.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/nccl/no_nccl.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/nccl/no_nccl.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/distributed/jaccl/no_jaccl.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/jaccl/no_jaccl.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/distributed/jaccl/no_jaccl.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/distributed/jaccl/no_jaccl.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/io/load.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/load.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/load.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/io/load.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/io/safetensors.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/safetensors.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/safetensors.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/io/safetensors.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/io/gguf.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/gguf.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/gguf.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/io/gguf.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/io/gguf_quants.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/gguf_quants.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/io/gguf_quants.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/io/gguf_quants.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/metal/no_metal.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/metal/no_metal.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/metal/no_metal.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/metal/no_metal.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/cuda/no_cuda.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cuda/no_cuda.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/cuda/no_cuda.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/cuda/no_cuda.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/allocator.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/allocator.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/allocator.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/allocator.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/copy.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/copy.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/copy.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/copy.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/device.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/device.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/device.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/device.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/device_info.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/device_info.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/device_info.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/device_info.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/eval.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/eval.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/eval.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/eval.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/event.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/event.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/event.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/event.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/fence.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/fence.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/fence.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/fence.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/fft.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/fft.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/fft.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/fft.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/primitives.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/primitives.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/primitives.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/primitives.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/slicing.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/slicing.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/slicing.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/slicing.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/vulkan/utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan/utils.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/vulkan/utils.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/gpu/copy.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/gpu/copy.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/gpu/copy.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/gpu/copy.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/gpu/primitives.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/gpu/primitives.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/gpu/primitives.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/gpu/primitives.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_USE_VULKAN -DVULKAN_KERNELS_PATH=\\\"/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/backend/vulkan/kernels/\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/json-src/single_include/nlohmann -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/vulkanmemoryallocator-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/vulkan -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -F/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx.dir/mlx/backend/gpu/slicing.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/gpu/slicing.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/backend/gpu/slicing.cpp",
+  "output": "CMakeFiles/mlx.dir/mlx/backend/gpu/slicing.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIE -o CMakeFiles/check_logical_not.dir/check_logical_not.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/check_logical_not.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/check_logical_not.cpp",
+  "output": "CMakeFiles/check_logical_not.dir/check_logical_not.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_EXPORT -DMLX_USE_ACCELERATE -DMLX_VERSION=\\\"0.30.7\\\" -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -o CMakeFiles/mlx_version.dir/version.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/version.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/mlx/version.cpp",
+  "output": "mlx/CMakeFiles/mlx_version.dir/version.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/io",
+  "command": "/usr/bin/cc -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE  -g -arch arm64 -fPIC -o CMakeFiles/gguflib.dir/__/__/_deps/gguflib-src/fp16.c.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src/fp16.c",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src/fp16.c",
+  "output": "mlx/io/CMakeFiles/gguflib.dir/__/__/_deps/gguflib-src/fp16.c.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/mlx/io",
+  "command": "/usr/bin/cc -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE  -g -arch arm64 -fPIC -o CMakeFiles/gguflib.dir/__/__/_deps/gguflib-src/gguflib.c.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src/gguflib.c",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/gguflib-src/gguflib.c",
+  "output": "mlx/io/CMakeFiles/gguflib.dir/__/__/_deps/gguflib-src/gguflib.c.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-build",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_LIB_EXPORT -DMLX_USE_ACCELERATE -Dfmt_EXPORTS -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -g -std=gnu++20 -arch arm64 -fPIC -o CMakeFiles/fmt.dir/src/format.cc.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/src/format.cc",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/src/format.cc",
+  "output": "_deps/fmt-build/CMakeFiles/fmt.dir/src/format.cc.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-build",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DFMT_LIB_EXPORT -DMLX_USE_ACCELERATE -Dfmt_EXPORTS -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/include -g -std=gnu++20 -arch arm64 -fPIC -o CMakeFiles/fmt.dir/src/os.cc.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/src/os.cc",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/fmt-src/src/os.cc",
+  "output": "_deps/fmt-build/CMakeFiles/fmt.dir/src/os.cc.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_internals.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_internals.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_internals.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_internals.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_func.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_func.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_func.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_func.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_type.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_type.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_type.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_type.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_enum.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_enum.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_enum.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_enum.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_ndarray.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_ndarray.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_ndarray.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_ndarray.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_static_property.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_static_property.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_static_property.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_static_property.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_ft.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_ft.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/nb_ft.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/nb_ft.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/common.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/common.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/common.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/common.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/error.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/error.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/error.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/error.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/trampoline.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/trampoline.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/trampoline.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/trampoline.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -isystem /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/ext/robin_map/include -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -fno-strict-aliasing -o CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/implicit.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/implicit.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/src/implicit.cpp",
+  "output": "python/src/CMakeFiles/nanobind-static.dir/__/__/_deps/nanobind-src/src/implicit.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/mlx.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/mlx.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/mlx.cpp",
+  "output": "python/src/CMakeFiles/core.dir/mlx.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/array.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/array.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/array.cpp",
+  "output": "python/src/CMakeFiles/core.dir/array.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/convert.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/convert.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/convert.cpp",
+  "output": "python/src/CMakeFiles/core.dir/convert.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/device.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/device.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/device.cpp",
+  "output": "python/src/CMakeFiles/core.dir/device.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/distributed.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/distributed.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/distributed.cpp",
+  "output": "python/src/CMakeFiles/core.dir/distributed.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/export.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/export.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/export.cpp",
+  "output": "python/src/CMakeFiles/core.dir/export.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/fast.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/fast.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/fast.cpp",
+  "output": "python/src/CMakeFiles/core.dir/fast.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/fft.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/fft.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/fft.cpp",
+  "output": "python/src/CMakeFiles/core.dir/fft.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/indexing.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/indexing.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/indexing.cpp",
+  "output": "python/src/CMakeFiles/core.dir/indexing.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/load.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/load.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/load.cpp",
+  "output": "python/src/CMakeFiles/core.dir/load.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/metal.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/metal.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/metal.cpp",
+  "output": "python/src/CMakeFiles/core.dir/metal.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/cuda.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/cuda.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/cuda.cpp",
+  "output": "python/src/CMakeFiles/core.dir/cuda.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/memory.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/memory.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/memory.cpp",
+  "output": "python/src/CMakeFiles/core.dir/memory.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/mlx_func.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/mlx_func.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/mlx_func.cpp",
+  "output": "python/src/CMakeFiles/core.dir/mlx_func.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/ops.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/ops.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/ops.cpp",
+  "output": "python/src/CMakeFiles/core.dir/ops.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/stream.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/stream.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/stream.cpp",
+  "output": "python/src/CMakeFiles/core.dir/stream.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/transforms.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/transforms.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/transforms.cpp",
+  "output": "python/src/CMakeFiles/core.dir/transforms.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/random.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/random.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/random.cpp",
+  "output": "python/src/CMakeFiles/core.dir/random.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/linalg.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/linalg.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/linalg.cpp",
+  "output": "python/src/CMakeFiles/core.dir/linalg.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/constants.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/constants.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/constants.cpp",
+  "output": "python/src/CMakeFiles/core.dir/constants.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/trees.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/trees.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/trees.cpp",
+  "output": "python/src/CMakeFiles/core.dir/trees.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/dummy_ptr.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/dummy_ptr.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/dummy_ptr.cpp",
+  "output": "python/src/CMakeFiles/core.dir/dummy_ptr.cpp.o"
+},
+{
+  "directory": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/python/src",
+  "command": "/usr/bin/c++ -DACCELERATE_NEW_LAPACK -DMLX_USE_ACCELERATE -DNB_DOMAIN=mlx -Dcore_EXPORTS -I/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/include/python3.11 -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg311/_deps/nanobind-src/include -I/Users/ektasaini/Desktop/mlx-vulkan/mlx-src -g -std=gnu++20 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/core.dir/utils.cpp.o -c /Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/utils.cpp",
+  "file": "/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/python/src/utils.cpp",
+  "output": "python/src/CMakeFiles/core.dir/utils.cpp.o"
+}
+]

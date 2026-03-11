@@ -1,0 +1,14 @@
+# Target labels
+ gguflib-populate
+# Source files and their labels
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/CMakeFiles/gguflib-populate
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/CMakeFiles/gguflib-populate.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/CMakeFiles/gguflib-populate-complete.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-build.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-configure.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-download.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-install.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-mkdir.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-patch.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-test.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/gguflib-subbuild/gguflib-populate-prefix/src/gguflib-populate-stamp/gguflib-populate-update.rule

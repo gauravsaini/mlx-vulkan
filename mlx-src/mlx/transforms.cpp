@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <deque>
 #include <future>
+#include <iostream>
 #include <numeric>
 #include <set>
 #include <sstream>
@@ -99,6 +100,16 @@ array eval_impl(std::vector<array> outputs, bool async) {
                 "[async_eval] Not allowed inside a graph transformation.");
           }
           if (!in.has_primitive()) {
+            std::cerr
+                << "[eval debug] parent_shape=" << a.shape()
+                << " parent_dtype=" << a.dtype()
+                << " parent_inputs=" << a.inputs().size()
+                << " bad_input_shape=" << in.shape()
+                << " bad_input_dtype=" << in.dtype()
+                << " bad_input_status=" << static_cast<int>(in.status())
+                << " bad_input_data=" << (in.data_shared_ptr() != nullptr)
+                << " bad_input_inputs=" << in.inputs().size()
+                << std::endl;
             if (in.is_tracer()) {
               throw std::invalid_argument(
                   "[eval] Attempting to eval an array during function"

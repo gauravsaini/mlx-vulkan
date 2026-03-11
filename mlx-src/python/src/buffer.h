@@ -24,45 +24,6 @@
 namespace mx = mlx::core;
 namespace nb = nanobind;
 
-namespace {
-
-struct buffer_snapshot {
-  std::vector<char> host_data;
-  size_t logical_byte_offset{0};
-};
-
-inline buffer_snapshot snapshot_array(const mx::array& a) {
-  buffer_snapshot snapshot;
-  if (a.nbytes() == 0) {
-    return snapshot;
-  }
-
-  int64_t min_elem_offset = 0;
-  int64_t max_elem_offset = 0;
-  for (int i = 0; i < a.ndim(); ++i) {
-    auto extent = static_cast<int64_t>(a.shape(i) - 1) * a.strides(i);
-    if (extent < 0) {
-      min_elem_offset += extent;
-    } else {
-      max_elem_offset += extent;
-    }
-  }
-
-  auto itemsize = static_cast<int64_t>(a.itemsize());
-  auto span_elems = max_elem_offset - min_elem_offset + 1;
-  auto span_bytes = static_cast<size_t>(span_elems * itemsize);
-  auto base_offset = static_cast<size_t>(a.offset() + min_elem_offset * itemsize);
-
-  snapshot.host_data.resize(span_bytes);
-  mx::allocator::copy_to_host(
-      a.buffer(), snapshot.host_data.data(), span_bytes, base_offset);
-  snapshot.logical_byte_offset =
-      static_cast<size_t>(-min_elem_offset * itemsize);
-  return snapshot;
-}
-
-} // namespace
-
 std::string buffer_format(const mx::array& a) {
   // https://docs.python.org/3.10/library/struct.html#format-characters
   switch (a.dtype()) {
@@ -103,38 +64,23 @@ std::string buffer_format(const mx::array& a) {
 }
 
 struct buffer_owner {
+  mx::array array_ref;
   std::string format;
   std::vector<Py_ssize_t> shape;
   std::vector<Py_ssize_t> strides;
   void* data{nullptr};
-  size_t size{0};
 
   buffer_owner(
+      mx::array array_ref,
       std::string format,
       std::vector<Py_ssize_t> shape_in,
       std::vector<Py_ssize_t> strides_in,
-      const buffer_snapshot& snapshot,
-      size_t itemsize)
-      : format(std::move(format)),
+      void* data_ptr)
+      : array_ref(std::move(array_ref)),
+        format(std::move(format)),
         shape(std::move(shape_in)),
-        strides(std::move(strides_in)) {
-    size = snapshot.host_data.size();
-    if (size == 0) {
-      return;
-    }
-
-    size_t alignment = std::max(itemsize, alignof(std::max_align_t));
-    void* ptr = nullptr;
-    if (posix_memalign(&ptr, alignment, size) != 0) {
-      throw std::bad_alloc();
-    }
-    std::memcpy(ptr, snapshot.host_data.data(), size);
-    data = ptr;
-  }
-
-  ~buffer_owner() {
-    std::free(data);
-  }
+        strides(std::move(strides_in)),
+        data(data_ptr) {}
 
   buffer_owner(const buffer_owner&) = delete;
   buffer_owner& operator=(const buffer_owner&) = delete;
@@ -159,13 +105,12 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   for (auto& s : strides) {
     s *= value.itemsize();
   }
-  auto snapshot = snapshot_array(value);
   auto* info = new buffer_owner(
+      value,
       buffer_format(value),
       std::move(shape),
       std::move(strides),
-      snapshot,
-      value.itemsize());
+      value.nbytes() == 0 ? nullptr : value.data<void>());
   PyObject* owner = PyCapsule_New(
       info,
       "mlx.buffer_owner",
@@ -182,14 +127,9 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
   view->obj = owner;
   view->ndim = value.ndim();
   view->internal = info;
-  view->buf = snapshot.host_data.empty()
-      ? nullptr
-      : (static_cast<char*>(info->data) + snapshot.logical_byte_offset);
+  view->buf = info->data;
   view->itemsize = value.itemsize();
   view->len = value.nbytes();
-  // Expose the host snapshot as writable to preserve the existing MLX buffer
-  // protocol contract. Writes mutate the exported snapshot, not the original
-  // backend allocation.
   view->readonly = false;
   if ((flags & PyBUF_FORMAT) == PyBUF_FORMAT) {
     view->format = const_cast<char*>(info->format.c_str());

@@ -5153,7 +5153,6 @@ array gather_qmm(
   } else {
     out_type = x.dtype();
   }
-
   if (!issubdtype(out_type, floating)) {
     std::ostringstream msg;
     msg << "[gather_qmm] Only real floating types are supported but "
@@ -5216,8 +5215,8 @@ array gather_qmm(
           bits,
           qmode,
           transpose,
-          sorted_indices && !rhs_indices_,
-          sorted_indices && !lhs_indices_),
+          false,
+          sorted_indices),
       std::move(inputs));
 }
 
@@ -5684,6 +5683,9 @@ array gather_mm(
 
   // Type promotion
   auto out_type = result_type(a, b);
+  if (out_type == float16 || out_type == bfloat16) {
+    out_type = float32;
+  }
   if (!issubdtype(out_type, floating)) {
     std::ostringstream msg;
     msg << "[gather_mm] Only real floating point types are supported but "
@@ -5728,9 +5730,7 @@ array gather_mm(
       std::move(out_shape),
       out_type,
       std::make_shared<GatherMM>(
-          to_stream(s),
-          sorted_indices && !rhs_indices_,
-          sorted_indices && !lhs_indices_),
+          to_stream(s), false, sorted_indices),
       {std::move(a),
        std::move(b),
        std::move(lhs_indices),

@@ -11,13 +11,13 @@ inline void set_unary_output_data(
     const array& in,
     array& out,
     std::function<allocator::Buffer(size_t)> mallocfn = allocator::malloc) {
-  if (in.flags().contiguous && in.data_size() == in.size()) {
+  if (in.flags().row_contiguous) {
     if (is_donatable(in, out)) {
       out.copy_shared_buffer(in);
     } else {
       out.set_data(
-          mallocfn(in.data_size() * out.itemsize()),
-          in.data_size(),
+          mallocfn(in.size() * out.itemsize()),
+          in.size(),
           in.strides(),
           in.flags());
     }

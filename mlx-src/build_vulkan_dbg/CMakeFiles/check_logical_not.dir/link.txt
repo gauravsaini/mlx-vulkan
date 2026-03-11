@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -L/opt/homebrew/opt/node@20/lib CMakeFiles/check_logical_not.dir/check_logical_not.cpp.o -o check_logical_not  -Wl,-rpath,/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg libmlx.dylib -framework Accelerate

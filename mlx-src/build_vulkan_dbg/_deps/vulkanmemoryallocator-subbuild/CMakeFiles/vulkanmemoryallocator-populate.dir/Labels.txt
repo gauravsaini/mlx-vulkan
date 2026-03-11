@@ -1,0 +1,14 @@
+# Target labels
+ vulkanmemoryallocator-populate
+# Source files and their labels
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate-complete.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-build.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-configure.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-download.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-install.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-mkdir.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-patch.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-test.rule
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/vulkanmemoryallocator-populate-prefix/src/vulkanmemoryallocator-populate-stamp/vulkanmemoryallocator-populate-update.rule

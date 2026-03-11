@@ -292,7 +292,15 @@ class MLX_API array {
 
   /** True indicates the arrays buffer is safe to reuse */
   bool is_donatable() const {
-    return array_desc_.use_count() == 1 && (array_desc_->data.use_count() == 1);
+    return array_desc_.use_count() <= 2 && (array_desc_->data.use_count() == 1);
+  }
+
+  size_t desc_use_count() const {
+    return array_desc_.use_count();
+  }
+
+  size_t data_use_count() const {
+    return array_desc_->data.use_count();
   }
 
   /** The array's siblings. */

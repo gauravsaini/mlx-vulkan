@@ -1,0 +1,3 @@
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/vulkanmemoryallocator-populate.dir
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/edit_cache.dir
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/vulkanmemoryallocator-subbuild/CMakeFiles/rebuild_cache.dir

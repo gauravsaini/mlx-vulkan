@@ -1,4 +1,5 @@
 // Copyright © 2023-2024 Apple Inc.
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <sstream>
@@ -20,6 +21,11 @@ namespace mlx::core {
 
 constexpr int max_compile_depth = 11;
 constexpr int max_compile_arrays = 24;
+
+bool compile_debug_enabled() {
+  static bool enabled = std::getenv("MLX_COMPILE_DEBUG") != nullptr;
+  return enabled;
+}
 
 bool is_unary(const Primitive& p) {
   return (
@@ -306,6 +312,7 @@ class CompilerCache {
     std::vector<array> outputs;
     std::vector<array> tape;
     bool empty{true};
+    bool bypass{false};
     std::vector<uint64_t> constants;
     std::shared_ptr<void> extra;
   };
@@ -463,6 +470,7 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
   // Deep copy the tape and parents map while preserving inputs and outputs
   std::vector<array> new_tape;
   std::unordered_set<uintptr_t> io_set;
+  std::unordered_set<uintptr_t> input_id_set;
   std::unordered_map<uintptr_t, array> old_to_new;
   for (auto& o : outputs) {
     old_to_new.insert({o.id(), o});
@@ -474,12 +482,13 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
   }
   for (auto& i : inputs) {
     io_set.insert(i.id());
+    input_id_set.insert(i.id());
     old_to_new.insert({i.id(), i});
   }
 
   new_tape.reserve(tape.size());
   for (auto& arr : tape) {
-    if (!arr.has_primitive() || (io_set.find(arr.id()) != io_set.end())) {
+    if (!arr.has_primitive() || (input_id_set.find(arr.id()) != input_id_set.end())) {
       old_to_new.insert({arr.id(), arr});
       new_tape.push_back(arr);
       continue;
@@ -500,30 +509,31 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
       auto as = array::make_arrays(
           std::move(shapes), types, arr.primitive_ptr(), std::move(inputs));
       for (int i = 0; i < out.size(); ++i) {
-        old_to_new.insert({out[i].id(), as[i]});
+        old_to_new.insert_or_assign(out[i].id(), as[i]);
       }
       new_tape.push_back(as[arr.sibling_position()]);
     } else {
       auto a = array(
           arr.shape(), arr.dtype(), arr.primitive_ptr(), std::move(inputs));
-      old_to_new.insert({arr.id(), a});
+      old_to_new.insert_or_assign(arr.id(), a);
       new_tape.push_back(a);
     }
   }
   io_set.clear();
   for (auto& o : outputs) {
-    if (!(io_set.insert(o.id()).second)) {
-      continue;
-    }
-    for (auto& i : o.inputs()) {
-      i = old_to_new.find(i.id())->second;
-    }
-    for (auto& s : o.siblings()) {
-      io_set.insert(s.id());
-      for (auto& i : s.inputs()) {
+    auto old_id = o.id();
+    if (io_set.insert(old_id).second) {
+      for (auto& i : o.inputs()) {
         i = old_to_new.find(i.id())->second;
       }
+      for (auto& s : o.siblings()) {
+        io_set.insert(s.id());
+        for (auto& i : s.inputs()) {
+          i = old_to_new.find(i.id())->second;
+        }
+      }
     }
+    o = old_to_new.find(old_id)->second;
   }
   tape = std::move(new_tape);
 
@@ -654,7 +664,12 @@ void compile_simplify(
     }
     tape = std::move(new_tape);
     for (auto& o : outputs) {
-      o = output_map.at(o.id());
+      auto it = output_map.find(o.id());
+      if (it == output_map.end()) {
+        throw std::runtime_error(
+            "[compile] simplify output remap missing requested output id");
+      }
+      o = it->second;
     }
   }
 
@@ -666,6 +681,9 @@ void compile_simplify(
   std::unordered_set<uintptr_t> output_set;
   for (auto& o : outputs) {
     output_set.insert(o.id());
+    for (auto& s : o.siblings()) {
+      output_set.insert(s.id());
+    }
   }
 
   // Multi-pass merge only keeping non-orphaned arrays in the tape
@@ -781,6 +799,9 @@ void compile_fuse(
   std::unordered_map<uintptr_t, array> output_map;
   for (auto& o : outputs) {
     output_map.insert({o.id(), o});
+    for (auto& s : o.siblings()) {
+      output_map.insert({s.id(), s});
+    }
   }
 
   // Set of inputs to distinguish constants
@@ -922,12 +943,28 @@ void compile_fuse(
     recurse_tape(arr);
 
     std::vector<array> old_outputs;
+    std::unordered_set<uintptr_t> old_output_ids;
+    auto add_old_output = [&](const array& candidate, bool require_graph_output) {
+      auto grouped = candidate.siblings().empty() ? std::vector<array>{candidate}
+                                                  : candidate.outputs();
+      for (auto& out : grouped) {
+        if (
+            require_graph_output &&
+            output_map.find(out.id()) == output_map.end()) {
+          continue;
+        }
+        if (!old_output_ids.insert(out.id()).second) {
+          continue;
+        }
+        old_outputs.push_back(out);
+      }
+    };
     // Add to global cache and add any global outputs to outputs
     // of new primitive
     for (int j = 0; j < fused_tape.size() - 1; ++j) {
       auto& f = fused_tape[j];
       if (output_map.find(f.id()) != output_map.end()) {
-        old_outputs.push_back(f);
+        add_old_output(f, /* require_graph_output= */ true);
         // Parents are now siblings, update the parent map
         auto& pairs = parents_map[f.id()];
         pairs.erase(
@@ -945,7 +982,31 @@ void compile_fuse(
       }
       global_cache.insert({f.id()});
     }
-    old_outputs.push_back(arr);
+    add_old_output(arr, /* require_graph_output= */ false);
+
+    if (old_outputs.empty()) {
+      new_tape.push_back(arr);
+      continue;
+    }
+
+    if (compile_debug_enabled()) {
+      std::fprintf(
+          stderr,
+          "[compile_debug] arr=%llu sibling_pos=%d old_outputs=%zu fused=%zu\n",
+          static_cast<unsigned long long>(arr.id()),
+          arr.sibling_position(),
+          old_outputs.size(),
+          fused_tape.size());
+      for (int i = 0; i < old_outputs.size(); ++i) {
+        std::fprintf(
+            stderr,
+            "  [compile_debug] old_outputs[%d]=%llu sibling_pos=%d shape_size=%d\n",
+            i,
+            static_cast<unsigned long long>(old_outputs[i].id()),
+            old_outputs[i].sibling_position(),
+            old_outputs[i].ndim());
+      }
+    }
 
     std::vector<Shape> shapes;
     std::vector<Dtype> types;
@@ -976,8 +1037,23 @@ void compile_fuse(
             std::move(constant_ids)),
         inputs);
 
-    // One output per primitive
-    new_tape.push_back(compiled_outputs.back());
+    // Keep the compiled output that corresponds to the current tape node.
+    auto arr_pos = std::find_if(
+        old_outputs.begin(),
+        old_outputs.end(),
+        [&](const array& out) { return out.id() == arr.id(); });
+    if (arr_pos == old_outputs.end()) {
+      throw std::runtime_error(
+          "[compile] Internal error: failed to map compiled output to tape node.");
+    }
+    if (compile_debug_enabled()) {
+      std::fprintf(
+          stderr,
+          "[compile_debug] mapped arr=%llu to compiled_output[%td]\n",
+          static_cast<unsigned long long>(arr.id()),
+          arr_pos - old_outputs.begin());
+    }
+    new_tape.push_back(compiled_outputs[arr_pos - old_outputs.begin()]);
 
     // Replace inputs old parents with compiled_outputs
     for (int i = 0; i < inputs.size(); ++i) {
@@ -1009,7 +1085,12 @@ void compile_fuse(
 
   // Replace output with potentially compiled output
   for (auto& o : outputs) {
-    o = output_map.at(o.id());
+    auto it = output_map.find(o.id());
+    if (it == output_map.end()) {
+      throw std::runtime_error(
+          "[compile] fuse output remap missing requested output id");
+    }
+    o = it->second;
   }
 }
 
@@ -1019,63 +1100,133 @@ std::vector<array> compile_replace(
     const std::vector<array>& trace_outputs,
     const std::vector<array>& inputs,
     bool shapeless) {
+  if (compile_debug_enabled()) {
+    std::fprintf(
+        stderr,
+        "[compile_debug] compile_replace tape=%zu outputs=%zu\n",
+        tape.size(),
+        trace_outputs.size());
+    for (int i = 0; i < trace_outputs.size(); ++i) {
+      std::fprintf(
+          stderr,
+          "  [compile_debug] trace_output[%d]=%llu siblings=%zu has_primitive=%d\n",
+          i,
+          static_cast<unsigned long long>(trace_outputs[i].id()),
+          trace_outputs[i].siblings().size(),
+          trace_outputs[i].has_primitive());
+    }
+    for (int i = 0; i < tape.size(); ++i) {
+      std::fprintf(
+          stderr,
+          "  [compile_debug] trace_tape[%d]=%llu siblings=%zu has_primitive=%d inputs=%zu primitive_id=%zu\n",
+          i,
+          static_cast<unsigned long long>(tape[i].id()),
+          tape[i].siblings().size(),
+          tape[i].has_primitive(),
+          tape[i].inputs().size(),
+          tape[i].has_primitive() ? typeid(tape[i].primitive()).hash_code() : 0);
+    }
+  }
   std::unordered_map<uintptr_t, array> trace_to_real;
   for (int i = 0; i < inputs.size(); ++i) {
     trace_to_real.insert({trace_inputs[i].id(), inputs[i]});
   }
 
   auto is_load = [](const Primitive& p) { return typeid(p) == typeid(Load); };
-
-  for (auto& a : tape) {
-    // Arrays in the tape without primitives are either:
-    // - inputs, which are already in the map
-    // - constants, which can be used directly
-    // - a load primitive which has no inputs and will become a constant
-    //   after the first eval
+  std::function<void(const array&)> materialize = [&](const array& a) {
+    if (trace_to_real.find(a.id()) != trace_to_real.end()) {
+      return;
+    }
+    // Arrays without primitives are either constants or loads that can be
+    // reused directly during replacement.
     if (!a.has_primitive() || is_load(a.primitive())) {
       trace_to_real.insert({a.id(), a});
-    } else {
-      // Find real inputs
-      std::vector<array> real_inputs;
-      for (auto& in : a.inputs()) {
-        real_inputs.push_back(trace_to_real.at(in.id()));
+      return;
+    }
+
+    std::vector<array> real_inputs;
+    real_inputs.reserve(a.inputs().size());
+    for (auto& in : a.inputs()) {
+      materialize(in);
+      auto it = trace_to_real.find(in.id());
+      if (it == trace_to_real.end()) {
+        throw std::runtime_error(
+            "[compile] replace missing real input for traced node");
       }
-      if (a.siblings().empty()) {
-        auto shape =
-            shapeless ? a.primitive().output_shapes(real_inputs)[0] : a.shape();
-        auto real_a = array(
-            std::move(shape),
-            a.dtype(),
-            a.primitive_ptr(),
-            std::move(real_inputs));
-        trace_to_real.insert({a.id(), std::move(real_a)});
-      } else {
-        // Ensure the order is correct for multi-output primitives
-        std::vector<Dtype> types;
-        auto trace_out = a.outputs();
-        for (auto& o : trace_out) {
-          types.push_back(o.dtype());
-        }
-        std::vector<Shape> shapes;
-        if (shapeless) {
-          shapes = a.primitive().output_shapes(real_inputs);
-        } else {
-          for (auto& o : trace_out) {
-            shapes.push_back(o.shape());
-          }
-        }
-        auto real_out = array::make_arrays(
-            std::move(shapes), types, a.primitive_ptr(), real_inputs);
-        for (int i = 0; i < trace_out.size(); ++i) {
-          trace_to_real.insert({trace_out[i].id(), std::move(real_out[i])});
-        }
+      real_inputs.push_back(it->second);
+    }
+
+    if (a.siblings().empty()) {
+      auto shape =
+          shapeless ? a.primitive().output_shapes(real_inputs)[0] : a.shape();
+      auto real_a = array(
+          std::move(shape),
+          a.dtype(),
+          a.primitive_ptr(),
+          std::move(real_inputs));
+      trace_to_real.insert({a.id(), std::move(real_a)});
+      return;
+    }
+
+    std::vector<Dtype> types;
+    auto trace_out = a.outputs();
+    for (auto& o : trace_out) {
+      types.push_back(o.dtype());
+    }
+    std::vector<Shape> shapes;
+    if (shapeless) {
+      shapes = a.primitive().output_shapes(real_inputs);
+    } else {
+      for (auto& o : trace_out) {
+        shapes.push_back(o.shape());
       }
     }
+    auto real_out =
+        array::make_arrays(std::move(shapes), types, a.primitive_ptr(), real_inputs);
+    for (int i = 0; i < trace_out.size(); ++i) {
+      trace_to_real.insert({trace_out[i].id(), std::move(real_out[i])});
+    }
+  };
+
+  for (auto& a : tape) {
+    materialize(a);
   }
 
   std::vector<array> outputs;
   for (auto& o : trace_outputs) {
-    outputs.push_back(trace_to_real.at(o.id()));
+    materialize(o);
+    auto it = trace_to_real.find(o.id());
+    if (it == trace_to_real.end()) {
+      std::fprintf(
+          stderr,
+          "[compile_debug] missing traced output mapping for id=%llu tape=%zu\n",
+          static_cast<unsigned long long>(o.id()),
+          tape.size());
+      if (compile_debug_enabled()) {
+        for (int i = 0; i < tape.size(); ++i) {
+          auto grouped = tape[i].siblings().empty() ? std::vector<array>{tape[i]}
+                                                    : tape[i].outputs();
+          std::fprintf(
+              stderr,
+              "  [compile_debug] tape[%d]=%llu grouped=%zu sibling_pos=%d\n",
+              i,
+              static_cast<unsigned long long>(tape[i].id()),
+              grouped.size(),
+              tape[i].sibling_position());
+          for (int j = 0; j < grouped.size(); ++j) {
+            std::fprintf(
+                stderr,
+                "    [compile_debug] output[%d]=%llu sibling_pos=%d\n",
+                j,
+                static_cast<unsigned long long>(grouped[j].id()),
+                grouped[j].sibling_position());
+          }
+        }
+      }
+      throw std::runtime_error(
+          "[compile] replace missing traced output mapping");
+    }
+    outputs.push_back(it->second);
   }
   return outputs;
 }
@@ -1111,7 +1262,6 @@ ArrayFnWithExtra compile(
 
     // Find a cache entry with the correct inputs
     auto& entry = compiler_cache().find(fun_id, inputs, shapeless, constants);
-
     // No matching cache entry existed, so compile
     if (entry.empty) {
       // Mark the entry as not empty since we are about to fill it
@@ -1121,6 +1271,23 @@ ArrayFnWithExtra compile(
       // Trace to build the graph
       std::tie(entry.inputs, entry.outputs, entry.extra) =
           compile_trace(fun, inputs, shapeless);
+      if (compile_debug_enabled()) {
+        std::fprintf(
+            stderr,
+            "[compile_debug] after trace outputs=%zu\n",
+            entry.outputs.size());
+        for (int i = 0; i < entry.outputs.size(); ++i) {
+          std::fprintf(
+              stderr,
+              "  [compile_debug] trace output[%d]=%llu siblings=%zu pos=%d has_primitive=%d inputs=%zu\n",
+              i,
+              static_cast<unsigned long long>(entry.outputs[i].id()),
+              entry.outputs[i].siblings().size(),
+              entry.outputs[i].sibling_position(),
+              entry.outputs[i].has_primitive(),
+              entry.outputs[i].inputs().size());
+        }
+      }
 
       // DFS the graph and get a tape, and a map of array id to (parent,
       // position in parent inputs)
@@ -1128,17 +1295,88 @@ ArrayFnWithExtra compile(
           parents_map;
       std::tie(entry.tape, parents_map) =
           compile_dfs(entry.inputs, entry.outputs, inputs);
+      if (compile_debug_enabled()) {
+        std::fprintf(
+            stderr,
+            "[compile_debug] after dfs outputs=%zu tape=%zu\n",
+            entry.outputs.size(),
+            entry.tape.size());
+        for (int i = 0; i < entry.tape.size(); ++i) {
+          std::fprintf(
+              stderr,
+              "    [compile_debug] dfs tape[%d]=%llu siblings=%zu has_primitive=%d inputs=%zu\n",
+              i,
+              static_cast<unsigned long long>(entry.tape[i].id()),
+              entry.tape[i].siblings().size(),
+              entry.tape[i].has_primitive(),
+              entry.tape[i].inputs().size());
+        }
+        for (int i = 0; i < entry.outputs.size(); ++i) {
+          std::fprintf(
+              stderr,
+              "  [compile_debug] dfs output[%d]=%llu siblings=%zu has_primitive=%d inputs=%zu\n",
+              i,
+              static_cast<unsigned long long>(entry.outputs[i].id()),
+              entry.outputs[i].siblings().size(),
+              entry.outputs[i].has_primitive(),
+              entry.outputs[i].inputs().size());
+        }
+      }
 
       // Simplify the tape
       if (compile_mode() != CompileMode::no_simplify) {
         compile_simplify(
             entry.tape, parents_map, entry.outputs, /* passes */ 3);
+        if (compile_debug_enabled()) {
+          std::fprintf(
+              stderr,
+              "[compile_debug] after simplify outputs=%zu tape=%zu\n",
+              entry.outputs.size(),
+              entry.tape.size());
+          for (int i = 0; i < entry.tape.size(); ++i) {
+            std::fprintf(
+                stderr,
+                "    [compile_debug] simplify tape[%d]=%llu siblings=%zu has_primitive=%d inputs=%zu\n",
+                i,
+                static_cast<unsigned long long>(entry.tape[i].id()),
+                entry.tape[i].siblings().size(),
+                entry.tape[i].has_primitive(),
+                entry.tape[i].inputs().size());
+          }
+          for (int i = 0; i < entry.outputs.size(); ++i) {
+            std::fprintf(
+                stderr,
+                "  [compile_debug] simplify output[%d]=%llu siblings=%zu has_primitive=%d inputs=%zu\n",
+                i,
+                static_cast<unsigned long long>(entry.outputs[i].id()),
+                entry.outputs[i].siblings().size(),
+                entry.outputs[i].has_primitive(),
+                entry.outputs[i].inputs().size());
+          }
+        }
       }
 
       // Kernel fusion to generate Compiled primitives. The tape and
       // new outputs must be updated accordingly
       if (compile_mode() != CompileMode::no_fuse) {
         compile_fuse(entry.tape, parents_map, entry.inputs, entry.outputs);
+        if (compile_debug_enabled()) {
+          std::fprintf(
+              stderr,
+              "[compile_debug] after fuse outputs=%zu tape=%zu\n",
+              entry.outputs.size(),
+              entry.tape.size());
+          for (int i = 0; i < entry.outputs.size(); ++i) {
+            std::fprintf(
+                stderr,
+                "  [compile_debug] fuse output[%d]=%llu siblings=%zu has_primitive=%d inputs=%zu\n",
+                i,
+                static_cast<unsigned long long>(entry.outputs[i].id()),
+                entry.outputs[i].siblings().size(),
+                entry.outputs[i].has_primitive(),
+                entry.outputs[i].inputs().size());
+          }
+        }
       }
     }
 

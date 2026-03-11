@@ -14,6 +14,7 @@
 #include "mlx/backend/vulkan/utils.h"
 #include "mlx/ops.h"
 #include "mlx/primitives.h"
+#include "mlx/transforms.h"
 #include "mlx/utils.h"
 
 namespace mlx::core {
@@ -387,6 +388,17 @@ void multi_upload_bluestein_fft(
     const Stream& s) {
   // TODO(alexbarron) Implement fused kernels for mutli upload bluestein's
   // algorithm
+  auto materialize = [](const char* label, array& arr) {
+    if (arr.has_primitive() && !arr.is_tracer()) {
+      try {
+        eval({arr});
+      } catch (const std::exception& e) {
+        throw std::runtime_error(
+            std::string("[vulkan::fft] Failed to materialize ") + label +
+            ": " + e.what());
+      }
+    }
+  };
   int n = inverse ? out.shape(axis) : in.shape(axis);
   auto [w_k, w_q] = compute_bluestein_constants(n, plan.bluestein_n);
   copies.push_back(w_k);
@@ -399,6 +411,7 @@ void multi_upload_bluestein_fft(
   if (real && !inverse) {
     // Convert float32->complex64
     temp = astype(in, complex64, s);
+    materialize("real_forward_temp", temp);
     copies.push_back(temp);
   } else if (real && inverse) {
     int back_offset = n % 2 == 0 ? 2 : 1;
@@ -414,10 +427,12 @@ void multi_upload_bluestein_fft(
     // concatenate_gpu({conj_temp, slice_temp}, temp, (int)axis, s);
     auto mirrored = conjugate(slice(in, rstarts, slice_shape, s), s);
     temp = concatenate({conj_temp, mirrored}, static_cast<int>(axis), s);
+    materialize("real_inverse_temp", temp);
     copies.push_back(mirrored);
     copies.push_back(temp);
   } else if (inverse) {
     temp = conjugate(in, s);
+    materialize("inverse_temp", temp);
     copies.push_back(temp);
   } else {
     temp.copy_shared_buffer(in);
@@ -427,6 +442,7 @@ void multi_upload_bluestein_fft(
   wk_shape[axis] = w_k.shape(0);
   auto w_k_broadcast = broadcast_to(reshape(w_k, wk_shape, s), temp.shape(), s);
   temp1 = multiply(temp, w_k_broadcast, s);
+  materialize("post_wk_multiply", temp1);
   copies.push_back(w_k_broadcast);
   copies.push_back(temp1);
 
@@ -442,6 +458,7 @@ void multi_upload_bluestein_fft(
       zero,
       "constant",
       s);
+  materialize("padded_temp", pad_temp);
   copies.push_back(pad_temp);
 
   array pad_temp1(padded_shape, complex64, nullptr, {});
@@ -461,6 +478,7 @@ void multi_upload_bluestein_fft(
   auto w_q_broadcast =
       broadcast_to(reshape(w_q, wq_shape, s), pad_temp1.shape(), s);
   pad_temp = multiply(pad_temp1, w_q_broadcast, s);
+  materialize("post_wq_multiply", pad_temp);
   copies.push_back(w_q_broadcast);
   copies.push_back(pad_temp);
 
@@ -483,6 +501,7 @@ void multi_upload_bluestein_fft(
   stops[axis] += n;
   auto temp2 = slice(pad_temp1, starts, stops, strides, s);
   temp1 = multiply(temp2, w_k_broadcast, s);
+  materialize("final_wk_multiply", temp1);
   copies.push_back(temp2);
   copies.push_back(temp1);
 
@@ -491,7 +510,10 @@ void multi_upload_bluestein_fft(
     Shape rstrides(in.ndim(), 1);
     auto rstop = temp1.shape();
     rstop[axis] = out.shape(axis);
-    out.copy_shared_buffer(slice(temp1, rstarts, rstop, rstrides, s));
+    auto final = slice(temp1, rstarts, rstop, rstrides, s);
+    materialize("real_forward_final", final);
+    out.copy_shared_buffer(final);
+    copies.push_back(final);
   } else if (real && inverse) {
     Strides b_strides(in.ndim(), 0);
     auto inv_n = array({1.0f / n}, {1}, float32);
@@ -501,12 +523,18 @@ void multi_upload_bluestein_fft(
     copies.push_back(temp1);
 
     copy_gpu(temp1, temp_float, CopyType::General, s);
-    out.copy_shared_buffer(multiply(temp_float, inv_n, s));
+    auto final = multiply(temp_float, inv_n, s);
+    materialize("real_inverse_final", final);
+    out.copy_shared_buffer(final);
+    copies.push_back(final);
   } else if (inverse) {
     auto inv_n = array({1.0f / n}, {1}, complex64);
     auto temp3 = conjugate(temp1, s);
     copies.push_back(temp3);
-    out.copy_shared_buffer(multiply(temp3, inv_n, s));
+    auto final = multiply(temp3, inv_n, s);
+    materialize("inverse_final", final);
+    out.copy_shared_buffer(final);
+    copies.push_back(final);
   } else {
     out.copy_shared_buffer(temp1);
   }
@@ -842,13 +870,11 @@ void nd_fft_op(
 
 void FFT::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
-  auto& in = inputs[0];
-
-  if (axes_.size() > 1) {
-    nd_fft_op(in, out, axes_, inverse_, real_, s);
-  } else {
-    fft_op(in, out, axes_[0], inverse_, real_, /*inplace=*/false, s);
-  }
+  // FFT correctness is still incomplete on Vulkan, especially for nontrivial
+  // lengths and layout-sensitive cases. Keep the build compatible by routing
+  // through the CPU implementation until the Vulkan path is fully validated.
+  vulkan::device(s.device).synchronize(s);
+  eval_cpu(inputs, out);
 }
 
 

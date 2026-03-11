@@ -165,8 +165,6 @@ void binary_op(const array& a, const array& b, array& out, BinaryOpType bopt) {
   auto out_ptr = out.data<U>();
   if (bopt == BinaryOpType::ScalarScalar) {
     *out_ptr = Op{}(*a_ptr, *b_ptr);
-    printf("[Binary] ScalarScalar: a=%f, b=%f, out=%f, ptr=%p\n", (float)*a_ptr, (float)*b_ptr, (float)*out_ptr, (void*)out_ptr);
-    fflush(stdout);
     return;
   }
 

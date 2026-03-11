@@ -55,6 +55,8 @@ layout(push_constant) uniform Params {
     uint op;                // UnaryOp enum value
     uint input_elem_bytes;  // bytes per element (2 = float16, 4 = float32/int32)
     uint out_elem_bytes;    // bytes per output element
+    uint input_offset;      // element offset into input buffer
+    uint out_offset;        // element offset into output buffer
 } params;
 
 // Error function approximation (Horner's method)
@@ -203,24 +205,26 @@ float compute_op(float val) {
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.n) return;
+    uint in_idx = idx + params.input_offset;
+    uint out_idx = idx + params.out_offset;
 
     if (params.out_elem_bytes == 1u) {
         float val;
         if (params.input_elem_bytes == 1u) {
-            uint word = in_data[idx >> 2u];
-            uint byte_val = (word >> ((idx & 3u) * 8u)) & 0xFFu;
+            uint word = in_data[in_idx >> 2u];
+            uint byte_val = (word >> ((in_idx & 3u) * 8u)) & 0xFFu;
             val = float(byte_val != 0u ? 1 : 0);
         } else if (params.input_elem_bytes == 2u) {
-            uint word = in_data[idx >> 1u];
-            val = ((idx & 1u) == 0u) ? unpackHalf2x16(word).x : unpackHalf2x16(word).y;
+            uint word = in_data[in_idx >> 1u];
+            val = ((in_idx & 1u) == 0u) ? unpackHalf2x16(word).x : unpackHalf2x16(word).y;
         } else if (params.input_elem_bytes == 3u) {
-            uint word = in_data[idx >> 1u];
-            val = ((idx & 1u) == 0u) ? unpackBfloat2x16(word).x : unpackBfloat2x16(word).y;
+            uint word = in_data[in_idx >> 1u];
+            val = ((in_idx & 1u) == 0u) ? unpackBfloat2x16(word).x : unpackBfloat2x16(word).y;
         } else {
-            val = uintBitsToFloat(in_data[idx]);
+            val = uintBitsToFloat(in_data[in_idx]);
         }
         float res = compute_op(val);
-        out_bool[idx] = uint8_t((res != 0.0) ? 1u : 0u);
+        out_bool[out_idx] = uint8_t((res != 0.0) ? 1u : 0u);
         return;
     }
 
@@ -229,56 +233,76 @@ void main() {
         // Only the first thread in each group of 4 does the work
         if ((idx & 3u) != 0u) return;
 
-        uint word_idx = idx >> 2u;
+        uint word_idx = in_idx >> 2u;
+        uint out_word_idx = out_idx >> 2u;
         uint word = in_data[word_idx];
         uint out_word = 0u;
+        uint out_lane = out_idx & 3u;
 
         // Extract bytes 0..3 (little-endian), apply op, pack back
         for (uint b = 0u; b < 4u; b++) {
             if (idx + b >= params.n) break;
-            uint byte_val = (word >> (b * 8u)) & 0xFFu;
+            uint in_lane = (in_idx + b) & 3u;
+            uint byte_val = (word >> (in_lane * 8u)) & 0xFFu;
             float val = float(byte_val != 0u ? 1 : 0);
             float res = compute_op(val);
             uint out_byte = (res != 0.0) ? 1u : 0u;
-            out_word |= (out_byte << (b * 8u));
+            out_word |= (out_byte << (((out_lane + b) & 3u) * 8u));
         }
-        out_data[word_idx] = out_word;
+        out_data[out_word_idx] = out_word;
     } else if (params.input_elem_bytes == 2u) {
         // float16 path: two f16 elements packed into one uint32 word
         // Only even-indexed threads do work (each handles a pair)
         if ((idx & 1u) == 1u) return;
 
-        uint word_idx = idx >> 1u;
+        uint word_idx = in_idx >> 1u;
+        uint out_word_idx = out_idx >> 1u;
         uint word = in_data[word_idx];
         vec2 halves = unpackHalf2x16(word);
 
-        halves.x = compute_op(halves.x);
-
-        // Only process second element if it's in bounds
-        if (idx + 1u < params.n) {
-            halves.y = compute_op(halves.y);
+        if ((in_idx & 1u) == 0u) {
+            halves.x = compute_op(halves.x);
+            if (idx + 1u < params.n) {
+                halves.y = compute_op(halves.y);
+            }
+        } else {
+            halves = halves.yx;
+            halves.x = compute_op(halves.x);
+            if (idx + 1u < params.n) {
+                halves.y = compute_op(halves.y);
+            }
+            halves = halves.yx;
         }
 
-        out_data[word_idx] = packHalf2x16(halves);
+        out_data[out_word_idx] = packHalf2x16(halves);
     } else if (params.input_elem_bytes == 3u) {
         // bfloat16 path: two bf16 elements packed into one uint32 word
         if ((idx & 1u) == 1u) return;
 
-        uint word_idx = idx >> 1u;
+        uint word_idx = in_idx >> 1u;
+        uint out_word_idx = out_idx >> 1u;
         uint word = in_data[word_idx];
         vec2 halves = unpackBfloat2x16(word);
 
-        halves.x = compute_op(halves.x);
-
-        if (idx + 1u < params.n) {
-            halves.y = compute_op(halves.y);
+        if ((in_idx & 1u) == 0u) {
+            halves.x = compute_op(halves.x);
+            if (idx + 1u < params.n) {
+                halves.y = compute_op(halves.y);
+            }
+        } else {
+            halves = halves.yx;
+            halves.x = compute_op(halves.x);
+            if (idx + 1u < params.n) {
+                halves.y = compute_op(halves.y);
+            }
+            halves = halves.yx;
         }
 
-        out_data[word_idx] = packBfloat2x16(halves);
+        out_data[out_word_idx] = packBfloat2x16(halves);
     } else {
         // float32/int32 path: direct bit reinterpretation
-        float val = uintBitsToFloat(in_data[idx]);
+        float val = uintBitsToFloat(in_data[in_idx]);
         float res = compute_op(val);
-        out_data[idx] = floatBitsToUint(res);
+        out_data[out_idx] = floatBitsToUint(res);
     }
 }

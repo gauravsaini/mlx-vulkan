@@ -4,7 +4,26 @@
 #include "mlx/backend/common/utils.h"
 #include "mlx/utils.h"
 
+#include <cstdlib>
+#include <cstdio>
+
 namespace mlx::core {
+
+namespace {
+bool compiled_debug_enabled() {
+  const char* env = std::getenv("MLX_COMPILE_DEBUG");
+  return env && env[0] != '\0' && env[0] != '0';
+}
+
+bool compiled_input_is_donatable(const array& in) {
+  if (!in.is_donatable()) {
+    return false;
+  }
+  // Compiled functions must not donate live user-visible leaf inputs. If the
+  // array is a leaf, only donate once the compiled output is its sole owner.
+  return in.has_primitive() || in.desc_use_count() == 1;
+}
+} // namespace
 
 void print_constant(std::ostream& os, const array& x) {
   switch (x.dtype()) {
@@ -130,8 +149,36 @@ void compiled_allocate_outputs(
       // - Donatable
       // - Not a constant
       if (in.itemsize() == outputs[o].itemsize() && !is_scalar(in) &&
-          in.is_donatable() && !is_constant(i)) {
+          compiled_input_is_donatable(in) && !is_constant(i)) {
+        if (compiled_debug_enabled()) {
+          std::fprintf(
+              stderr,
+              "[compiled allocate] donate contiguous input=%d output=%d "
+              "desc=%zu data=%zu in_ptr=%p out_size=%zu\n",
+              i,
+              o,
+              in.desc_use_count(),
+              in.data_use_count(),
+              in.buffer().ptr(),
+              outputs[o].size());
+        }
         outputs[o++].copy_shared_buffer(in);
+      } else if (compiled_debug_enabled()) {
+        std::fprintf(
+            stderr,
+            "[compiled allocate] skip contiguous input=%d output=%d "
+            "same_itemsize=%d scalar=%d donatable=%d constant=%d "
+            "desc=%zu data=%zu in_size=%zu out_size=%zu\n",
+            i,
+            o,
+            in.itemsize() == outputs[o].itemsize(),
+            is_scalar(in),
+            compiled_input_is_donatable(in),
+            is_constant(i),
+            in.desc_use_count(),
+            in.data_use_count(),
+            in.size(),
+            outputs[o].size());
       }
       // Get representative input flags to properly set non-donated outputs
       if (strides.empty() && in.size() == outputs[0].size()) {
@@ -156,12 +203,42 @@ void compiled_allocate_outputs(
       // - Donatable
       // - Correct size
       // - Not a constant
-      if (in.flags().row_contiguous && in.size() == outputs[o].size() &&
-          in.itemsize() == outputs[o].itemsize() && in.is_donatable() &&
-          !is_constant(i)) {
+      if (
+          in.flags().row_contiguous && in.size() == outputs[o].size() &&
+          in.itemsize() == outputs[o].itemsize() &&
+          compiled_input_is_donatable(in) && !is_constant(i)) {
+        if (compiled_debug_enabled()) {
+          std::fprintf(
+              stderr,
+              "[compiled allocate] donate strided input=%d output=%d "
+              "desc=%zu data=%zu in_ptr=%p out_size=%zu\n",
+              i,
+              o,
+              in.desc_use_count(),
+              in.data_use_count(),
+              in.buffer().ptr(),
+              outputs[o].size());
+        }
         outputs[o].copy_shared_buffer(
             in, outputs[o].strides(), in.flags(), in.data_size());
         o++;
+      } else if (compiled_debug_enabled()) {
+        std::fprintf(
+            stderr,
+            "[compiled allocate] skip strided input=%d output=%d "
+            "row_contig=%d same_size=%d same_itemsize=%d donatable=%d "
+            "constant=%d desc=%zu data=%zu in_size=%zu out_size=%zu\n",
+            i,
+            o,
+            in.flags().row_contiguous,
+            in.size() == outputs[o].size(),
+            in.itemsize() == outputs[o].itemsize(),
+            compiled_input_is_donatable(in),
+            is_constant(i),
+            in.desc_use_count(),
+            in.data_use_count(),
+            in.size(),
+            outputs[o].size());
       }
     }
     for (; o < outputs.size(); ++o) {

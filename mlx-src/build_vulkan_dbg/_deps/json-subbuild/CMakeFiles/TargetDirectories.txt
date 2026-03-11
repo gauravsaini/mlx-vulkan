@@ -1,0 +1,3 @@
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/json-subbuild/CMakeFiles/json-populate.dir
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/json-subbuild/CMakeFiles/edit_cache.dir
+/Users/ektasaini/Desktop/mlx-vulkan/mlx-src/build_vulkan_dbg/_deps/json-subbuild/CMakeFiles/rebuild_cache.dir

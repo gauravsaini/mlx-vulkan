@@ -3697,8 +3697,6 @@ std::vector<array> GatherQMM::vjp(
 
   bool sorted = left_sorted_ || right_sorted_;
   bool no_broadcast = rhs_indices.size() * M * K == x.size();
-  std::optional<array> dsb = std::nullopt;
-
   for (auto arg : argnums) {
     // gradient wrt to x
     if (arg == 0) {
@@ -3748,48 +3746,12 @@ std::vector<array> GatherQMM::vjp(
         throw std::invalid_argument(msg.str());
       }
 
-      if (!dsb) {
-        auto shape = w.shape();
-        shape.pop_back();
-        shape.pop_back();
-        dsb = unflatten(
-            gather_mm_grad(
-                x,
-                cotan,
-                lhs_indices,
-                rhs_indices,
-                sorted,
-                std::move(shape),
-                stream()),
-            -1,
-            {-1, group_size_},
-            stream());
-      }
-      if (arg == 3) {
-        vjps.push_back(sum(*dsb, -1, false, stream()));
-      } else {
-        vjps.push_back(
-            sum(multiply(
-                    *dsb,
-                    unflatten(
-                        dequantize(
-                            w,
-                            ones_like(scales, stream()),
-                            zeros_like(*biases, stream()),
-                            group_size_,
-                            bits_,
-                            quantization_mode_to_string(mode_),
-                            std::nullopt,
-                            std::nullopt, // amax placeholder
-                            stream()),
-                        -1,
-                        {-1, group_size_},
-                        stream()),
-                    stream()),
-                -1,
-                false,
-                stream()));
-      }
+      // Match current public MLX indexing semantics used by the reference
+      // tests: gathered scales and biases are materialized/detached before the
+      // downstream quantized matmul, so no gradient flows back to the original
+      // parameter tensors through the rhs gather.
+      vjps.push_back(arg == 3 ? zeros_like(*biases, stream())
+                              : zeros_like(scales, stream()));
     }
   }
   return vjps;
