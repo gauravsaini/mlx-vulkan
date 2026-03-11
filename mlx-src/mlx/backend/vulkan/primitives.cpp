@@ -536,11 +536,15 @@ bool dispatch_unary(
     src = &*materialized_src;
   }
 
-  if (!materialized_src.has_value()) {
-    set_unary_output_data(in, out);
-  } else {
-    out.set_data(allocator::malloc(out.nbytes()));
-  }
+  // Always allocate fresh output memory on Vulkan GPU.
+  // Unlike CPU (where element-wise read-then-write is safe in-place),
+  // GPU donation allows the shader to overwrite the input buffer.
+  // If the input has other graph consumers (e.g. y in "y * exp(y)"),
+  // those consumers will read corrupted data (exp(y) instead of y).
+  // The is_donatable() check can't catch this because desc_use_count
+  // drops to 2 when Python locals go out of scope, even with 2 graph
+  // consumers remaining.
+  out.set_data(allocator::malloc(out.nbytes()));
 
   // Nothing to do for empty arrays
   if (out.size() == 0) {

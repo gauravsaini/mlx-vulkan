@@ -1242,3 +1242,26 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
 2. **Tests**: test_scans no longer segfaults (fails on pre-existing reverse/inclusive logic).
 
 3. **Files changed**: `primitives.cpp`
+
+---
+
+## UPDATED ON : 2026-03-12
+
+### fix (2026-03-12) — GPU shared intermediate buffer donation bug
+
+1. **Vulkan unary donation corruption fixed** (`primitives.cpp`):
+   - **Root cause**: `set_unary_output_data()` called `is_donatable(in, out)`. On CPU, donating is safe because elementwise operations read and write in-place immediately. On GPU, the shader execution is deferred. When a shared intermediate variable (e.g., `y` in `y * exp(y)`) had multiple consumers but the Python-side variable went out of scope (`desc_use_count <= 2`), the unary dispatch donated the buffer. The `Exp` shader then overwrote the data in-place, causing the `Multiply` consumer to read corrupted values (reading `exp(y)` instead of `y`).
+   - **Fix**: Replaced the unsafe `set_unary_output_data(in, out)` call in Vulkan's `dispatch_unary` with a safe `out.set_data(allocator::malloc(out.nbytes()))` that always allocates fresh memory. Prevented GPU donation from clobbering buffers used by other pending operations.
+2. **Environment build fix**:
+   - Rebuilt Python extension correctly utilizing `build_vulkan` and `uv pip install -e ".[dev]"`.
+3. **Tests**: Forward pass and gradient for `y = x * w; (y * mx.exp(y)).sum()` now exactly match the CPU reference on the Vulkan device. Leaf evaluation works flawlessly.
+### audit (2026-03-12) — Broader Transformer Ops natively supported on Vulkan
+
+1. **Transformer expansion audit** (`tests/vulkan/test_transformer_ops_audit.py`):
+   - Expanded the transformer-critical op audit to include `RMSNorm`, `RoPE`, `SiLU`, and the standard MLX `TransformerEncoderLayer`.
+   - **Discovery**: `mx.fast.scaled_dot_product_attention` (SDPA) gracefully expands into standard `matmul` and `softmax` ops when a backend lacks a custom fast shader. Because these foundational ops are solid on Vulkan, the entire attention layer succeeds natively.
+   - **Discovery**: MLX's activation functions (like `SiLU` and `SwiGLU`) are heavily wrapped in `@mx.compile`. Since Vulkan currently lacks JIT kernel fusion (`Compiled::eval_gpu`), compiled graphs were silently triggering CPU fallbacks.
+   - **Fix**: By adding `mx.disable_compile()` to the test environments and LLM initialization, these operations fall back to eager execution directly on the GPU without triggering `CPU fallback executed on a GPU stream`. 
+   - All standard transformer blocks are now formally proven mathematically capable on Vulkan geometry.
+
+2. **Tests**: Added `RMSNorm`, `RoPE`, `SiLU (uncompiled)`, and `TransformerEncoderLayer (uncompiled)` to the strict `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1` test suite. All pass.

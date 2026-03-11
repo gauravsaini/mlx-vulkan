@@ -113,12 +113,58 @@ def main():
         if np.allclose(delta, 0.0, atol=1e-8):
             raise RuntimeError("optimizer update produced no change")
 
+    def check_rope():
+        rope = nn.RoPE(32)
+        x = mx.random.normal(shape=(2, 4, 32))
+        y = rope(x)
+        mx.eval(y)
+        if not np.isfinite(np.asarray(y)).all():
+            raise RuntimeError("RoPE output contains non-finite values")
+
+    def check_rmsnorm():
+        norm = nn.RMSNorm(32)
+        x = mx.random.normal(shape=(2, 4, 32))
+        y = norm(x)
+        mx.eval(y)
+        if not np.isfinite(np.asarray(y)).all():
+            raise RuntimeError("RMSNorm output contains non-finite values")
+
+    def check_silu():
+        # SiLU is currently wrapped in @mx.compile in MLX which triggers CPU fallback
+        # unless compilation is explicitly disabled during the test.
+        mx.disable_compile()
+        try:
+            x = mx.random.normal(shape=(2, 4, 32))
+            y = nn.silu(x)
+            mx.eval(y)
+            if not np.isfinite(np.asarray(y)).all():
+                raise RuntimeError("SiLU output contains non-finite values")
+        finally:
+            mx.enable_compile()
+
+    def check_standard_encoder():
+        mx.disable_compile()
+        try:
+            enc = nn.TransformerEncoderLayer(dims=32, num_heads=4)
+            x = mx.random.normal(shape=(2, 8, 32))
+            mask = nn.MultiHeadAttention.create_additive_causal_mask(8)
+            y = enc(x, mask)
+            mx.eval(y)
+            if not np.isfinite(np.asarray(y)).all():
+                raise RuntimeError("Standard Encoder output contains non-finite values")
+        finally:
+            mx.enable_compile()
+
     try:
         check("gpu detect", check_gpu, errors)
         check("embeddings + causal attention forward", check_embeddings_and_attention, errors)
         check("layer norm forward", check_layer_norm_forward, errors)
         check("layer norm backward", check_layer_norm_backward, errors)
         check("optimizer update", check_optimizer_update, errors)
+        check("rotary embeddings (RoPE)", check_rope, errors)
+        check("RMSNorm", check_rmsnorm, errors)
+        check("SiLU (uncompiled)", check_silu, errors)
+        check("standard TransformerEncoderLayer (uncompiled)", check_standard_encoder, errors)
     finally:
         if prev_fail_on_cpu_fallback is None:
             os.environ.pop("MLX_VULKAN_FAIL_ON_CPU_FALLBACK", None)
