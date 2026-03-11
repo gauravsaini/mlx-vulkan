@@ -86,6 +86,16 @@ Device::Device() {
 Device::~Device() {
   vkDeviceWaitIdle(device_);
 
+  // Background commit threads destroy old command pools / descriptor pools
+  // after GPU completion. Join them before tearing down device-owned Vulkan
+  // resources so shutdown can't race pool destruction against device teardown.
+  for (auto& t : commit_threads_) {
+    if (t.joinable()) {
+      t.join();
+    }
+  }
+  commit_threads_.clear();
+
   if (dummy_buffer_ != VK_NULL_HANDLE) {
     vmaDestroyBuffer(vma_allocator_, dummy_buffer_, dummy_alloc_);
   }
@@ -116,13 +126,6 @@ Device::~Device() {
       vkDestroyCommandPool(device_, enc.pool, nullptr);
     if (enc.desc_pool != VK_NULL_HANDLE)
       vkDestroyDescriptorPool(device_, enc.desc_pool, nullptr);
-  }
-
-  // Join all background commit threads
-  for (auto& t : commit_threads_) {
-    if (t.joinable()) {
-      t.join();
-    }
   }
 
   if (pipeline_cache_ != VK_NULL_HANDLE)
@@ -714,6 +717,21 @@ void Device::commit(Stream s) {
     vkDestroyFence(state->dev, state->old_fence, nullptr);
     delete state;
   } else {
+#if defined(__APPLE__)
+    vkWaitForFences(state->dev, 1, &state->old_fence, VK_TRUE, UINT64_MAX);
+
+    state->temporaries.clear();
+    for (auto& h : state->handlers) {
+      if (h) {
+        h();
+      }
+    }
+
+    vkDestroyCommandPool(state->dev, state->old_pool, nullptr);
+    vkDestroyDescriptorPool(state->dev, state->old_desc_pool, nullptr);
+    vkDestroyFence(state->dev, state->old_fence, nullptr);
+    delete state;
+#else
     // Clean up finished threads
     commit_threads_.erase(
         std::remove_if(
@@ -758,6 +776,7 @@ void Device::commit(Stream s) {
           delete s;
         },
         state);
+#endif
   }
 }
 
@@ -769,8 +788,25 @@ void Device::synchronize(Stream s) {
   // idle. This is critical for CPU fallbacks (e.g. Gather::eval_gpu) which need
   // to safely read GPU memory that was written by previously submitted command
   // buffers.
-  std::lock_guard<std::mutex> lk(mutex_);
-  vkQueueWaitIdle(compute_queue_);
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    vkQueueWaitIdle(compute_queue_);
+  }
+
+  // `commit()` cleans up old command pools and completion handlers on
+  // background threads. After an explicit synchronize, keep the cleanup
+  // boundary fully synchronous as well so test teardown and process shutdown
+  // do not race lingering commit threads.
+  std::vector<std::thread> completed_threads;
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    completed_threads.swap(commit_threads_);
+  }
+  for (auto& t : completed_threads) {
+    if (t.joinable()) {
+      t.join();
+    }
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1038,8 +1074,13 @@ VkDescriptorSet Device::alloc_descriptor_set(
 // ────────────────────────────────────────────────────────────────────────────
 
 Device& device(mlx::core::Device /*d*/) {
-  static Device instance;
-  return instance;
+  // Intentionally leak the process-global device singleton. Python and NumPy
+  // can still release arrays and capsules during interpreter teardown, and
+  // those late destructors may free Vulkan-backed buffers. Keeping the Vulkan
+  // device alive until process exit avoids shutdown-order races between late
+  // buffer destruction and `Device::~Device()`.
+  static auto* instance = new Device();
+  return *instance;
 }
 
 CommandEncoder& get_command_encoder(Stream s) {

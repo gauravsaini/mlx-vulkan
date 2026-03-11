@@ -1,5 +1,8 @@
 // Copyright © 2024 Apple Inc.
 #pragma once
+#include <algorithm>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <vector>
@@ -99,36 +102,42 @@ std::string buffer_format(const mx::array& a) {
   }
 }
 
-struct buffer_info {
+struct buffer_owner {
   std::string format;
   std::vector<Py_ssize_t> shape;
   std::vector<Py_ssize_t> strides;
-  std::vector<char> host_data;
+  void* data{nullptr};
+  size_t size{0};
 
-  buffer_info(
+  buffer_owner(
       std::string format,
       std::vector<Py_ssize_t> shape_in,
       std::vector<Py_ssize_t> strides_in,
-      std::vector<char> host_data_in)
+      const buffer_snapshot& snapshot,
+      size_t itemsize)
       : format(std::move(format)),
         shape(std::move(shape_in)),
-        strides(std::move(strides_in)),
-        host_data(std::move(host_data_in)) {}
+        strides(std::move(strides_in)) {
+    size = snapshot.host_data.size();
+    if (size == 0) {
+      return;
+    }
 
-  buffer_info(const buffer_info&) = delete;
-  buffer_info& operator=(const buffer_info&) = delete;
-
-  buffer_info(buffer_info&& other) noexcept {
-    (*this) = std::move(other);
+    size_t alignment = std::max(itemsize, alignof(std::max_align_t));
+    void* ptr = nullptr;
+    if (posix_memalign(&ptr, alignment, size) != 0) {
+      throw std::bad_alloc();
+    }
+    std::memcpy(ptr, snapshot.host_data.data(), size);
+    data = ptr;
   }
 
-  buffer_info& operator=(buffer_info&& rhs) noexcept {
-    format = std::move(rhs.format);
-    shape = std::move(rhs.shape);
-    strides = std::move(rhs.strides);
-    host_data = std::move(rhs.host_data);
-    return *this;
+  ~buffer_owner() {
+    std::free(data);
   }
+
+  buffer_owner(const buffer_owner&) = delete;
+  buffer_owner& operator=(const buffer_owner&) = delete;
 };
 
 extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
@@ -151,18 +160,31 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
     s *= value.itemsize();
   }
   auto snapshot = snapshot_array(value);
-  buffer_info* info = new buffer_info(
+  auto* info = new buffer_owner(
       buffer_format(value),
       std::move(shape),
       std::move(strides),
-      std::move(snapshot.host_data));
+      snapshot,
+      value.itemsize());
+  PyObject* owner = PyCapsule_New(
+      info,
+      "mlx.buffer_owner",
+      [](PyObject* capsule) {
+        auto* owner = static_cast<buffer_owner*>(
+            PyCapsule_GetPointer(capsule, "mlx.buffer_owner"));
+        delete owner;
+      });
+  if (owner == nullptr) {
+    delete info;
+    return -1;
+  }
 
-  view->obj = obj;
+  view->obj = owner;
   view->ndim = value.ndim();
   view->internal = info;
-  view->buf = info->host_data.empty()
+  view->buf = snapshot.host_data.empty()
       ? nullptr
-      : (info->host_data.data() + snapshot.logical_byte_offset);
+      : (static_cast<char*>(info->data) + snapshot.logical_byte_offset);
   view->itemsize = value.itemsize();
   view->len = value.nbytes();
   // Expose the host snapshot as writable to preserve the existing MLX buffer
@@ -176,10 +198,9 @@ extern "C" inline int getbuffer(PyObject* obj, Py_buffer* view, int flags) {
     view->strides = info->strides.data();
     view->shape = info->shape.data();
   }
-  Py_INCREF(view->obj);
   return 0;
 }
 
 extern "C" inline void releasebuffer(PyObject*, Py_buffer* view) {
-  delete (buffer_info*)view->internal;
+  view->internal = nullptr;
 }

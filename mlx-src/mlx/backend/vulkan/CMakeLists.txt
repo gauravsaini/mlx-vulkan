@@ -131,6 +131,20 @@ add_custom_command(
   VERBATIM)
 list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_bluestein.spv)
 
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_four_step_0.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -o ${VULKAN_SHADER_OUTPUT_DIR}/fft_four_step_0.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_four_step_0.spv)
+
+add_custom_command(
+  OUTPUT ${VULKAN_SHADER_OUTPUT_DIR}/fft_four_step_1.spv
+  COMMAND ${GLSLC_PROGRAM} --target-env=vulkan1.2 -fshader-stage=compute -I${CMAKE_CURRENT_SOURCE_DIR}/kernels -o ${VULKAN_SHADER_OUTPUT_DIR}/fft_four_step_1.spv ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/fft.comp
+  VERBATIM)
+list(APPEND SPIRV_OUTPUTS ${VULKAN_SHADER_OUTPUT_DIR}/fft_four_step_1.spv)
+
 compile_shader(hadamard)
 
 add_custom_target(vulkan_shaders ALL DEPENDS ${SPIRV_OUTPUTS})

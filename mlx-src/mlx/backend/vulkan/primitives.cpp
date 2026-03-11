@@ -5,6 +5,7 @@
 #include "mlx/allocator.h"
 #include "mlx/backend/cpu/threefry.h"
 #include "mlx/backend/common/hadamard.h"
+#include "mlx/backend/common/unary.h"
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/gpu/slicing.h"
@@ -367,15 +368,21 @@ bool dispatch_unary(
     return false;
   }
 
-  array src = in;
+  const array* src = &in;
+  std::optional<array> materialized_src;
   // The unary shader reads linearly from buffer[0] and does not encode array
   // offsets or arbitrary logical strides. Materialize views first so sliced
   // tensors like split(x, 2)[1] produce correct results on Vulkan.
-  if (src.offset() != 0 || !src.flags().row_contiguous) {
-    src = contiguous_copy_gpu(src, stream);
+  if (in.offset() != 0 || !in.flags().row_contiguous) {
+    materialized_src = contiguous_copy_gpu(in, stream);
+    src = &*materialized_src;
   }
 
-  out.set_data(allocator::malloc(out.nbytes()));
+  if (!materialized_src.has_value()) {
+    set_unary_output_data(in, out);
+  } else {
+    out.set_data(allocator::malloc(out.nbytes()));
+  }
 
   // Nothing to do for empty arrays
   if (out.size() == 0) {
@@ -386,7 +393,7 @@ bool dispatch_unary(
   auto& dev = vulkan::device(stream.device);
   encoder.op_count++;
 
-  VkBuffer in_buf = vulkan::get_buffer(src);
+  VkBuffer in_buf = vulkan::get_buffer(*src);
   VkBuffer out_buf = vulkan::get_buffer(out);
 
   VkPipelineLayout layout;
@@ -432,7 +439,7 @@ bool dispatch_unary(
   } pc{
       static_cast<uint32_t>(out.size()),
       op_id,
-      src.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(src.itemsize()),
+      src->dtype() == bfloat16 ? 3u : static_cast<uint32_t>(src->itemsize()),
       static_cast<uint32_t>(out.itemsize())};
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -1086,6 +1093,7 @@ void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   if (use_temp_out) {
     copy_gpu(*temp_out, out, CopyType::General, stream());
+    dev.add_temporary(stream(), *temp_out);
   }
 }
 

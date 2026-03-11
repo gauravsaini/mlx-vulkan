@@ -274,6 +274,17 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
     return;
   }
 
+#if defined(__APPLE__)
+  // After an explicit sync boundary, tests and Python refcount-driven teardown
+  // expect memory to be released immediately. Keep free() synchronous on the
+  // current MoltenVK path rather than waiting for a future commit to flush a
+  // completion handler.
+  vulkan::device(stream.device).synchronize(stream);
+  buf->submitted_to_gpu = false;
+  destroy_now();
+  return;
+#endif
+
   // We must defer destruction until the GPU has finished executing all commands
   // that might be referencing this buffer. Apple Metal achieves this implicitly
   // via pooled reference counting; for Vulkan, we push it to the completion
@@ -492,7 +503,7 @@ size_t VulkanAllocator::get_peak_memory() const {
 
 void VulkanAllocator::reset_peak_memory() {
   std::lock_guard<std::mutex> lk(mutex_);
-  peak_memory_ = active_memory_;
+  peak_memory_ = 0;
 }
 
 size_t VulkanAllocator::get_memory_limit() const {
@@ -679,8 +690,8 @@ class CommonAllocator : public Allocator {
 };
 
 CommonAllocator& common_allocator() {
-  static CommonAllocator allocator_;
-  return allocator_;
+  static auto* allocator_ = new CommonAllocator();
+  return *allocator_;
 }
 
 thread_local int cpu_allocator_override_depth = 0;
@@ -812,8 +823,8 @@ class BridgeAllocator : public Allocator {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Allocator& allocator() {
-  static BridgeAllocator allocator_;
-  return allocator_;
+  static auto* allocator_ = new BridgeAllocator();
+  return *allocator_;
 }
 
 void push_cpu_allocator_override() {
@@ -893,7 +904,8 @@ void* Buffer::raw_ptr() {
     vk_buf->cpu_readback_ptr = std::malloc(vk_buf->size);
   }
   std::memcpy(vk_buf->cpu_readback_ptr, staging->mapped_ptr, vk_buf->size);
-  vulkan::allocator().free_staging(staging);
+  vmaDestroyBuffer(dev.vma_allocator(), staging->buffer, staging->allocation);
+  delete staging;
   return vk_buf->cpu_readback_ptr;
 }
 

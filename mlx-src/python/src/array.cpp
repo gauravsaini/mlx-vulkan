@@ -412,6 +412,25 @@ void init_array(nb::module_& m) {
             Returns:
                 out (Any): An object representing the array API namespace.
           )pbdoc")
+      .def(
+          "__array__",
+          [](const mx::array& a,
+             nb::object dtype,
+             nb::object copy) {
+            auto np = nb::module_::import_("numpy");
+            auto out = (a.dtype() == mx::bfloat16)
+                ? nb::cast(mlx_to_np_array(mx::view(a, mx::uint16)))
+                : nb::cast(mlx_to_np_array(a));
+            if (!dtype.is_none()) {
+              out = np.attr("asarray")(out, dtype);
+            }
+            if (!copy.is_none() && nb::cast<bool>(copy)) {
+              out = np.attr("array")(out, "copy"_a = true);
+            }
+            return out;
+          },
+          "dtype"_a = nb::none(),
+          "copy"_a = nb::none())
       .def("__getitem__", mlx_get_item, nb::arg().none())
       .def("__setitem__", mlx_set_item, nb::arg().none(), nb::arg())
       .def_prop_ro(

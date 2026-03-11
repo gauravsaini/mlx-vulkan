@@ -12,6 +12,7 @@
 #include "mlx/backend/vulkan/allocator.h"
 #include "mlx/backend/vulkan/device.h"
 #include "mlx/backend/vulkan/utils.h"
+#include "mlx/ops.h"
 #include "mlx/primitives.h"
 #include "mlx/utils.h"
 
@@ -397,7 +398,7 @@ void multi_upload_bluestein_fft(
 
   if (real && !inverse) {
     // Convert float32->complex64
-    copy_gpu(in, temp, CopyType::General, s);
+    temp = astype(in, complex64, s);
     copies.push_back(temp);
   } else if (real && inverse) {
     int back_offset = n % 2 == 0 ? 2 : 1;
@@ -411,29 +412,37 @@ void multi_upload_bluestein_fft(
     // unary_op_gpu({in}, conj_temp, "Conjugate", s);
     // slice_gpu(in, slice_temp, rstarts, rstrides, s);
     // concatenate_gpu({conj_temp, slice_temp}, temp, (int)axis, s);
-    throw std::runtime_error("[vulkan::fft] Inverse Conjugate/Slice pipeline fallback missing.");
+    auto mirrored = conjugate(slice(in, rstarts, slice_shape, s), s);
+    temp = concatenate({conj_temp, mirrored}, static_cast<int>(axis), s);
+    copies.push_back(mirrored);
+    copies.push_back(temp);
   } else if (inverse) {
-    // Vulkan Fallback Unary Conjugate
-    throw std::runtime_error("[vulkan::fft] Conjugate unary fallback natively missing.");
+    temp = conjugate(in, s);
+    copies.push_back(temp);
   } else {
     temp.copy_shared_buffer(in);
   }
 
-  Strides b_strides(in.ndim(), 0);
-  b_strides[axis] = 1;
-  array w_k_broadcast(temp.shape(), complex64, nullptr, {});
-  w_k_broadcast.copy_shared_buffer(w_k, b_strides, {}, w_k.data_size());
-  // binary_op_gpu({temp, w_k_broadcast}, temp1, "Multiply", s);
-  throw std::runtime_error("[vulkan::fft] Binary Multiply fallback missing.");
+  Shape wk_shape(temp.ndim(), 1);
+  wk_shape[axis] = w_k.shape(0);
+  auto w_k_broadcast = broadcast_to(reshape(w_k, wk_shape, s), temp.shape(), s);
+  temp1 = multiply(temp, w_k_broadcast, s);
+  copies.push_back(w_k_broadcast);
+  copies.push_back(temp1);
 
-  std::vector<std::pair<int, int>> pads;
-  auto padded_shape = out.shape();
+  auto padded_shape = temp1.shape();
   padded_shape[axis] = plan.bluestein_n;
-  array pad_temp(padded_shape, complex64, nullptr, {});
   auto zero = array(complex64_t{0.0f, 0.0f});
   copies.push_back(zero);
-  // pad_gpu(temp1, zero, pad_temp, {(int)axis}, {0}, s); // Not easily supported natively without shader
-  throw std::runtime_error("[vulkan::fft] Pad GPU fallback missing.");
+  auto pad_temp = pad(
+      temp1,
+      {static_cast<int>(axis)},
+      Shape{0},
+      Shape{static_cast<int>(plan.bluestein_n - n)},
+      zero,
+      "constant",
+      s);
+  copies.push_back(pad_temp);
 
   array pad_temp1(padded_shape, complex64, nullptr, {});
   fft_op(
@@ -447,9 +456,13 @@ void multi_upload_bluestein_fft(
       s);
   copies.push_back(pad_temp1);
 
-  array w_q_broadcast(pad_temp1.shape(), complex64, nullptr, {});
-  w_q_broadcast.copy_shared_buffer(w_q, b_strides, {}, w_q.data_size());
-  // binary_op_gpu_inplace({pad_temp1, w_q_broadcast}, pad_temp, "Multiply", s);
+  Shape wq_shape(pad_temp1.ndim(), 1);
+  wq_shape[axis] = w_q.shape(0);
+  auto w_q_broadcast =
+      broadcast_to(reshape(w_q, wq_shape, s), pad_temp1.shape(), s);
+  pad_temp = multiply(pad_temp1, w_q_broadcast, s);
+  copies.push_back(w_q_broadcast);
+  copies.push_back(pad_temp);
 
   fft_op(
       pad_temp,
@@ -466,14 +479,19 @@ void multi_upload_bluestein_fft(
   Shape strides(in.ndim(), 1);
   starts[axis] = plan.bluestein_n - offset - n;
 
-  array temp2(temp_shape, complex64, nullptr, {});
-  // slice_gpu(pad_temp1, temp2, starts, strides, s);
-  // binary_op_gpu_inplace({temp2, w_k_broadcast}, temp1, "Multiply", s);
+  auto stops = starts;
+  stops[axis] += n;
+  auto temp2 = slice(pad_temp1, starts, stops, strides, s);
+  temp1 = multiply(temp2, w_k_broadcast, s);
+  copies.push_back(temp2);
+  copies.push_back(temp1);
 
   if (real && !inverse) {
     Shape rstarts(in.ndim(), 0);
     Shape rstrides(in.ndim(), 1);
-    // slice_gpu(temp1, out, rstarts, strides, s);
+    auto rstop = temp1.shape();
+    rstop[axis] = out.shape(axis);
+    out.copy_shared_buffer(slice(temp1, rstarts, rstop, rstrides, s));
   } else if (real && inverse) {
     Strides b_strides(in.ndim(), 0);
     auto inv_n = array({1.0f / n}, {1}, float32);
@@ -483,12 +501,12 @@ void multi_upload_bluestein_fft(
     copies.push_back(temp1);
 
     copy_gpu(temp1, temp_float, CopyType::General, s);
-    // binary_op_gpu({temp_float, inv_n}, out, "Multiply", s);
+    out.copy_shared_buffer(multiply(temp_float, inv_n, s));
   } else if (inverse) {
     auto inv_n = array({1.0f / n}, {1}, complex64);
-    array temp3(temp_shape, complex64, nullptr, {});
-    // unary_op_gpu({temp1}, temp3, "Conjugate", s);
-    // binary_op_gpu({temp3, inv_n}, out, "Multiply", s);
+    auto temp3 = conjugate(temp1, s);
+    copies.push_back(temp3);
+    out.copy_shared_buffer(multiply(temp3, inv_n, s));
   } else {
     out.copy_shared_buffer(temp1);
   }

@@ -197,19 +197,18 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
     const mx::array& a,
     std::optional<nb::dlpack::dtype> t = {}) {
   struct NdArrayOwner {
-    explicit NdArrayOwner(const mx::array& input) : array(input) {}
-    mx::array array;
+    int ndim{0};
     std::vector<size_t> shape;
     std::vector<int64_t> strides;
     std::vector<char> host_data;
   };
 
-  auto owner = std::make_unique<NdArrayOwner>(a);
-  owner->array = eval_for_host_read(owner->array);
-  owner->shape.assign(owner->array.shape().begin(), owner->array.shape().end());
-  owner->strides.assign(
-      owner->array.strides().begin(), owner->array.strides().end());
-  auto snapshot = snapshot_array(owner->array);
+  auto value = eval_for_host_read(a);
+  auto owner = std::make_unique<NdArrayOwner>();
+  owner->ndim = value.ndim();
+  owner->shape.assign(value.shape().begin(), value.shape().end());
+  owner->strides.assign(value.strides().begin(), value.strides().end());
+  auto snapshot = snapshot_array(value);
   owner->host_data = std::move(snapshot.host_data);
   auto* data_ptr =
       reinterpret_cast<T*>(owner->host_data.data() + snapshot.logical_byte_offset);
@@ -219,7 +218,7 @@ nb::ndarray<NDParams...> mlx_to_nd_array_impl(
       [](void* ptr) noexcept { delete static_cast<NdArrayOwner*>(ptr); });
   return nb::ndarray<NDParams...>(
       data_ptr,
-      owner_ptr->array.ndim(),
+      owner_ptr->ndim,
       owner_ptr->shape.data(),
       capsule,
       owner_ptr->strides.data(),
