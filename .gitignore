@@ -58,6 +58,7 @@ CMakeLists_test.txt
 
 # Scratch / experiment files
 scripts/
+RESEARCH_PIVOT.md
 test.cpp
 test_out.txt
 test_segfault.cpp

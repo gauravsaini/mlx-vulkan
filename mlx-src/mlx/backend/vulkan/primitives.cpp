@@ -20,6 +20,7 @@
 #include "mlx/transforms.h"
 
 #include <iostream>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -60,6 +61,23 @@ namespace {
 bool debug_vulkan_qmm() {
   const char* env = std::getenv("MLX_VULKAN_DEBUG_QMM");
   return env != nullptr && env[0] != '\0' && env[0] != '0';
+}
+
+bool fail_on_vulkan_cpu_fallback() {
+  const char* env = std::getenv("MLX_VULKAN_FAIL_ON_CPU_FALLBACK");
+  return env != nullptr && env[0] != '\0' && env[0] != '0';
+}
+
+void warn_once_about_compiled_cpu_fallback() {
+  static std::once_flag warning_once;
+  std::call_once(warning_once, []() {
+    std::fprintf(
+        stderr,
+        "[MLX Vulkan] WARNING: mx.compile() graphs have no Vulkan "
+        "implementation yet; falling back to CPU. Set "
+        "MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1 to make this an error.\n");
+    std::fflush(stderr);
+  });
 }
 
 void materialize_fallback_outputs(
@@ -3526,6 +3544,13 @@ void Compiled::eval_gpu(
   // Vulkan JIT is not implemented yet. Drain pending GPU work before the CPU
   // fallback so the fallback never reads stale device data.
   vulkan::device(stream().device).synchronize(stream());
+  if (fail_on_vulkan_cpu_fallback()) {
+    throw std::runtime_error(
+        "Compiled Vulkan graphs are not supported while "
+        "MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1. Disable mx.compile() or use eager "
+        "execution.");
+  }
+  warn_once_about_compiled_cpu_fallback();
   eval_cpu(inputs, outputs);
 }
 

@@ -65,7 +65,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | Tensor ops | proven (historical) | **proven** | not run |
 | Autograd | proven (historical) | **proven** | not run |
 | Optimizers (SGD) | proven (historical) | **proven** (tiny MLP) | not run |
-| Optimizers (Adam) | proven (local gate) | not run | not run |
+| Optimizers (Adam) | proven (local gate) | **proven** (transformer training) | not run |
 | Tiny MLP training | proven (historical) | **proven** | not run |
 | Linalg CPU fallback | proven (historical, unified mem) | **failing** | not run |
 | Tiny transformer training | proven (local gate) | **proven** | not run |
@@ -108,7 +108,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | --- | --- | --- | --- |
 | Tensor Ops | Large matmul, elementwise ops | Runs on Vulkan GPU without CPU fallback | In progress; core ops proven, broader MLX tensor coverage still pending |
 | Autograd | Gradient tests on simple loss | Gradients match CPU backend within tolerance | ✅ Proven on AMD Vulkan |
-| Optimizers | Adam / SGD updates | Parameters update correctly | ✅ SGD proven in tiny MLP smoke; Adam still needs explicit validation |
+| Optimizers | Adam / SGD updates | Parameters update correctly | ✅ SGD proven in tiny MLP smoke; Adam proven in real-AMD transformer training |
 | Neural Net Training | Small MLP or CNN | Loss decreases consistently | ✅ Tiny 2-layer MLP proven |
 | Transformer Training | Tiny transformer | Training converges without CPU fallback | ✅ Proven on real AMD Vulkan |
 | TinyGPT Training | TinyGPT, 10 epochs | Training stays finite and converges without CPU fallback | ✅ Proven on real AMD Vulkan |
@@ -144,7 +144,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Fix the real AMD training blocker in the generic `Linear` / matmul path:
       non-cooperative batched matmul on `subgroup_size=64` no longer mis-tiles the RHS or corrupt the fallback tile buffers on AMD.
 - [x] Re-run `test_tiny_transformer.py` and `test_tinygpt_10epoch.py` on real AMD after the `Linear` / matmul fix.
-- [ ] Audit transformer-critical ops for fallback-free execution:
+- [x] Audit transformer-critical ops for fallback-free execution:
       `matmul`, `addmm`, `softmax`, `layer_norm`, `rope`, embeddings, masking, indexing, optimizer updates.
 - [ ] Identify and remove remaining blockers for real LLM workloads:
       broader MLX suite coverage, sequence-length scaling, long-run stability, and cross-vendor validation.
