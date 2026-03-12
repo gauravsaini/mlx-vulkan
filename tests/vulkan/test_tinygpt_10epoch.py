@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Tiny transformer training smoke for the Vulkan backend.
+TinyGPT 10-epoch training smoke for the Vulkan backend.
 
-This gate intentionally uses manual causal attention instead of
-mx.fast.scaled_dot_product_attention so the training path stays on the core
-ops we are trying to validate for Vulkan compatibility.
-
-It trains on real token embeddings with a next-token cross-entropy objective.
+This extends the shorter tiny-transformer smoke into a longer convergence gate
+using a tiny causal language model trained on a small repeated token corpus.
+The path intentionally stays on eager, Vulkan-safe core ops and forbids CPU
+fallback during training.
 """
 
 import importlib.util
@@ -62,7 +61,7 @@ def main():
         return 1
 
     print("========================================")
-    print("  Tiny Transformer Vulkan Smoke")
+    print("  TinyGPT 10-Epoch Vulkan Smoke")
     print("========================================")
     print(f"  Python: {sys.version.split()[0]}")
     print(f"  Platform: {platform.platform()}")
@@ -115,13 +114,11 @@ def main():
             x = x + self.o_proj(attn_out)
 
             h = self.ln2(x)
-            # Avoid nn.relu here: it is an mx.compile wrapper, and Vulkan
-            # compiled graphs still route through CPU fallback.
             h = self.ff2(mx.maximum(self.ff1(h), 0))
             return x + h
 
-    class TinyTransformer(nn.Module):
-        def __init__(self, vocab_size=16, dims=32, heads=4, layers=1, seq_len=8):
+    class TinyGPT(nn.Module):
+        def __init__(self, vocab_size=24, dims=64, heads=4, layers=2, seq_len=16):
             super().__init__()
             self.token_emb = nn.Embedding(vocab_size, dims)
             self.pos_emb = nn.Embedding(seq_len, dims)
@@ -137,25 +134,33 @@ def main():
             mask = mask[None, None, :, :]
             for block in self.blocks:
                 x = block(x, mask)
-            x = self.ln(x)
-            return self.out_proj(x)
+            return self.out_proj(self.ln(x))
+
+    def build_dataset(vocab_size, seq_len, batch_size):
+        base_pattern = np.array(
+            [0, 5, 9, 13, 17, 21, 4, 8, 12, 16, 20, 3, 7, 11, 15, 19, 23],
+            dtype=np.int32,
+        )
+        rows = []
+        for i in range(batch_size):
+            offset = (3 * i) % vocab_size
+            rows.append((base_pattern[: seq_len + 1] + offset) % vocab_size)
+        tokens = np.stack(rows, axis=0)
+        return (
+            mx.array(tokens[:, :-1], dtype=mx.int32),
+            mx.array(tokens[:, 1:], dtype=mx.int32),
+        )
 
     def check_training():
-        mx.random.seed(11)
-        vocab_size = 16
-        seq_len = 8
-        batch = 8
+        mx.random.seed(17)
+        vocab_size = 24
+        seq_len = 16
+        batch_size = 12
+        epochs = 10
 
-        base = np.arange(seq_len + 1, dtype=np.int32)
-        tokens_np = np.stack(
-            [(base + i) % vocab_size for i in range(batch)],
-            axis=0,
-        )
-        x = mx.array(tokens_np[:, :-1], dtype=mx.int32)
-        y = mx.array(tokens_np[:, 1:], dtype=mx.int32)
-
-        model = TinyTransformer(vocab_size=vocab_size, seq_len=seq_len)
-        optimizer = optim.Adam(learning_rate=5e-3)
+        x, y = build_dataset(vocab_size, seq_len, batch_size)
+        model = TinyGPT(vocab_size=vocab_size, seq_len=seq_len)
+        optimizer = optim.Adam(learning_rate=3e-3)
         optimizer.init(model.parameters())
 
         def loss_fn(params):
@@ -165,24 +170,31 @@ def main():
 
         loss_and_grad = mx.value_and_grad(loss_fn)
         params = model.parameters()
-        losses = []
-        for _ in range(30):
+        epoch_losses = []
+
+        for _ in range(epochs):
             loss, grads = loss_and_grad(params)
             params = optimizer.apply_gradients(grads, params)
             mx.eval(loss)
-            losses.append(float(loss.tolist()))
+            epoch_losses.append(float(loss.tolist()))
 
-        if not np.isfinite(losses).all():
-            raise RuntimeError(f"non-finite losses: {losses}")
-        if not losses[-1] < losses[0]:
-            raise RuntimeError(f"loss did not decrease: {losses[0]} -> {losses[-1]}")
-        if min(losses[-5:]) > losses[0]:
-            raise RuntimeError(f"training did not converge enough: {losses}")
-        print(f"  Loss: {losses[0]:.4f} -> {losses[-1]:.4f}")
+        if not np.isfinite(epoch_losses).all():
+            raise RuntimeError(f"non-finite losses: {epoch_losses}")
+        if not epoch_losses[-1] < epoch_losses[0]:
+            raise RuntimeError(
+                f"loss did not decrease over {epochs} epochs: "
+                f"{epoch_losses[0]} -> {epoch_losses[-1]}"
+            )
+        if min(epoch_losses[-3:]) >= epoch_losses[0]:
+            raise RuntimeError(f"late training did not improve enough: {epoch_losses}")
+        print(
+            "  Epoch losses:",
+            ", ".join(f"{loss:.4f}" for loss in epoch_losses),
+        )
 
     try:
         check("gpu detect", check_gpu, errors)
-        check("tiny transformer training", check_training, errors)
+        check("tinygpt 10-epoch training", check_training, errors)
     finally:
         if prev_fail_on_cpu_fallback is None:
             os.environ.pop("MLX_VULKAN_FAIL_ON_CPU_FALLBACK", None)
@@ -196,7 +208,7 @@ def main():
         print(f"\nFAIL: {len(errors)} checks failed")
         return 1
 
-    print("PASS: tiny transformer Vulkan smoke succeeded")
+    print("PASS: TinyGPT 10-epoch Vulkan smoke succeeded")
     return 0
 
 

@@ -15,7 +15,11 @@ layout(constant_id = 1) const uint SUBGROUP_SIZE = 32;
 // The block size (TILE_SIZE) is dictated by the wave/subgroup width to maximize SIMD
 // efficiency. We tune BN based on SUBGROUP_SIZE (64 for AMD, 32 for Intel/Apple)
 // to ensure memory accesses and compute align with wavefront boundaries.
+#ifdef MLX_USE_COOP_MAT
 const uint BN = (SUBGROUP_SIZE == 64) ? 32 : 16;
+#else
+const uint BN = 16;
+#endif
 const uint BM = WORKGROUP_SIZE / BN;
 const uint BK = 16;
 

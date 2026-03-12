@@ -2,6 +2,54 @@
 
 ## UPDATED ON : 2026-03-12
 
+### confirm (2026-03-12) — Real AMD tiny-transformer and TinyGPT training now pass
+
+1. **Root cause fixed in AMD batched matmul** (`mlx/backend/vulkan/primitives.cpp`, `mlx/backend/vulkan/kernels/matmul.comp`):
+   - The real AMD training blocker was not embeddings or the loss wrapper; it was the non-cooperative batched matmul path on `subgroup_size=64`.
+   - Two concrete bugs were fixed:
+     - batched `Matmul(x[B,T,C], w[C,N])` was incorrectly advancing a broadcast RHS per batch instead of keeping the 2D weight matrix at batch stride `0`,
+     - the fallback `matmul.comp` path used the AMD-specific `BN=32` tile even when not using cooperative matrices, which made the shared-memory tile layout invalid on the non-cooperative path.
+   - The fix now:
+     - computes per-input batch strides and uses `0` for fully broadcast operands,
+     - keeps mixed unsupported broadcast patterns on the CPU fallback path,
+     - uses a safe `16x16` tile for the non-cooperative shader while preserving the `32`-wide cooperative path when tensor-core-style conditions are met.
+
+2. **Real AMD transformer ops audit is green with a direct batched-matmul check** (`tests/vulkan/test_transformer_ops_audit.py`):
+   - Added a dedicated batched `Linear` / matmul numerical check against a NumPy reference.
+   - Re-ran on the live `g4ad.xlarge` box with `MLX_VULKAN_REQUIRE_VENDOR=amd`.
+   - Confirmed on real AMD hardware:
+     - embeddings + causal attention forward,
+     - batched `Linear` / matmul,
+     - LayerNorm forward/backward,
+     - optimizer update,
+     - RoPE,
+     - RMSNorm,
+     - SiLU (uncompiled),
+     - standard `TransformerEncoderLayer` (uncompiled).
+
+3. **Real AMD tiny-transformer training is green again** (`tests/vulkan/test_tiny_transformer.py`):
+   - Re-ran the strict next-token tiny-transformer smoke on the live AMD box after the batched-matmul fix.
+   - Result: loss decreases cleanly from `2.7138 -> 0.0001` with CPU fallback still forbidden for the training path.
+
+4. **Real AMD TinyGPT 10-epoch training is green** (`tests/vulkan/test_tinygpt_10epoch.py`):
+   - Re-ran the new longer training gate on the live AMD box.
+   - Result: 10-epoch loss decreases cleanly:
+     `3.3018, 2.6638, 2.6086, 2.0718, 1.5212, 1.0247, 0.7332, 0.4517, 0.3097, 0.2093`
+   - This is the strongest real-hardware training confirmation so far for the Vulkan backend.
+
+5. **Current implication**:
+   - Real AMD Vulkan runtime is proven.
+   - Real AMD Stage 25 is proven.
+   - Real AMD transformer-critical op coverage is proven.
+   - Real AMD tiny-transformer training is proven.
+   - Real AMD TinyGPT 10-epoch training is proven.
+   - The main remaining real-hardware blockers move back to:
+     - quantized `GatherMM` / sorted quantized compatibility,
+     - CPU-fallback linalg correctness on discrete AMD,
+     - NVIDIA validation and longer-run stability.
+
+---
+
 ### confirm (2026-03-12) — Real AMD Stage 25 passes; training blocker narrowed to plain `Linear`
 
 1. **AWS AMD runtime/toolchain confirmation** (`scripts/aws_amd_bootstrap.sh`, `scripts/amd_vulkan_build_and_smoke.sh`):

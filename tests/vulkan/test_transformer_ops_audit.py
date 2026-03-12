@@ -79,6 +79,22 @@ def main():
         if not np.isfinite(out_np).all():
             raise RuntimeError("attention output contains non-finite values")
 
+    def check_batched_linear():
+        x_np = np.linspace(-1.5, 1.5, num=2 * 8 * 32, dtype=np.float32).reshape(2, 8, 32)
+        w_np = np.linspace(-0.75, 0.75, num=32 * 32, dtype=np.float32).reshape(32, 32)
+        x = mx.array(x_np)
+        w = mx.array(w_np)
+        y = x @ w.T
+        mx.eval(y)
+        y_np = np.asarray(y)
+        if y_np.shape != (2, 8, 32):
+            raise RuntimeError(f"unexpected matmul shape: {y_np.shape}")
+        if not np.isfinite(y_np).all():
+            raise RuntimeError("batched matmul output contains non-finite values")
+        ref = np.matmul(x_np, w_np.T)
+        if not np.allclose(y_np, ref, atol=1e-4, rtol=1e-4):
+            raise RuntimeError(f"batched matmul mismatch: max diff={np.max(np.abs(y_np - ref))}")
+
     def check_layer_norm_forward():
         layer = nn.LayerNorm(32)
         x = mx.random.normal(shape=(2, 4, 32))
@@ -158,6 +174,7 @@ def main():
     try:
         check("gpu detect", check_gpu, errors)
         check("embeddings + causal attention forward", check_embeddings_and_attention, errors)
+        check("batched linear/matmul forward", check_batched_linear, errors)
         check("layer norm forward", check_layer_norm_forward, errors)
         check("layer norm backward", check_layer_norm_backward, errors)
         check("optimizer update", check_optimizer_update, errors)

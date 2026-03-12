@@ -1672,17 +1672,57 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     batch *= static_cast<uint32_t>(out.shape(i));
   }
 
+  auto compute_batch_stride = [&](const array& arr) -> std::optional<uint32_t> {
+    int out_batch_ndim = std::max<int>(0, static_cast<int>(out.ndim()) - 2);
+    int arr_batch_ndim = std::max<int>(0, static_cast<int>(arr.ndim()) - 2);
+    bool saw_broadcast = false;
+    bool saw_varying = false;
+
+    for (int out_i = out_batch_ndim - 1, arr_i = arr_batch_ndim - 1;
+         out_i >= 0;
+         --out_i, --arr_i) {
+      int arr_dim = (arr_i >= 0) ? arr.shape(arr_i) : 1;
+      int out_dim = out.shape(out_i);
+      if (arr_dim == out_dim) {
+        saw_varying = true;
+      } else if (arr_dim == 1) {
+        saw_broadcast = true;
+      } else {
+        return std::nullopt;
+      }
+    }
+
+    // This shader only supports either fully varying batch indices or a
+    // fully broadcast input. Mixed broadcast patterns need per-dimension batch
+    // remapping, so keep them on the CPU path for now.
+    if (saw_broadcast && saw_varying) {
+      return std::nullopt;
+    }
+    if (!saw_varying) {
+      return 0u;
+    }
+    return static_cast<uint32_t>(
+        ((arr.ndim() >= 2) ? arr.shape(-2) : 1) * arr.shape(-1));
+  };
+
+  auto a_batch_stride = compute_batch_stride(a);
+  auto b_batch_stride = compute_batch_stride(b);
+  if (!a_batch_stride || !b_batch_stride) {
+    vulkan::device(stream().device).synchronize(stream());
+    eval_cpu(inputs, out);
+    return;
+  }
+
   VkBuffer a_buf = vulkan::get_buffer(a);
   VkBuffer b_buf = vulkan::get_buffer(b);
   VkBuffer c_buf = vulkan::get_buffer(use_temp_out ? *temp_out : out);
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
+  bool use_coop = dev.has_cooperative_matrix() && (M % 16 == 0) &&
+      (N % 16 == 0) && (K % 16 == 0);
   VkPipeline pipeline = dev.get_pipeline(
-      dev.has_cooperative_matrix() && (M % 16 == 0) && (N % 16 == 0) &&
-              (K % 16 == 0)
-          ? "matmul_coop"
-          : "matmul",
+      use_coop ? "matmul_coop" : "matmul",
       layout,
       ds_layout,
       3,
@@ -1727,8 +1767,8 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       N,
       K,
       batch,
-      M * K,
-      K * N,
+      *a_batch_stride,
+      *b_batch_stride,
       M * N,
       a.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a.itemsize()),
       b.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b.itemsize())};
@@ -1742,7 +1782,7 @@ void Matmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Grid: dynamically computed from specialization caps
   uint32_t subgroup_size = dev.subgroup_size();
-  uint32_t BN = (subgroup_size == 64) ? 32 : 16;
+  uint32_t BN = use_coop ? ((subgroup_size == 64) ? 32 : 16) : 16;
   uint32_t BM = 256 / BN;
   vkCmdDispatch(cmd, vulkan::div_ceil(N, BN), vulkan::div_ceil(M, BM), batch);
 

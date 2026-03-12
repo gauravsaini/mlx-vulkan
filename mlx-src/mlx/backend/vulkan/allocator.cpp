@@ -478,7 +478,8 @@ VkBuffer get_buffer(const array& arr) {
       if (arr.buffer().ptr() == nullptr) {
         return 0ULL;
       }
-      return *reinterpret_cast<const uint64_t*>(arr.buffer().ptr());
+      return static_cast<unsigned long long>(
+          *reinterpret_cast<const uint64_t*>(arr.buffer().ptr()));
     };
 
     switch (classify()) {
@@ -791,6 +792,7 @@ class BridgeAllocator : public Allocator {
       case BufferBackend::unknown:
         return 0;
     }
+    return 0;
   }
 
   Buffer make_buffer(void* ptr, size_t size) override {
