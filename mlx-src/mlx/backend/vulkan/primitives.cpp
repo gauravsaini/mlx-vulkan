@@ -5,6 +5,7 @@
 #include "mlx/allocator.h"
 #include "mlx/backend/cpu/threefry.h"
 #include "mlx/backend/cpu/lapack.h"
+#include "mlx/backend/common/binary.h"
 #include "mlx/backend/common/hadamard.h"
 #include "mlx/backend/common/unary.h"
 #include "mlx/backend/common/utils.h"
@@ -16,12 +17,15 @@
 #include "mlx/distributed/primitives.h"
 #include "mlx/fast_primitives.h"
 #include "mlx/ops.h"
+#include "mlx/transforms.h"
 
 #include <iostream>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mlx::core {
@@ -53,6 +57,11 @@ namespace mlx::core {
 
 namespace {
 
+bool debug_vulkan_qmm() {
+  const char* env = std::getenv("MLX_VULKAN_DEBUG_QMM");
+  return env != nullptr && env[0] != '\0' && env[0] != '0';
+}
+
 void materialize_fallback_outputs(
     std::vector<array> fallback_outputs,
     std::vector<array>& outputs) {
@@ -70,16 +79,215 @@ void materialize_fallback_outputs(
 array materialize_to_cpu_copy(const array& src) {
   array value = src;
   value.eval();
+  if (value.has_primitive()) {
+    mlx::core::synchronize(value.primitive().stream());
+  }
   allocator::ScopedCpuAllocatorOverride cpu_allocator;
   array out(value.shape(), value.dtype(), nullptr, {});
   out.set_data(allocator::malloc(value.nbytes()));
   if (value.nbytes() > 0) {
     std::vector<char> host(value.nbytes());
-    allocator::copy_to_host(
-        value.buffer(), host.data(), host.size(), value.offset());
+    std::memcpy(host.data(), value.data<char>(), host.size());
     allocator::copy_from_host(out.buffer(), host.data(), host.size());
   }
+  out.set_status(array::Status::available);
   return out;
+}
+
+bool is_vulkan_backed_array(const array& arr) {
+  if (arr.buffer().ptr() == nullptr) {
+    return true;
+  }
+  return *reinterpret_cast<const uint64_t*>(arr.buffer().ptr()) ==
+      vulkan::VulkanBuffer::kMagic;
+}
+
+array upload_explicit_vulkan_input(const array& src, const Stream& s) {
+  auto cpu_stream = default_stream(Device::cpu);
+  auto materialize_stream =
+      (src.has_primitive() && src.primitive().stream().device == Device::gpu) ? s
+                                                                               : cpu_stream;
+  auto value = src;
+  if (!value.flags().row_contiguous) {
+    value = contiguous(value, false, materialize_stream);
+  }
+  value.eval();
+  if (value.has_primitive() && value.primitive().stream().device == Device::gpu) {
+    vulkan::device(s.device).synchronize(s);
+  }
+  auto cpu_value = materialize_to_cpu_copy(value);
+  array gpu_value(cpu_value.shape(), cpu_value.dtype(), nullptr, {});
+  gpu_value.set_data(allocator::malloc(gpu_value.nbytes()));
+  if (gpu_value.nbytes() > 0) {
+    vulkan::copy_from_host(gpu_value, cpu_value.data<char>(), gpu_value.nbytes(), s);
+  }
+  gpu_value.set_status(array::Status::available);
+  return gpu_value;
+}
+
+float debug_max_abs_cpu(array value, Stream stream) {
+  if (value.size() == 0) {
+    return 0.0f;
+  }
+  if (value.dtype() != float32) {
+    value = astype(value, float32, stream);
+  }
+  auto maxv = max(abs(value, stream), stream);
+  maxv.eval();
+  mlx::core::synchronize(stream);
+  maxv = materialize_to_cpu_copy(maxv);
+  float host = 0.0f;
+  allocator::copy_to_host(maxv.buffer(), &host, sizeof(float), maxv.offset());
+  return host;
+}
+
+std::unordered_map<std::uintptr_t, array> materialize_family_to_cpu_copies(
+    const std::vector<array>& roots) {
+  std::vector<array> eval_group;
+  std::unordered_set<std::uintptr_t> seen;
+  for (const auto& root : roots) {
+    if (root.has_primitive() && !root.siblings().empty()) {
+      for (const auto& member : root.outputs()) {
+        if (seen.insert(member.id()).second) {
+          eval_group.push_back(member);
+        }
+      }
+    } else if (seen.insert(root.id()).second) {
+      eval_group.push_back(root);
+    }
+  }
+
+  if (!eval_group.empty()) {
+    mlx::core::eval(eval_group);
+  }
+
+  std::unordered_map<std::uintptr_t, array> cpu_copies;
+  cpu_copies.reserve(eval_group.size());
+  for (const auto& member : eval_group) {
+    cpu_copies.emplace(member.id(), materialize_to_cpu_copy(member));
+  }
+  return cpu_copies;
+}
+
+std::unordered_map<std::uintptr_t, array> materialize_family_to_cpu_stream_copies(
+    const std::vector<array>& roots,
+    Stream cpu_stream) {
+  std::vector<array> family;
+  std::unordered_set<std::uintptr_t> seen;
+  for (const auto& root : roots) {
+    if (root.has_primitive() && !root.siblings().empty()) {
+      for (const auto& member : root.outputs()) {
+        if (seen.insert(member.id()).second) {
+          family.push_back(member);
+        }
+      }
+    } else if (seen.insert(root.id()).second) {
+      family.push_back(root);
+    }
+  }
+
+  std::vector<array> staged;
+  staged.reserve(family.size());
+  for (const auto& member : family) {
+    auto cpu_value = copy(member, cpu_stream);
+    cpu_value = contiguous(cpu_value, false, cpu_stream);
+    staged.push_back(std::move(cpu_value));
+  }
+
+  if (!staged.empty()) {
+    mlx::core::eval(staged);
+    mlx::core::synchronize(cpu_stream);
+  }
+
+  std::unordered_map<std::uintptr_t, array> cpu_copies;
+  cpu_copies.reserve(staged.size());
+  for (size_t i = 0; i < staged.size(); ++i) {
+    cpu_copies.emplace(family[i].id(), materialize_to_cpu_copy(staged[i]));
+  }
+  return cpu_copies;
+}
+
+array cpu_reference_gather_mm(
+    const array& a,
+    const array& b,
+    const array& lhs_indices,
+    const array& rhs_indices) {
+  allocator::ScopedCpuAllocatorOverride cpu_allocator;
+  auto out_shape = lhs_indices.shape();
+  out_shape.push_back(a.shape(-2));
+  out_shape.push_back(b.shape(-1));
+  array out(out_shape, float32, nullptr, {});
+  out.set_data(allocator::malloc(out.nbytes()));
+
+  size_t M = a.shape(-2);
+  size_t N = b.shape(-1);
+  size_t K = a.shape(-1);
+  if (M == 0 || N == 0) {
+    return out;
+  }
+  std::fill_n(out.data<float>(), out.size(), 0.0f);
+  if (K == 0) {
+    return out;
+  }
+
+  auto get_batch_dims = [](const auto& v) {
+    return decltype(v){v.begin(), v.end() - 2};
+  };
+
+  auto batch_size_out = out.size() / (M * N);
+  auto matrix_stride_out = M * N;
+  auto batch_shape_A = get_batch_dims(a.shape());
+  auto batch_strides_A = get_batch_dims(a.strides());
+  auto batch_shape_B = get_batch_dims(b.shape());
+  auto batch_strides_B = get_batch_dims(b.strides());
+
+  const float* a_ptr = a.data<float>();
+  const float* b_ptr = b.data<float>();
+  float* out_ptr = out.data<float>();
+  const uint32_t* lhs_indices_ptr = lhs_indices.data<uint32_t>();
+  const uint32_t* rhs_indices_ptr = rhs_indices.data<uint32_t>();
+  auto lda = static_cast<int>(K);
+  auto ldb = static_cast<int>(N);
+  auto ldc = static_cast<int>(N);
+
+  for (int i = 0; i < batch_size_out; ++i) {
+    uint32_t indx_A =
+        lhs_indices_ptr[elem_to_loc(i, lhs_indices.shape(), lhs_indices.strides())];
+    uint32_t indx_B =
+        rhs_indices_ptr[elem_to_loc(i, rhs_indices.shape(), rhs_indices.strides())];
+    cblas_sgemm(
+        CblasRowMajor,
+        CblasNoTrans,
+        CblasNoTrans,
+        static_cast<int>(M),
+        static_cast<int>(N),
+        static_cast<int>(K),
+        1.0f,
+        a_ptr + elem_to_loc(indx_A, batch_shape_A, batch_strides_A),
+        lda,
+        b_ptr + elem_to_loc(indx_B, batch_shape_B, batch_strides_B),
+        ldb,
+        0.0f,
+        out_ptr + matrix_stride_out * i,
+        ldc);
+  }
+  return out;
+}
+
+array default_gather_indices(const array& x, Stream cpu_stream) {
+  Shape shape(x.shape().begin(), x.shape().end() - 2);
+  int total = std::reduce(shape.begin(), shape.end(), 1, std::multiplies<int>());
+  return reshape(arange(total, uint32, cpu_stream), std::move(shape), cpu_stream);
+}
+
+array materialize_family_member_to_cpu_copy(const array& src) {
+  auto cpu_copies = materialize_family_to_cpu_copies({src});
+  auto it = cpu_copies.find(src.id());
+  if (it == cpu_copies.end()) {
+    throw std::runtime_error(
+        "Failed to materialize Vulkan primitive family member to CPU copy.");
+  }
+  return it->second;
 }
 
 bool requires_scalar_graph_materialization(const array& value) {
@@ -316,6 +524,17 @@ void dispatch_binary(
     b_src = &*b_scalar_materialized;
   }
 
+  if (!is_vulkan_backed_array(*a_src) || !is_vulkan_backed_array(*b_src)) {
+    auto a_gpu = is_vulkan_backed_array(*a_src)
+        ? *a_src
+        : upload_explicit_vulkan_input(*a_src, s);
+    auto b_gpu = is_vulkan_backed_array(*b_src)
+        ? *b_src
+        : upload_explicit_vulkan_input(*b_src, s);
+    dispatch_binary(a_gpu, b_gpu, out, op_id, s);
+    return;
+  }
+
   // If either input has a non-zero buffer offset, strided_idx in the shader
   // computes offsets from buffer[0] but the data starts at buffer[offset].
   // Copy non-zero-offset inputs to contiguous arrays first.
@@ -352,6 +571,11 @@ void dispatch_binary(
     return;
   }
 
+  // Always allocate fresh output memory on Vulkan GPU.
+  // Even when aliasing a single input looks element-wise safe in theory,
+  // deferred GPU execution still lets later consumers observe corrupted data.
+  // Quantized gather coverage exposed this for plain binary subtraction, in the
+  // same way compile/autograd exposed it earlier for unary ops.
   out.set_data(allocator::malloc(out.nbytes()));
 
   // Nothing to do for empty output
@@ -536,14 +760,6 @@ bool dispatch_unary(
     src = &*materialized_src;
   }
 
-  // Always allocate fresh output memory on Vulkan GPU.
-  // Unlike CPU (where element-wise read-then-write is safe in-place),
-  // GPU donation allows the shader to overwrite the input buffer.
-  // If the input has other graph consumers (e.g. y in "y * exp(y)"),
-  // those consumers will read corrupted data (exp(y) instead of y).
-  // The is_donatable() check can't catch this because desc_use_count
-  // drops to 2 when Python locals go out of scope, even with 2 graph
-  // consumers remaining.
   out.set_data(allocator::malloc(out.nbytes()));
 
   // Nothing to do for empty arrays
@@ -1095,6 +1311,25 @@ void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Reduce::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (
+      out.size() == 1 &&
+      (reduce_type_ == Reduce::ReduceType::Max ||
+       reduce_type_ == Reduce::ReduceType::Min)) {
+    vulkan::device(stream().device).synchronize(stream());
+    auto cpu_stream = default_stream(Device::cpu);
+    auto cpu_in = inputs[0].flags().contiguous
+        ? materialize_to_cpu_copy(inputs[0])
+        : [&]() {
+            auto staged = copy(inputs[0], cpu_stream);
+            staged = contiguous(staged, false, cpu_stream);
+            staged.eval();
+            mlx::core::synchronize(cpu_stream);
+            return materialize_to_cpu_copy(staged);
+          }();
+    eval_cpu({cpu_in}, out);
+    return;
+  }
+
   bool is_continuous_axes = true;
   for (size_t i = 1; i < axes_.size(); i++) {
     if (axes_[i] != axes_[i - 1] + 1) {
@@ -3180,10 +3415,39 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
-  // Load reads from an io::Reader (mmap or file). On unified-memory devices
-  // (MoltenVK / Apple Silicon) the VMA buffer is CPU-accessible so eval_cpu
-  // can write directly into the already-allocated GPU buffer.
-  eval_cpu(inputs, out);
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.nbytes() == 0) {
+    return;
+  }
+
+  std::vector<char> host_data(out.nbytes());
+  reader_->read(host_data.data(), out.nbytes(), offset_);
+
+  if (swap_endianness_) {
+    auto swap_elem = [&](size_t elem_size) {
+      for (size_t i = 0; i < out.size(); ++i) {
+        auto* elem = reinterpret_cast<uint8_t*>(host_data.data() + i * elem_size);
+        for (size_t j = 0; j < elem_size / 2; ++j) {
+          std::swap(elem[j], elem[elem_size - j - 1]);
+        }
+      }
+    };
+
+    switch (out.itemsize()) {
+      case 2:
+        swap_elem(2);
+        break;
+      case 4:
+        swap_elem(4);
+        break;
+      case 8:
+        swap_elem(8);
+        break;
+    }
+  }
+
+  vulkan::copy_from_host(out, host_data.data(), out.nbytes(), stream());
+  vulkan::device(stream().device).synchronize(stream());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3507,24 +3771,19 @@ void BlockMaskedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 }
 
 void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (debug_vulkan_qmm()) {
+    std::fprintf(stderr, "[gather_mm] begin sorted=%d\n", int(right_sorted_));
+    std::fflush(stderr);
+  }
   vulkan::device(stream().device).synchronize(stream());
   auto cpu_stream = default_stream(Device::cpu);
-  auto to_cpu_copy = [&](const array& src) {
-    auto cpu = copy(src, cpu_stream);
-    cpu = contiguous(cpu, false, cpu_stream);
-    return materialize_to_cpu_copy(cpu);
-  };
-  auto to_cpu_indices = [&](const array& src) {
-    auto cpu = copy(src, cpu_stream);
-    cpu = contiguous(cpu, false, cpu_stream);
-    cpu.eval();
+  auto stage_to_cpu = [&](const array& src) {
+    auto value = copy(src, cpu_stream);
+    value = contiguous(value, false, cpu_stream);
+    value.eval();
     mlx::core::synchronize(cpu_stream);
-    return cpu;
+    return materialize_to_cpu_copy(value);
   };
-  auto a_cpu = to_cpu_copy(inputs[0]);
-  auto b_cpu = to_cpu_copy(inputs[1]);
-  auto lhs_indices_cpu = to_cpu_indices(inputs[2]);
-  auto rhs_indices_cpu = to_cpu_indices(inputs[3]);
   auto is_default_indices = [&](const array& idx, const array& src) {
     Shape base_shape(src.shape().begin(), src.shape().end() - 2);
     if (base_shape.size() > idx.ndim()) {
@@ -3539,12 +3798,12 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     }
     int total = std::accumulate(
         base_shape.begin(), base_shape.end(), 1, std::multiplies<int>());
-    auto expected = reshape(arange(total, uint32, cpu_stream), std::move(base_shape), cpu_stream);
+    auto expected =
+        reshape(arange(total, uint32, cpu_stream), std::move(base_shape), cpu_stream);
     if (expected.shape() != idx.shape()) {
       expected = broadcast_to(expected, idx.shape(), cpu_stream);
     }
-    auto idx_materialized = reshape(flatten(idx, 0, idx.ndim() - 1, cpu_stream), idx.shape(), cpu_stream);
-    auto matches = all(equal(idx_materialized, expected, cpu_stream), cpu_stream);
+    auto matches = all(equal(idx, expected, cpu_stream), cpu_stream);
     matches.eval();
     mlx::core::synchronize(cpu_stream);
     auto matches_cpu = materialize_to_cpu_copy(matches);
@@ -3553,6 +3812,27 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
         matches_cpu.buffer(), &value, sizeof(uint8_t), matches_cpu.offset());
     return value != 0;
   };
+  auto stage_graph_to_cpu = [&](const array& src) {
+    auto value = copy(src, cpu_stream);
+    value = contiguous(value, false, cpu_stream);
+    value.eval();
+    mlx::core::synchronize(cpu_stream);
+    return materialize_to_cpu_copy(value);
+  };
+  auto a_cpu = stage_graph_to_cpu(inputs[0]);
+  auto b_cpu = stage_graph_to_cpu(inputs[1]);
+  auto lhs_indices_cpu = stage_to_cpu(inputs[2]);
+  auto rhs_indices_cpu = stage_to_cpu(inputs[3]);
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[gather_mm] staged inputs a=%g b=%g lhs=%g rhs=%g\n",
+        debug_max_abs_cpu(a_cpu, cpu_stream),
+        debug_max_abs_cpu(b_cpu, cpu_stream),
+        debug_max_abs_cpu(lhs_indices_cpu, cpu_stream),
+        debug_max_abs_cpu(rhs_indices_cpu, cpu_stream));
+    std::fflush(stderr);
+  }
   std::optional<array> lhs_indices_opt =
       is_default_indices(lhs_indices_cpu, a_cpu) ? std::nullopt
                                                  : std::optional<array>(lhs_indices_cpu);
@@ -3601,109 +3881,78 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
       b_cpu,
       lhs_indices_opt,
       rhs_indices_opt,
-      false,
+      left_sorted_ || right_sorted_,
       cpu_stream);
   result.eval();
   mlx::core::synchronize(cpu_stream);
   result = materialize_to_cpu_copy(result);
-  if (out.ndim() >= 2 && out.shape(0) == 32 && out.dtype() == float16) {
-    std::vector<float> host(result.size());
-    if (!host.empty()) {
-      allocator::copy_to_host(result.buffer(), host.data(), host.size() * sizeof(float), result.offset());
-      bool has_nan = false;
-      for (float v : host) {
-        if (std::isnan(v)) {
-          has_nan = true;
-          break;
-        }
-      }
-      std::cerr << "GatherMM cpu_result nan=" << has_nan
-                << " first=" << (host.empty() ? 0.0f : host[0]) << '\n';
-    }
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[gather_mm] gathered to cpu result=%g\n",
+        debug_max_abs_cpu(result, cpu_stream));
+    std::fflush(stderr);
   }
-  auto gpu_result = copy(result, stream());
-  gpu_result.eval();
+  if (result.dtype() != out.dtype()) {
+    result = astype(result, out.dtype(), cpu_stream);
+    result.eval();
+    mlx::core::synchronize(cpu_stream);
+    result = materialize_to_cpu_copy(result);
+  }
+  auto gpu_out = copy(result, stream());
+  gpu_out.eval();
   vulkan::device(stream().device).synchronize(stream());
-  gpu_result.detach();
-  if (out.dtype() != gpu_result.dtype()) {
-    gpu_result = astype(gpu_result, out.dtype(), stream());
-    gpu_result.eval();
-    vulkan::device(stream().device).synchronize(stream());
-    gpu_result.detach();
+  gpu_out.detach();
+  out.copy_shared_buffer(gpu_out);
+  out.set_status(array::Status::available);
+  if (debug_vulkan_qmm()) {
+    std::fprintf(stderr, "[gather_mm] end\n");
+    std::fflush(stderr);
   }
-  if (out.ndim() >= 2 && out.shape(0) == 32 && out.dtype() == float16) {
-    std::vector<uint16_t> host(out.size());
-    if (!host.empty()) {
-      allocator::copy_to_host(
-          gpu_result.buffer(),
-          host.data(),
-          host.size() * sizeof(uint16_t),
-          gpu_result.offset());
-      bool has_nan = false;
-      for (auto bits : host) {
-        if ((bits & 0x7C00u) == 0x7C00u && (bits & 0x03FFu) != 0u) {
-          has_nan = true;
-          break;
-        }
-      }
-      std::cerr << "GatherMM gpu_result nan=" << has_nan
-                << " first_bits=" << (host.empty() ? 0u : host[0])
-                << '\n';
-    }
-    auto gpu_cpu = materialize_to_cpu_copy(gpu_result);
-    if (gpu_cpu.dtype() != float32) {
-      gpu_cpu = astype(gpu_cpu, float32, cpu_stream);
-      gpu_cpu.eval();
-      mlx::core::synchronize(cpu_stream);
-      gpu_cpu = materialize_to_cpu_copy(gpu_cpu);
-    }
-    std::vector<float> cpu_host(result.size());
-    std::vector<float> gpu_host(gpu_cpu.size());
-    if (!cpu_host.empty() && cpu_host.size() == gpu_host.size()) {
-      allocator::copy_to_host(
-          result.buffer(), cpu_host.data(), cpu_host.size() * sizeof(float), result.offset());
-      allocator::copy_to_host(
-          gpu_cpu.buffer(), gpu_host.data(), gpu_host.size() * sizeof(float), gpu_cpu.offset());
-      float max_diff = 0.0f;
-      for (size_t i = 0; i < cpu_host.size(); ++i) {
-        max_diff = std::max(max_diff, std::abs(cpu_host[i] - gpu_host[i]));
-      }
-      std::cerr << "GatherMM upload max_diff=" << max_diff << '\n';
-    }
-  }
-  out.overwrite_descriptor(gpu_result);
-  out.detach();
 }
 
 
 void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[gather_qmm] begin mode=%d transpose=%d sorted=%d\n",
+        int(mode_),
+        int(transpose_),
+        int(right_sorted_));
+    std::fflush(stderr);
+  }
   vulkan::device(stream().device).synchronize(stream());
   auto cpu_stream = default_stream(Device::cpu);
+  auto cpu_copies =
+      materialize_family_to_cpu_stream_copies({inputs[1], inputs[2]}, cpu_stream);
+  if (mode_ == QuantizationMode::Affine) {
+    cpu_copies.merge(
+        materialize_family_to_cpu_stream_copies({inputs[3]}, cpu_stream));
+  }
+  auto stage_to_cpu = [&](const array& src) {
+    auto value = copy(src, cpu_stream);
+    value = contiguous(value, false, cpu_stream);
+    value.eval();
+    mlx::core::synchronize(cpu_stream);
+    return materialize_to_cpu_copy(value);
+  };
   auto to_cpu_copy = [&](const array& src) {
-    auto cpu = copy(src, cpu_stream);
-    cpu = contiguous(cpu, false, cpu_stream);
-    return materialize_to_cpu_copy(cpu);
+    auto value = src;
+    if (!value.flags().row_contiguous) {
+      value = contiguous(value, false, stream());
+      value.eval();
+      vulkan::device(stream().device).synchronize(stream());
+    }
+    auto it = cpu_copies.find(value.id());
+    if (it != cpu_copies.end()) {
+      return it->second;
+    }
+    return materialize_family_member_to_cpu_copy(value);
   };
   auto to_cpu_indices = [&](const array& src) {
-    auto cpu = copy(src, cpu_stream);
-    cpu = contiguous(cpu, false, cpu_stream);
-    cpu.eval();
-    mlx::core::synchronize(cpu_stream);
-    return cpu;
+    return stage_to_cpu(src);
   };
-  auto x_cpu = to_cpu_copy(inputs[0]);
-  auto w_cpu = to_cpu_copy(inputs[1]);
-  auto scales_cpu = to_cpu_copy(inputs[2]);
-  auto lhs_indices_cpu = to_cpu_indices(inputs[inputs.size() - 2]);
-  auto rhs_indices_cpu = to_cpu_indices(inputs[inputs.size() - 1]);
-  std::optional<array> biases_cpu =
-      mode_ == QuantizationMode::Affine
-      ? std::optional<array>(to_cpu_copy(inputs[3]))
-      : std::nullopt;
-
-  if (x_cpu.dtype() != float32) {
-    x_cpu = astype(x_cpu, float32, cpu_stream);
-  }
   auto is_default_indices = [&](const array& idx, const array& src) {
     Shape base_shape(src.shape().begin(), src.shape().end() - 2);
     if (base_shape.size() > idx.ndim()) {
@@ -3718,12 +3967,12 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     }
     int total = std::accumulate(
         base_shape.begin(), base_shape.end(), 1, std::multiplies<int>());
-    auto expected = reshape(arange(total, uint32, cpu_stream), std::move(base_shape), cpu_stream);
+    auto expected =
+        reshape(arange(total, uint32, cpu_stream), std::move(base_shape), cpu_stream);
     if (expected.shape() != idx.shape()) {
       expected = broadcast_to(expected, idx.shape(), cpu_stream);
     }
-    auto idx_materialized = reshape(flatten(idx, 0, idx.ndim() - 1, cpu_stream), idx.shape(), cpu_stream);
-    auto matches = all(equal(idx_materialized, expected, cpu_stream), cpu_stream);
+    auto matches = all(equal(idx, expected, cpu_stream), cpu_stream);
     matches.eval();
     mlx::core::synchronize(cpu_stream);
     auto matches_cpu = materialize_to_cpu_copy(matches);
@@ -3732,51 +3981,149 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
         matches_cpu.buffer(), &value, sizeof(uint8_t), matches_cpu.offset());
     return value != 0;
   };
+  auto x_cpu = [&]() {
+    auto value = copy(inputs[0], cpu_stream);
+    value = contiguous(value, false, cpu_stream);
+    value.eval();
+    mlx::core::synchronize(cpu_stream);
+    return materialize_to_cpu_copy(value);
+  }();
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[gather_qmm] staged x=%g lhs_prim=%s rhs_prim=%s\n",
+        debug_max_abs_cpu(x_cpu, cpu_stream),
+        inputs[inputs.size() - 2].has_primitive()
+            ? inputs[inputs.size() - 2].primitive().name()
+            : "<none>",
+        inputs[inputs.size() - 1].has_primitive()
+            ? inputs[inputs.size() - 1].primitive().name()
+            : "<none>");
+    std::fflush(stderr);
+  }
+  auto w_cpu = to_cpu_copy(inputs[1]);
+  auto scales_cpu = to_cpu_copy(inputs[2]);
+  auto lhs_indices_cpu = to_cpu_indices(inputs[inputs.size() - 2]);
+  auto rhs_indices_cpu = to_cpu_indices(inputs[inputs.size() - 1]);
+  if (debug_vulkan_qmm()) {
+    std::vector<uint32_t> lhs_host(std::min<size_t>(lhs_indices_cpu.size(), 8));
+    std::vector<uint32_t> rhs_host(std::min<size_t>(rhs_indices_cpu.size(), 8));
+    if (!lhs_host.empty()) {
+      allocator::copy_to_host(
+          lhs_indices_cpu.buffer(),
+          lhs_host.data(),
+          lhs_host.size() * sizeof(uint32_t),
+          lhs_indices_cpu.offset());
+    }
+    if (!rhs_host.empty()) {
+      allocator::copy_to_host(
+          rhs_indices_cpu.buffer(),
+          rhs_host.data(),
+          rhs_host.size() * sizeof(uint32_t),
+          rhs_indices_cpu.offset());
+    }
+    std::fprintf(
+        stderr,
+        "[gather_qmm] staged q=%g s=%g lhs=%g rhs=%g lhs0=%u,%u,%u,%u rhs0=%u,%u,%u,%u\n",
+        debug_max_abs_cpu(w_cpu, cpu_stream),
+        debug_max_abs_cpu(scales_cpu, cpu_stream),
+        debug_max_abs_cpu(lhs_indices_cpu, cpu_stream),
+        debug_max_abs_cpu(rhs_indices_cpu, cpu_stream),
+        lhs_host.size() > 0 ? lhs_host[0] : 0u,
+        lhs_host.size() > 1 ? lhs_host[1] : 0u,
+        lhs_host.size() > 2 ? lhs_host[2] : 0u,
+        lhs_host.size() > 3 ? lhs_host[3] : 0u,
+        rhs_host.size() > 0 ? rhs_host[0] : 0u,
+        rhs_host.size() > 1 ? rhs_host[1] : 0u,
+        rhs_host.size() > 2 ? rhs_host[2] : 0u,
+        rhs_host.size() > 3 ? rhs_host[3] : 0u);
+    std::fflush(stderr);
+  }
+  std::optional<array> biases_cpu =
+      mode_ == QuantizationMode::Affine
+      ? std::optional<array>(to_cpu_copy(inputs[3]))
+      : std::nullopt;
+
   std::optional<array> lhs_indices_opt =
       is_default_indices(lhs_indices_cpu, x_cpu) ? std::nullopt
                                                  : std::optional<array>(lhs_indices_cpu);
   std::optional<array> rhs_indices_opt =
       is_default_indices(rhs_indices_cpu, w_cpu) ? std::nullopt
                                                  : std::optional<array>(rhs_indices_cpu);
-  auto w_hat = dequantize(
-      w_cpu,
-      scales_cpu,
-      biases_cpu,
-      group_size_,
-      bits_,
-      quantization_mode_to_string(mode_),
-      std::nullopt,
-      std::nullopt,
-      cpu_stream);
-  if (transpose_) {
-    w_hat = swapaxes(w_hat, -1, -2, cpu_stream);
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[gather_qmm] defaults lhs=%d rhs=%d\n",
+        int(!lhs_indices_opt.has_value()),
+        int(!rhs_indices_opt.has_value()));
+    std::fflush(stderr);
   }
-  if (w_hat.dtype() != float32) {
-    w_hat = astype(w_hat, float32, cpu_stream);
-  }
-  auto result = gather_mm(
-      x_cpu,
-      w_hat,
-      lhs_indices_opt,
-      rhs_indices_opt,
-      false,
-      cpu_stream);
+  auto result = [&]() {
+    if (
+        mode_ == QuantizationMode::Affine && !left_sorted_ && !right_sorted_ &&
+        !lhs_indices_opt && rhs_indices_opt.has_value()) {
+      auto rhs_shape = rhs_indices_opt->shape();
+      auto rhs_last_dim = rhs_shape.back();
+      auto rhs_flat = flatten(*rhs_indices_opt, cpu_stream);
+      auto order = argsort(rhs_flat, cpu_stream);
+      auto inv_order = argsort(order, cpu_stream);
+      auto gather_rows = floor_divide(
+          order, array(static_cast<uint32_t>(rhs_last_dim), uint32), cpu_stream);
+      auto x_sorted =
+          take(flatten(x_cpu, 0, -3, cpu_stream), gather_rows, 0, cpu_stream);
+      auto rhs_sorted = take(rhs_flat, order, 0, cpu_stream);
+      auto sorted = gather_qmm(
+          x_sorted,
+          w_cpu,
+          scales_cpu,
+          biases_cpu,
+          std::nullopt,
+          rhs_sorted,
+          transpose_,
+          group_size_,
+          bits_,
+          quantization_mode_to_string(mode_),
+          true,
+          cpu_stream);
+      sorted = take(sorted, inv_order, 0, cpu_stream);
+      return unflatten(sorted, 0, std::move(rhs_shape), cpu_stream);
+    }
+    return gather_qmm(
+        x_cpu,
+        w_cpu,
+        scales_cpu,
+        biases_cpu,
+        lhs_indices_opt,
+        rhs_indices_opt,
+        transpose_,
+        group_size_,
+        bits_,
+        quantization_mode_to_string(mode_),
+        left_sorted_ || right_sorted_,
+        cpu_stream);
+  }();
   result.eval();
   mlx::core::synchronize(cpu_stream);
   result = materialize_to_cpu_copy(result);
-
-  auto gpu_result = copy(result, stream());
-  gpu_result.eval();
-  vulkan::device(stream().device).synchronize(stream());
-  gpu_result.detach();
-  if (out.dtype() != gpu_result.dtype()) {
-    gpu_result = astype(gpu_result, out.dtype(), stream());
-    gpu_result.eval();
-    vulkan::device(stream().device).synchronize(stream());
-    gpu_result.detach();
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[gather_qmm] gathered to cpu result=%g\n",
+        debug_max_abs_cpu(result, cpu_stream));
+    std::fflush(stderr);
   }
-  out.overwrite_descriptor(gpu_result);
-  out.detach();
+  if (result.dtype() != out.dtype()) {
+    result = astype(result, out.dtype(), cpu_stream);
+    result.eval();
+    mlx::core::synchronize(cpu_stream);
+    result = materialize_to_cpu_copy(result);
+  }
+  auto gpu_out = copy(result, stream());
+  gpu_out.eval();
+  vulkan::device(stream().device).synchronize(stream());
+  gpu_out.detach();
+  out.copy_shared_buffer(gpu_out);
+  out.set_status(array::Status::available);
 }
 
 void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -3803,30 +4150,43 @@ void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
-  vulkan::device(stream().device).synchronize(stream());
-  auto to_cpu_copy = [](const array& src) {
-    allocator::ScopedCpuAllocatorOverride cpu_allocator;
-    array out(src.shape(), src.dtype(), nullptr, {});
-    out.set_data(allocator::malloc(src.nbytes()));
-    if (src.nbytes() > 0) {
-      std::vector<char> host(src.nbytes());
-      allocator::copy_to_host(src.buffer(), host.data(), host.size(), src.offset());
-      allocator::copy_from_host(out.buffer(), host.data(), host.size());
-    }
-    return out;
-  };
+  if (mode_ != QuantizationMode::Affine) {
+    auto w = dequantize(
+        inputs[1],
+        inputs[2],
+        std::nullopt,
+        group_size_,
+        bits_,
+        quantization_mode_to_string(mode_),
+        std::nullopt,
+        out.dtype(),
+        stream());
+    auto result = matmul(
+        astype(inputs[0], out.dtype(), stream()),
+        transpose_ ? swapaxes(w, -1, -2, stream()) : w,
+        stream());
+    result.eval();
+    out.copy_shared_buffer(result);
+    return;
+  }
 
+  vulkan::device(stream().device).synchronize(stream());
   auto cpu_stream = default_stream(Device::cpu);
+  auto to_cpu_value = [&](const array& src) {
+    auto cpu = materialize_to_cpu_copy(src);
+    if (!cpu.flags().row_contiguous) {
+      cpu = contiguous(cpu, false, cpu_stream);
+    }
+    cpu.eval();
+    mlx::core::synchronize(cpu_stream);
+    cpu = materialize_to_cpu_copy(cpu);
+    return cpu;
+  };
   std::optional<array> biases =
-      (mode_ == QuantizationMode::Affine)
-      ? std::optional<array>(to_cpu_copy(inputs[3]))
-      : std::nullopt;
-  auto x_cpu = to_cpu_copy(inputs[0]);
-  auto wq_cpu = to_cpu_copy(inputs[1]);
-  auto scales_cpu = to_cpu_copy(inputs[2]);
+      std::optional<array>(to_cpu_value(inputs[3]));
   auto w = dequantize(
-      wq_cpu,
-      scales_cpu,
+      to_cpu_value(inputs[1]),
+      to_cpu_value(inputs[2]),
       biases,
       group_size_,
       bits_,
@@ -3835,22 +4195,22 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       out.dtype(),
       cpu_stream);
   auto result = matmul(
-      astype(x_cpu, out.dtype(), cpu_stream),
+      astype(to_cpu_value(inputs[0]), out.dtype(), cpu_stream),
       transpose_ ? swapaxes(w, -1, -2, cpu_stream) : w,
       cpu_stream);
   result.eval();
-  auto gpu_result = copy(result, stream());
-  gpu_result.eval();
+  mlx::core::synchronize(cpu_stream);
+  result = materialize_to_cpu_copy(result);
+  auto gpu_out = copy(result, stream());
+  gpu_out.eval();
   vulkan::device(stream().device).synchronize(stream());
-  gpu_result.detach();
-  if (out.dtype() != gpu_result.dtype()) {
-    gpu_result = astype(gpu_result, out.dtype(), stream());
-    gpu_result.eval();
-    vulkan::device(stream().device).synchronize(stream());
-    gpu_result.detach();
+  gpu_out.detach();
+  out.copy_shared_buffer(gpu_out);
+  out.set_status(array::Status::available);
+  if (debug_vulkan_qmm()) {
+    std::fprintf(stderr, "[gather_qmm] end\n");
+    std::fflush(stderr);
   }
-  out.overwrite_descriptor(gpu_result);
-  out.detach();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4795,17 +5155,43 @@ void ConvertFP8::eval_gpu(
 void Quantize::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[quantize] begin dequantize=%d mode=%d outputs=%zu\n",
+        int(dequantize_),
+        int(mode_),
+        outputs.size());
+    std::fflush(stderr);
+  }
+  vulkan::device(stream().device).synchronize(stream());
   auto cpu_stream = default_stream(Device::cpu);
+  auto cpu_copies = materialize_family_to_cpu_copies(inputs);
   auto to_cpu_value = [&](const array& src) {
-    auto cpu = copy(src, cpu_stream);
-    cpu = contiguous(cpu, false, cpu_stream);
-    return materialize_to_cpu_copy(cpu);
+    auto it = cpu_copies.find(src.id());
+    auto cpu =
+        it != cpu_copies.end() ? it->second : materialize_family_member_to_cpu_copy(src);
+    if (!cpu.flags().row_contiguous) {
+      cpu = contiguous(cpu, false, cpu_stream);
+      cpu.eval();
+      mlx::core::synchronize(cpu_stream);
+      cpu = materialize_to_cpu_copy(cpu);
+    }
+    return cpu;
   };
   std::vector<array> cpu_outputs;
 
   if (dequantize_) {
     auto w_cpu = to_cpu_value(inputs[0]);
     auto scales_cpu = to_cpu_value(inputs[1]);
+    if (debug_vulkan_qmm()) {
+      std::fprintf(
+          stderr,
+          "[quantize] deq staged w=%g scales=%g\n",
+          debug_max_abs_cpu(w_cpu, cpu_stream),
+          debug_max_abs_cpu(scales_cpu, cpu_stream));
+      std::fflush(stderr);
+    }
 
     if (mode_ == QuantizationMode::Affine) {
       if (inputs.size() != 3) {
@@ -4813,6 +5199,13 @@ void Quantize::eval_gpu(
             "Vulkan affine dequantize expects packed weights, scales, and biases.");
       }
       auto biases_cpu = to_cpu_value(inputs[2]);
+      if (debug_vulkan_qmm()) {
+        std::fprintf(
+            stderr,
+            "[quantize] deq staged bias=%g\n",
+            debug_max_abs_cpu(biases_cpu, cpu_stream));
+        std::fflush(stderr);
+      }
       cpu_outputs.push_back(dequantize(
           w_cpu,
           scales_cpu,
@@ -4845,6 +5238,15 @@ void Quantize::eval_gpu(
     if (inputs.size() > 1) {
       global_scale_cpu = to_cpu_value(inputs[1]);
     }
+    if (debug_vulkan_qmm()) {
+      std::fprintf(
+          stderr,
+          "[quantize] q staged w=%g global=%g\n",
+          debug_max_abs_cpu(w_cpu, cpu_stream),
+          global_scale_cpu ? debug_max_abs_cpu(*global_scale_cpu, cpu_stream)
+                           : 0.0f);
+      std::fflush(stderr);
+    }
     cpu_outputs = quantize(
         w_cpu,
         group_size_,
@@ -4861,13 +5263,34 @@ void Quantize::eval_gpu(
 
   auto s = stream();
   auto& dev = vulkan::device(s.device);
+  auto cpu_output_copies = materialize_family_to_cpu_copies(cpu_outputs);
   for (size_t i = 0; i < outputs.size(); ++i) {
-    auto staged = copy(cpu_outputs[i], s);
-    staged.eval();
-    dev.synchronize(s);
-    staged.detach();
-    outputs[i].overwrite_descriptor(staged);
-    outputs[i].detach();
+    auto it = cpu_output_copies.find(cpu_outputs[i].id());
+    auto cpu_out =
+        it != cpu_output_copies.end() ? it->second : materialize_family_member_to_cpu_copy(cpu_outputs[i]);
+    if (debug_vulkan_qmm()) {
+      std::fprintf(
+          stderr,
+          "[quantize] cpu_out[%zu]=%g\n",
+          i,
+          debug_max_abs_cpu(cpu_out, cpu_stream));
+      std::fflush(stderr);
+    }
+    outputs[i].set_data(allocator::malloc(outputs[i].nbytes()));
+    if (outputs[i].nbytes() > 0) {
+      vulkan::copy_from_host(
+          outputs[i],
+          cpu_out.data<char>(),
+          outputs[i].nbytes(),
+          s);
+    }
+    outputs[i].set_status(array::Status::available);
+  }
+  dev.synchronize(s);
+
+  if (debug_vulkan_qmm()) {
+    std::fprintf(stderr, "[quantize] end\n");
+    std::fflush(stderr);
   }
 }
 

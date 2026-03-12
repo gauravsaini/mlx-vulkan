@@ -551,6 +551,8 @@ class TestExportImport(mlx_tests.MLXTestCase):
                 out1[elem] = a[elem];
             """
             custom_kernel = mx.fast.cuda_kernel
+        else:
+            self.skipTest("Custom kernel export/import requires Metal or CUDA")
 
         kernel = custom_kernel(
             name="basic",

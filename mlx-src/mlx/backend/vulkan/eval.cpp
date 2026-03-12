@@ -57,7 +57,6 @@ void eval(array& arr) {
   if (auto it = buffers.find(arr.data_shared_ptr()); it != buffers.end()) {
     buffers.erase(it);
   }
-
   if (vulkan::device(stream.device).needs_commit(stream)) {
     scheduler::notify_new_task(stream);
     vulkan::device(stream.device)

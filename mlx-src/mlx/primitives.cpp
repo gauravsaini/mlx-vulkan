@@ -16,6 +16,7 @@
 #include "mlx/linalg.h"
 #include "mlx/ops.h"
 #include "mlx/primitives.h"
+#include "mlx/transforms.h"
 #include "mlx/utils.h"
 
 namespace mlx::core {
@@ -3495,6 +3496,42 @@ std::vector<array> QuantizedMatmul::vjp(
     const std::vector<array>&) {
   std::vector<array> vjps;
 
+  if (mode_ == QuantizationMode::Affine) {
+    auto affine_fun = [&](const std::vector<array>& inputs) {
+      auto w = dequantize(
+          primals[1],
+          inputs[1],
+          inputs[2],
+          group_size_,
+          bits_,
+          quantization_mode_to_string(mode_),
+          {},
+          std::nullopt,
+          stream());
+      auto y = matmul(
+          inputs[0],
+          transpose_ ? swapaxes(w, -1, -2, stream()) : w,
+          stream());
+      return std::vector<array>{y};
+    };
+    auto [_, affine_vjps] = mlx::core::vjp(
+        affine_fun, {primals[0], primals[2], primals[3]}, {cotangents[0]});
+
+    for (auto arg : argnums) {
+      if (arg == 0) {
+        vjps.push_back(affine_vjps[0]);
+      } else if (arg == 1) {
+        throw std::runtime_error(
+            "[QuantizedMatmul::vjp] no gradient wrt the quantized weights.");
+      } else if (arg == 2) {
+        vjps.push_back(affine_vjps[1]);
+      } else if (arg == 3) {
+        vjps.push_back(affine_vjps[2]);
+      }
+    }
+    return vjps;
+  }
+
   // We rely on the fact that w is always 2D so transpose is simple
   std::optional<array> dsb = std::nullopt;
   for (auto arg : argnums) {
@@ -3518,39 +3555,10 @@ std::vector<array> QuantizedMatmul::vjp(
       throw std::runtime_error(
           "[QuantizedMatmul::vjp] no gradient wrt the quantized weights.");
     } else {
-      if (mode_ != QuantizationMode::Affine) {
-        std::ostringstream msg;
-        msg << "[QuantizedMatmul::vjp] no gradient wrt scales in "
-            << quantization_mode_to_string(mode_) << " quantization.";
-        throw std::invalid_argument(msg.str());
-      }
-      if (!dsb) {
-        int ndim = primals[1].ndim();
-        auto fc = flatten(cotangents[0], 0, -ndim, stream());
-        auto fx = flatten(primals[0], 0, -ndim, stream());
-        auto dw = transpose_
-            ? matmul(swapaxes(fc, -1, -2, stream()), fx, stream())
-            : matmul(swapaxes(fx, -1, -2, stream()), fc, stream());
-        dsb = unflatten(dw, -1, {-1, group_size_}, stream());
-      }
-      if (arg == 3) {
-        // biases
-        vjps.push_back(sum(*dsb, -1, false, stream()));
-      } else {
-        // scales
-        auto wq = dequantize(
-            primals[1],
-            ones_like(primals[2], stream()),
-            zeros_like(primals[3], stream()),
-            group_size_,
-            bits_,
-            quantization_mode_to_string(mode_),
-            {}, // placeholder for amax
-            std::nullopt,
-            stream());
-        wq = unflatten(wq, -1, {-1, group_size_}, stream());
-        vjps.push_back(sum(multiply(*dsb, wq, stream()), -1, false, stream()));
-      }
+      std::ostringstream msg;
+      msg << "[QuantizedMatmul::vjp] no gradient wrt scales in "
+          << quantization_mode_to_string(mode_) << " quantization.";
+      throw std::invalid_argument(msg.str());
     }
   }
   return vjps;

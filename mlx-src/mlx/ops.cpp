@@ -5153,6 +5153,9 @@ array gather_qmm(
   } else {
     out_type = x.dtype();
   }
+  if (out_type == float16 || out_type == bfloat16) {
+    out_type = float32;
+  }
   if (!issubdtype(out_type, floating)) {
     std::ostringstream msg;
     msg << "[gather_qmm] Only real floating types are supported but "

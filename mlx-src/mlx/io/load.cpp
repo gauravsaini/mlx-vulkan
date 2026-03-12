@@ -11,6 +11,7 @@
 #endif // _WIN32
 
 #include "mlx/backend/cuda/cuda.h"
+#include "mlx/backend/gpu/device_info.h"
 #include "mlx/allocator.h"
 #include "mlx/io.h"
 #include "mlx/io/load.h"
@@ -236,7 +237,7 @@ array load(std::shared_ptr<io::Reader> in_stream, StreamOrDevice s) {
     throw std::runtime_error("[load] Failed to open " + in_stream->label());
   }
 
-  auto stream = cu::is_available() ? to_stream(s) : to_stream(s, Device::cpu);
+  auto stream = gpu::is_available() ? to_stream(s) : to_stream(s, Device::cpu);
 
   ////////////////////////////////////////////////////////
   // Read header and prepare array details

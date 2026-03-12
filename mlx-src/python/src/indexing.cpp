@@ -7,6 +7,7 @@
 #include "python/src/indexing.h"
 
 #include "mlx/ops.h"
+#include "mlx/primitives.h"
 
 namespace {
 mx::array materialize_array_update(const mx::array& value) {
@@ -21,25 +22,23 @@ mx::array materialize_array_update(const mx::array& value) {
         staged.buffer(), host.data(), host.size(), staged.offset());
     mx::allocator::copy_from_host(out.buffer(), host.data(), host.size());
   }
+  out.set_status(mx::array::Status::available);
   return out;
 }
 
 mx::array materialize_array_read(const mx::array& value) {
+  auto cpu_stream = mx::default_stream(mx::Device::cpu);
+  if (value.has_primitive() && value.primitive().stream().device == mx::Device::gpu) {
+    mx::synchronize(value.primitive().stream());
+  }
   if (
       !value.has_primitive() &&
       value.status() == mx::array::Status::unscheduled &&
       value.data_shared_ptr() != nullptr) {
     const_cast<mx::array&>(value).wait();
   }
-  if (!value.has_primitive()) {
-    auto cpu_stream = mx::default_stream(mx::Device::cpu);
-    mx::array staged = mx::copy(value, cpu_stream);
-    staged = mx::contiguous(staged, false, cpu_stream);
-    staged.eval();
-    staged.detach();
-    return staged;
-  }
-  mx::array staged = mx::contiguous(value);
+  mx::array staged = mx::copy(value, cpu_stream);
+  staged = mx::contiguous(staged, false, cpu_stream);
   staged.eval();
   staged.detach();
   return staged;
@@ -142,11 +141,14 @@ mx::array mlx_get_item_array(const mx::array& src, const mx::array& indices) {
   // paths for already-computable intermediates like sorted gather outputs.
   if (!src.is_tracer()) {
     auto staged_src = materialize_array_read(src);
-    return take(
+    auto result = take(
         staged_src,
         materialized_indices,
         0,
         mx::default_stream(mx::Device::cpu));
+    result.eval();
+    result.detach();
+    return result;
   }
   return take(src, materialized_indices, 0);
 }

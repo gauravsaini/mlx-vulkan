@@ -1,11 +1,14 @@
 // Copyright © 2024 Apple Inc.
 #include "mlx/export.h"
+#include <cstring>
 #include <map>
+#include <unordered_set>
 #include <vector>
 #include "mlx/allocator.h"
 #include "mlx/compile_impl.h"
 #include "mlx/fast_primitives.h"
 #include "mlx/graph_utils.h"
+#include "mlx/ops.h"
 #include "mlx/primitives.h"
 #include "mlx/utils.h"
 #include "mlx/version.h"
@@ -1028,12 +1031,70 @@ std::vector<array> ImportedFunction::operator()(
     throw std::invalid_argument(msg.str());
   }
 
+  auto protect_import_input = [](const array& in) {
+    if (!in.has_primitive()) {
+      auto host_snapshot = std::make_shared<std::vector<uint8_t>>(in.nbytes());
+      if (in.nbytes() > 0) {
+        std::memcpy(host_snapshot->data(), in.data<char>(), in.nbytes());
+      }
+      return array(
+          host_snapshot->data(),
+          in.shape(),
+          in.dtype(),
+          [host_snapshot](void*) mutable { host_snapshot.reset(); });
+    }
+    return in;
+  };
+
   auto inputs = args;
-  for (auto& [_, v] : sorted_kwargs) {
-    inputs.push_back(v);
+  for (auto& in : inputs) {
+    in = protect_import_input(in);
   }
-  return detail::compile_replace(
+  for (auto& [_, v] : sorted_kwargs) {
+    inputs.push_back(protect_import_input(v));
+  }
+  auto outputs = detail::compile_replace(
       fun->tape, fun->inputs, fun->outputs, inputs, ftable->shapeless);
+
+  auto graph_contains_primitive = [](
+                                     const array& root,
+                                     const char* target) {
+    std::unordered_set<std::uintptr_t> seen;
+    std::vector<array> stack{root};
+    while (!stack.empty()) {
+      auto node = stack.back();
+      stack.pop_back();
+      if (!seen.insert(node.id()).second) {
+        continue;
+      }
+      if (node.has_primitive() && std::strcmp(node.primitive().name(), target) == 0) {
+        return true;
+      }
+      for (const auto& in : node.inputs()) {
+        stack.push_back(in);
+      }
+    }
+    return false;
+  };
+
+  bool requires_eager_materialization = false;
+  for (const auto& out : outputs) {
+    if (graph_contains_primitive(out, "QuantizedMatmul")) {
+      requires_eager_materialization = true;
+      break;
+    }
+  }
+
+  if (requires_eager_materialization) {
+    for (auto& out : outputs) {
+      out.eval();
+      if (out.has_primitive()) {
+        out.detach();
+      }
+    }
+  }
+
+  return outputs;
 }
 
 ImportedFunction import_function(const std::string& file) {
@@ -1113,12 +1174,14 @@ ImportedFunction::ImportedFunction(const std::string& file)
             auto shape = deserialize<Shape>(is);
             auto type = deserialize<Dtype>(is);
             size_t offset = is.tell();
-            tape.push_back(array(
+            auto constant = array(
                 std::move(shape),
                 type,
-                std::make_shared<Load>(
-                    default_stream(Device::cpu), is_ptr, offset),
-                {}));
+                std::make_shared<Load>(default_stream(default_device()), is_ptr, offset),
+                {});
+            constant.eval();
+            constant.detach();
+            tape.push_back(constant);
             is.seek(offset + tape.back().nbytes());
             constants.insert({id, tape.back()});
           }

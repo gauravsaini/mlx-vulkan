@@ -32,6 +32,11 @@ VulkanBuffer* unwrap_buffer(const allocator::Buffer& buffer) {
   return static_cast<VulkanBuffer*>(const_cast<void*>(buffer.ptr()));
 }
 
+bool debug_vulkan_alloc() {
+  const char* env = std::getenv("MLX_VULKAN_DEBUG_ALLOC");
+  return env != nullptr && env[0] != '\0' && env[0] != '0';
+}
+
 void copy_from_host_buffer(
     const allocator::Buffer& buffer,
     size_t base_offset,
@@ -232,6 +237,15 @@ allocator::Buffer VulkanAllocator::malloc(size_t size) {
     std::lock_guard<std::mutex> lk(mutex_);
     active_memory_ += size;
     peak_memory_ = std::max(active_memory_, peak_memory_);
+    if (debug_vulkan_alloc()) {
+      std::fprintf(
+          stderr,
+          "[vulkan malloc] size=%zu active=%zu peak=%zu ptr=%p\n",
+          size,
+          active_memory_,
+          peak_memory_,
+          vk_buf);
+    }
   }
 
   return allocator::Buffer{vk_buf};
@@ -266,6 +280,14 @@ void VulkanAllocator::free(allocator::Buffer buffer) {
     {
       std::lock_guard<std::mutex> lk(allocator().mutex_);
       allocator().active_memory_ -= buf->size;
+      if (debug_vulkan_alloc()) {
+        std::fprintf(
+            stderr,
+            "[vulkan free] size=%zu active=%zu ptr=%p\n",
+            buf->size,
+            allocator().active_memory_,
+            buf);
+      }
     }
     delete buf;
   };
@@ -316,12 +338,15 @@ void VulkanAllocator::release(allocator::Buffer buffer) {
   // No-op until host-memory import / no-copy wrapping is implemented.
 }
 
+static std::mutex transfer_mtx;
+
 void VulkanAllocator::copy_from_host(
     allocator::Buffer buffer,
     const void* src,
     size_t bytes,
     size_t offset) {
-  auto s = default_stream(mlx::core::Device::gpu);
+  std::lock_guard<std::mutex> lk(transfer_mtx);
+  auto s = Stream{100, mlx::core::Device{mlx::core::Device::gpu, 0}};
   copy_from_host_buffer(buffer, offset, src, bytes, s);
   device(s.device).synchronize(s);
   if (auto* vk_buf = unwrap_buffer(buffer)) {
@@ -334,7 +359,8 @@ void VulkanAllocator::copy_to_host(
     void* dst,
     size_t bytes,
     size_t offset) {
-  auto s = default_stream(mlx::core::Device::gpu);
+  std::lock_guard<std::mutex> lk(transfer_mtx);
+  auto s = Stream{100, mlx::core::Device{mlx::core::Device::gpu, 0}};
   device(s.device).synchronize(s);
   copy_to_host_buffer(buffer, offset, dst, bytes, s);
 }
@@ -391,7 +417,7 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
         "[vulkan::alloc_staging] Unable to allocate staging buffer");
   }
 
-  return new VulkanBuffer{
+  auto* vb = new VulkanBuffer{
       VulkanBuffer::kMagic,
       vk_buffer,
       allocation,
@@ -402,6 +428,14 @@ VulkanBuffer* VulkanAllocator::alloc_staging(size_t size) {
       true,
       false,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+  if (debug_vulkan_alloc()) {
+    std::fprintf(
+        stderr,
+        "[vulkan staging alloc] size=%zu ptr=%p\n",
+        size,
+        vb);
+  }
+  return vb;
 }
 
 void VulkanAllocator::free_staging(VulkanBuffer* buf) {
@@ -414,6 +448,13 @@ void VulkanAllocator::free_staging(VulkanBuffer* buf) {
 
   vulkan::device(stream.device).add_completed_handler(stream, [buf]() {
     auto& d = device(mlx::core::Device{mlx::core::Device::gpu, 0});
+    if (debug_vulkan_alloc()) {
+      std::fprintf(
+          stderr,
+          "[vulkan staging free] size=%zu ptr=%p\n",
+          buf->size,
+          buf);
+    }
     vmaDestroyBuffer(d.vma_allocator(), buf->buffer, buf->allocation);
     delete buf;
   });
