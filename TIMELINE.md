@@ -1,5 +1,66 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-12
+
+### confirm (2026-03-12) — Real AMD Stage 25 passes; training blocker narrowed to plain `Linear`
+
+1. **AWS AMD runtime/toolchain confirmation** (`scripts/aws_amd_bootstrap.sh`, `scripts/amd_vulkan_build_and_smoke.sh`):
+   - Revalidated the Vulkan backend on AWS `g4ad.xlarge` with the Radeon Pro V520 (`RADV NAVI12`).
+   - Hardened the local-only AMD bootstrap flow:
+     - helper scripts now stage under `/home/ubuntu/.mlx-vulkan-amd` instead of `/tmp`,
+     - post-reboot helper upload is explicit,
+     - the build smoke handles non-git working trees by forcing `DEV_RELEASE=1`,
+     - optional repo bootstrap from GitHub is now supported for future runs.
+   - The AMD instance also surfaced a real Linux/GCC portability issue in `backend/vulkan/allocator.cpp`; fixed the lambda return-type mismatch and the missing return after the switch in `BridgeAllocator::size(...)`.
+
+2. **Real AMD bring-up gate is green** (`tests/vulkan/test_stage25_linux_vulkan_bringup.py`):
+   - Stage 25 now passes on real AMD hardware with `MLX_VULKAN_REQUIRE_VENDOR=amd`.
+   - Confirmed on the live box:
+     - import and GPU detect,
+     - core ops,
+     - autograd,
+     - optimizer checks,
+     - tiny MLP convergence,
+     - Python bridge,
+     - CPU-fallback output paths.
+
+3. **Real AMD transformer ops audit is green** (`tests/vulkan/test_transformer_ops_audit.py`):
+   - Confirmed on the live AMD box:
+     - embeddings + causal attention forward,
+     - LayerNorm forward/backward,
+     - optimizer update,
+     - RoPE,
+     - RMSNorm,
+     - SiLU (uncompiled),
+     - standard `TransformerEncoderLayer` (uncompiled).
+
+4. **Tiny transformer smoke was made optimizer-stable locally** (`tests/vulkan/test_tiny_transformer.py`):
+   - Switched the smoke from brittle `SGD(1e-2)` to `Adam(5e-3)` so the local Vulkan build stays on a repeatable decreasing-loss path.
+   - Local result remains green after that change.
+
+5. **Longer TinyGPT gate added** (`tests/vulkan/test_tinygpt_10epoch.py`):
+   - Added a separate 10-epoch TinyGPT-style training smoke using the same eager, no-CPU-fallback transformer path.
+   - Local Vulkan result is strong: loss decreases cleanly over all 10 epochs.
+
+6. **Real AMD training blocker uncovered and narrowed** (`scripts/amd_tinygpt_probe.py`):
+   - Real AMD reruns of both:
+     - `tests/vulkan/test_tiny_transformer.py`
+     - `tests/vulkan/test_tinygpt_10epoch.py`
+     now show `NaN` losses on the live AMD box.
+   - Probe-based narrowing on the AMD instance shows:
+     - `LayerNorm` output is finite,
+     - the first `q/k/v` projection outputs are already non-finite,
+     - plain `nn.Linear(32, 32, bias=False)` on `(8, 8, 32)` float inputs can emit non-finite output.
+   - This means the current real-AMD training blocker is lower-level than embeddings or the loss wrapper: it is in the generic `Linear` / matmul path for training-style batched shapes.
+
+7. **Current implication**:
+   - Real AMD Vulkan runtime is proven.
+   - Real AMD Stage 25 is proven.
+   - Real AMD transformer-critical op coverage is proven.
+   - Repeated transformer training on real AMD is **not** yet proven and is currently blocked by `Linear` / matmul non-finite output.
+
+---
+
 ## UPDATED ON : 2026-03-10
 
 ### fix (2026-03-10) — Isolation of CPU Fallback Memory Erasure Bug

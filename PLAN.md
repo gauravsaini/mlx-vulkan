@@ -12,12 +12,12 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
-**Current device**: Apple M1 via MoltenVK (macOS development), plus live AMD `g4ad.xlarge` validation on Linux
-**Last verified**: 2026-03-09
+**Current device**: Apple M1 via MoltenVK (macOS development), plus AWS AMD `g4ad.xlarge` validation on Linux
+**Last verified**: 2026-03-12
 
 ---
 
-## Current Priority (as of 2026-03-10)
+## Current Priority (as of 2026-03-12)
 
 **Top milestone**: reach practical MLX training compatibility on Vulkan.
 
@@ -30,9 +30,12 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 - ✅ **AMD Vulkan runtime proven** — real Linux execution on AWS `g4ad.xlarge` (RADV NAVI12)
 - ✅ **Core tensor ops, autograd, and tiny MLP training proven** — on real AMD Vulkan hardware
-- ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros. 
+- ✅ **Stage 25 bring-up passes on real AMD** — import, GPU detect, core ops, autograd, optimizers, tiny MLP, Python bridge, and CPU-fallback outputs
+- ✅ **Transformer-critical ops audit passes on real AMD** — embeddings, causal attention forward, LayerNorm forward/backward, RoPE, RMSNorm, optimizer update, and uncompiled standard encoder layer
+- ❌ **Real AMD training path still has a blocker in `Linear` / matmul** — plain `nn.Linear(32, 32)` on `(8, 8, 32)` inputs can produce non-finite outputs on the live AMD box
+- ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
-- ⚠️ **Tiny transformer training is locally demonstrated on Vulkan, but not yet on real AMD hardware**
+- ❌ **Tiny transformer / TinyGPT training is not yet proven on real AMD hardware**
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
 
 ---
@@ -66,7 +69,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | Optimizers (Adam) | proven (local gate) | not run | not run |
 | Tiny MLP training | proven (historical) | **proven** | not run |
 | Linalg CPU fallback | proven (historical, unified mem) | **failing** | not run |
-| Tiny transformer training | proven (local gate) | not run | not run |
+| Tiny transformer training | proven (local gate) | failing (real AMD rerun) | not run |
 | LoRA / small-LLM fine-tune | not run | not run | not run |
 | Official MLX `test_ops.py` | ~124/134 (historical) | not run | not run |
 | Official MLX `test_array.py` | ~65/68 (historical) | not run | not run |
@@ -87,9 +90,14 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
       `mx.value_and_grad(sum(x*x))` matched the expected scalar loss and gradient.
 - [x] Tiny MLP training smoke passes on Vulkan:
       `Linear -> ReLU -> Linear` with SGD showed stable loss decrease on real AMD Vulkan.
+- [x] Transformer-critical ops audit passes on real AMD Vulkan:
+      embeddings, causal attention forward, LayerNorm forward/backward, RoPE, RMSNorm, optimizer update, SiLU (uncompiled), and standard `TransformerEncoderLayer` (uncompiled).
+- [ ] Repeated transformer training on real AMD Vulkan is still unstable:
+      `test_tiny_transformer.py` and `test_tinygpt_10epoch.py` can produce `NaN` losses on rerun.
+- [ ] The current real-AMD training blocker has been narrowed to plain `Linear` / matmul:
+      `nn.Linear(32, 32, bias=False)` on `(8, 8, 32)` float inputs can already emit non-finite output on the live AMD box.
 - [ ] CPU-fallback linalg correctness still fails on real AMD Vulkan:
       `qr`, `svd`, `cholesky`, `eigh`, and `inv` currently return zeros or fail in the discrete-GPU fallback path.
-- [ ] Tiny transformer training without CPU fallback is not yet rerun on real AMD Vulkan.
 - [ ] LoRA / small-LLM fine-tuning path is not yet demonstrated.
 
 ### Functional Success Criteria
@@ -100,7 +108,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | Autograd | Gradient tests on simple loss | Gradients match CPU backend within tolerance | ✅ Proven on AMD Vulkan |
 | Optimizers | Adam / SGD updates | Parameters update correctly | ✅ SGD proven in tiny MLP smoke; Adam still needs explicit validation |
 | Neural Net Training | Small MLP or CNN | Loss decreases consistently | ✅ Tiny 2-layer MLP proven |
-| Transformer Training | Tiny transformer | Training converges without CPU fallback | ⚠️ Proven locally on Vulkan, pending real AMD rerun |
+| Transformer Training | Tiny transformer | Training converges without CPU fallback | ⚠️ Proven locally on Vulkan, failing on current real AMD rerun |
 | LLM Finetuning | LoRA on a small LLM | Runs for long training windows | ❌ Not yet proven |
 | Stability | Long training run | No leaks, no device resets | ❌ Not yet proven |
 
@@ -130,6 +138,9 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Restore the real next-token objective in Gate 7:
       `nn.losses.cross_entropy(...)` now runs cleanly in the strict tiny-transformer training loop after the embedding-gradient fix.
 - [ ] Rerun Gate 6 / Gate 7 on the real AMD Vulkan box before upgrading transformer training from local proof to real-hardware proof.
+- [ ] Fix the real AMD training blocker in the generic `Linear` / matmul path:
+      repeated training-style shapes on the live `g4ad` box show non-finite output as early as plain `nn.Linear(32, 32)` on `(8, 8, 32)` tensors.
+- [ ] Re-run `test_tiny_transformer.py` and `test_tinygpt_10epoch.py` on real AMD after the `Linear` / matmul fix.
 - [ ] Audit transformer-critical ops for fallback-free execution:
       `matmul`, `addmm`, `softmax`, `layer_norm`, `rope`, embeddings, masking, indexing, optimizer updates.
 - [ ] Identify and remove remaining blockers for real LLM workloads:
@@ -181,9 +192,17 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Real discrete-GPU Vulkan execution is proven on at least one Linux hardware target.
 - [x] Core MLX tensor ops, autograd, and a tiny MLP training loop run on Vulkan.
 - [ ] Tiny transformer training converges without CPU fallback on real Linux hardware.
+- [ ] TinyGPT-style repeated training remains finite and convergent on real Linux AMD hardware.
 - [ ] Transformer-critical ops are either native Vulkan paths or discrete-GPU-safe fallbacks with verified correctness.
 - [ ] No segfaults, teardown crashes, or unbounded memory growth in the targeted training path.
 - [ ] Cross-vendor validation exists on both AMD and NVIDIA hardware.
+
+### Immediate Next Steps
+
+1. Fix the real-AMD `Linear` / matmul non-finite output path on training-style batched shapes.
+2. Revalidate `test_tiny_transformer.py` and `test_tinygpt_10epoch.py` on AWS AMD after that fix.
+3. Resume the quantized `GatherMM` / sorted quantized compatibility work once the real-AMD training path is stable again.
+4. Re-open real-AMD linalg validation after the training-path blocker is cleared.
 
 ---
 
