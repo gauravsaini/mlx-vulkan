@@ -1,9 +1,24 @@
 # MLX Vulkan Backend — Change Timeline
 
-## UPDATED ON : 2026-03-15
+## UPDATED ON : 2026-03-16
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Measured steady-state RX 580 generation throughput after the persistent compiled-cache fix and refreshed real compile coverage.
+    - Reused the local AMD benchmark flow to measure a warmed `generate_step` run with `max_tokens=16`.
+    - Current result on the RX 580:
+      - GPU: about `31.85s` total for `16` tokens, about `0.502 tok/s`, first yield about `4.68s`
+      - CPU: about `31.02s` total for `16` tokens, about `0.516 tok/s`, first yield about `4.60s`
+    - This shows the persistent SPIR-V cache fixed the catastrophic cross-process cold-start problem, but steady-state decode is still roughly CPU-parity rather than clearly GPU-faster.
+    - Re-ran compile coverage during a real 4-token generation pass with `MLX_LOG_COMPILE_TAPE=1`.
+    - The hottest observed fused Vulkan kernels are already covered:
+      - `Broadcast -> Multiply -> Sum`
+      - `Broadcast -> Multiply`
+      - `Broadcast -> Broadcast -> Multiply -> Add`
+      - `Subtract -> Broadcast -> Multiply`
+      - the softmax-style `Exp -> Negative -> Broadcast -> Add -> Broadcast -> LogAddExp -> ...` kernel
+      - the `Sigmoid` / `Multiply` MLP kernels
+    - Conclusion: the next throughput wall is not an obvious missing Vulkan compiled primitive in the hottest observed generation kernels; the next pass should focus on steady-state decode utilization and eager-path costs.
 - **2026-03-16**: Added persistent Vulkan compiled SPIR-V caching and removed the pathological fresh-process cold-start cliff on the RX 580.
     - Extended `mlx/backend/vulkan/compiled.cpp` so the Vulkan JIT path reuses generated GLSL and compiled `.spv` blobs from `~/.cache/mlx_vulkan_jit` when the cached GLSL source matches the current kernel text, instead of relying only on the existing in-memory cache.
     - This keeps correctness simple: if the generated GLSL changes, the cached source text no longer matches and `glslc` is invoked again to refresh the `.spv`.

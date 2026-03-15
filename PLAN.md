@@ -310,6 +310,14 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 - [x] Add compile-coverage logging for fused Vulkan kernels and summarize primitive frequency from real generation runs.
 - [ ] Add any missing ops to `to_glsl_op` (e.g., `Erf`, `Softmax` components).
       `Sigmoid` and `LogAddExp` are now lowered in the Vulkan GLSL path.
+      Latest 4-token RX 580 compile-coverage run shows the hottest fused kernels are already on Vulkan:
+      - `Broadcast -> Multiply -> Sum` (`324` dispatches)
+      - `Broadcast -> Multiply` (`162` dispatches)
+      - `Broadcast -> Broadcast -> Multiply -> Add` (`162` dispatches)
+      - `Subtract -> Broadcast -> Multiply` (`162` dispatches)
+      - the softmax-style `Exp -> Negative -> Broadcast -> Add -> Broadcast -> LogAddExp -> ...` kernel
+      - the `Sigmoid` / `Multiply` MLP kernels
+      So the next decode-throughput wall is no longer an obvious uncovered compiled primitive in the hottest observed generation kernels.
 - [ ] Handle `AsType` / static casts between dtypes in GLSL.
       Current stopgap: float16 / bfloat16 compiled kernels are bridged through float32 shader IO plus Vulkan copy-based casts.
 
@@ -324,14 +332,15 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
       Latest refreshed AMD layer profile: 5-token prompt prefill is about `3.23s`, decoder layers are about `2.03s`, tied `lm_head` is about `1.19s`, and the first linear layer still pays about `0.85s` of one-time warmup overhead while later linear layers stay near `0.05s`.
       Latest strict RX 580 benchmark after the selective direct large-vocab QMM path landed: model load is about `3.56s`, guarded one-token `generate_step` reaches first yield in about `5.44s`, and the GPU is now ahead of the matching CPU baseline (`~7.08s`). A focused tied-`lm_head` probe confirms the new direct path is active for the real `N=248320`, `K=2048` Qwen projection.
       Latest strict RX 580 benchmark after persistent compiled SPIR-V caching landed: model load is about `4.63s`, guarded one-token `generate_step` reaches first yield in about `4.69s`, and fresh-process warm-probe runs now show `cold_in_process` about `5.57s` on the first run and about `4.69s` on the next fresh process instead of the earlier `~54s` cold-start cliff.
+      Latest warm-cache multi-token benchmark (`generate_step`, `max_tokens=16`): GPU is about `31.85s` total / `0.502 tok/s` with first yield about `4.68s`, while the matching CPU baseline is about `31.02s` / `0.516 tok/s` with first yield about `4.60s`. So fresh-process cold start is fixed, but steady-state decode throughput is still only around CPU parity.
 
 ### Immediate Next Steps
 
-1. Re-profile the RX 580 decoder after the persistent JIT-cache fix; the old `~54s` cold-start behavior is gone, so the remaining first-use costs need to be measured from the new `~4.69s` fresh-process baseline.
-2. Re-run longer AMD generation benchmarks (`max_tokens > 1`) and capture warm steady-state tokens/sec from the new baseline.
-3. Investigate any remaining non-JIT warmup in early decoder layers, but only after confirming it still matters once the disk-backed compiled cache is warm.
+1. Profile the remaining steady-state decode bottleneck on the RX 580 now that fresh-process cold start is fixed but 16-token throughput is still only about CPU parity (`~0.50 tok/s` GPU vs `~0.52 tok/s` CPU).
+2. Add explicit RX 580 utilization sampling during the warmed multi-token benchmark so we can tell whether decode is compute-bound, memory-bound, or dispatch-bound.
+3. Investigate any remaining non-JIT warmup in early decoder layers only after the steady-state decode path is better understood.
 4. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
-5. Profile GPU utilization only after the updated warmup / prefill hotspots are better understood.
+5. Add more compile primitives only if later profiling shows a real uncovered fused kernel, since the current hot compiled kernels are already present on Vulkan.
 
 ---
 
