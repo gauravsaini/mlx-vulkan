@@ -3516,21 +3516,6 @@ void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
 // Compiled / JIT
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Compiled::eval_gpu(
-    const std::vector<array>& inputs,
-    std::vector<array>& outputs) {
-  // Vulkan JIT is not implemented yet. Drain pending GPU work before the CPU
-  // fallback so the fallback never reads stale device data.
-  vulkan::device(stream().device).synchronize(stream());
-  if (fail_on_vulkan_cpu_fallback()) {
-    throw std::runtime_error(
-        "Compiled Vulkan graphs are not supported while "
-        "MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1. Disable mx.compile() or use eager "
-        "execution.");
-  }
-  warn_once_about_compiled_cpu_fallback();
-  eval_cpu(inputs, outputs);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Matmul variants.

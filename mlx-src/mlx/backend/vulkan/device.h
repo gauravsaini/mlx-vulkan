@@ -69,6 +69,15 @@ class Device {
       uint32_t push_constant_size = 0,
       const VkSpecializationInfo* specialization_info = nullptr);
 
+  VkPipeline get_pipeline_from_spirv(
+      const std::string& name,
+      const std::vector<uint32_t>& spirv,
+      VkPipelineLayout& layout_out,
+      VkDescriptorSetLayout& ds_layout_out,
+      uint32_t num_bindings,
+      uint32_t push_constant_size = 0,
+      const VkSpecializationInfo* specialization_info = nullptr);
+
   // Memory management
   VmaAllocator vma_allocator() const {
     return vma_allocator_;

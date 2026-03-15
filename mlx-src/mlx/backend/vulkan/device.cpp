@@ -813,8 +813,9 @@ void Device::synchronize(Stream s) {
 // Pipeline management: load SPIR-V and create cached compute pipelines
 // ────────────────────────────────────────────────────────────────────────────
 
-VkPipeline Device::get_pipeline(
+VkPipeline Device::get_pipeline_from_spirv(
     const std::string& name,
+    const std::vector<uint32_t>& code,
     VkPipelineLayout& layout_out,
     VkDescriptorSetLayout& ds_layout_out,
     uint32_t num_bindings,
@@ -866,22 +867,6 @@ VkPipeline Device::get_pipeline(
   vk_check(
       vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout),
       "vkCreatePipelineLayout");
-
-  // Load SPIR-V
-  const char* env_path = std::getenv("MLX_VULKAN_PATH");
-  std::string base_path = env_path ? std::string(env_path) + "/" : std::string(VULKAN_KERNELS_PATH);
-  std::string spv_path = base_path + name + ".spv";
-  std::vector<uint32_t> code;
-  try {
-    code = read_spirv(spv_path);
-  } catch (const std::exception& e) {
-    fprintf(stderr, "[MLX Vulkan] WARNING: %s\n", e.what());
-    // Return null pipeline — callers should fall back to CPU
-    pipeline_map_[name] = {VK_NULL_HANDLE, layout, ds_layout};
-    layout_out = layout;
-    ds_layout_out = ds_layout;
-    return VK_NULL_HANDLE;
-  }
 
   VkShaderModuleCreateInfo shader_info{};
   shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -1041,6 +1026,54 @@ VkPipeline Device::get_pipeline(
   layout_out = layout;
   ds_layout_out = ds_layout;
   return pipeline;
+}
+
+VkPipeline Device::get_pipeline(
+    const std::string& name,
+    VkPipelineLayout& layout_out,
+    VkDescriptorSetLayout& ds_layout_out,
+    uint32_t num_bindings,
+    uint32_t push_constant_size,
+    const VkSpecializationInfo* specialization_info) {
+
+  // Before locking via get_pipeline_from_spirv, let's just check the map to avoid doing disk I/O
+  // if we already have it.
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    auto it = pipeline_map_.find(name);
+    if (it != pipeline_map_.end()) {
+      layout_out = it->second.layout;
+      ds_layout_out = it->second.ds_layout;
+      return it->second.pipeline;
+    }
+  }
+
+  // Load SPIR-V
+  const char* env_path = std::getenv("MLX_VULKAN_PATH");
+  std::string base_path = env_path ? std::string(env_path) + "/" : std::string(VULKAN_KERNELS_PATH);
+  std::string spv_path = base_path + name + ".spv";
+  std::vector<uint32_t> code;
+  try {
+    code = read_spirv(spv_path);
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[MLX Vulkan] WARNING: %s\n", e.what());
+    
+    // Fallback: return null pipeline
+    std::lock_guard<std::mutex> lk(mutex_);
+    pipeline_map_[name] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    layout_out = VK_NULL_HANDLE;
+    ds_layout_out = VK_NULL_HANDLE;
+    return VK_NULL_HANDLE;
+  }
+
+  return get_pipeline_from_spirv(
+      name,
+      code,
+      layout_out,
+      ds_layout_out,
+      num_bindings,
+      push_constant_size,
+      specialization_info);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
