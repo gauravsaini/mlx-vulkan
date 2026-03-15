@@ -78,8 +78,43 @@ bool is_reduction(const Primitive& p) {
   return typeid(p) == typeid(Reduce) || typeid(p) == typeid(ArgReduce);
 }
 
-bool is_fusable(const Primitive& p) {
-  return is_unary(p) || is_binary(p) || is_ternary(p) || is_broadcast(p);
+bool is_supported_vulkan_terminal_reduction(const array& a, bool is_root) {
+#ifdef MLX_USE_VULKAN
+  if (!is_root || !a.has_primitive() ||
+      a.primitive().stream().device != Device::gpu) {
+    return false;
+  }
+  const auto& p = a.primitive();
+  if (typeid(p) != typeid(Reduce)) {
+    return false;
+  }
+
+  const auto& reduce = static_cast<const Reduce&>(p);
+  auto [reduce_type, axes] = reduce.state();
+  if (reduce_type != Reduce::Sum || axes.size() != 1) {
+    return false;
+  }
+
+  const auto& in = a.inputs()[0];
+  int axis = axes[0];
+  if (axis != in.ndim() - 1 || in.ndim() != a.ndim() || in.shape(axis) <= 1) {
+    return false;
+  }
+
+  auto expected_shape = in.shape();
+  expected_shape[axis] = 1;
+  return a.shape() == expected_shape;
+#else
+  (void)a;
+  (void)is_root;
+  return false;
+#endif
+}
+
+bool is_fusable(const array& a, bool is_root) {
+  const auto& p = a.primitive();
+  return is_unary(p) || is_binary(p) || is_ternary(p) || is_broadcast(p) ||
+      is_supported_vulkan_terminal_reduction(a, is_root);
 }
 
 Compiled::Compiled(
@@ -200,6 +235,33 @@ const char* Compiled::name() const {
 }
 
 std::vector<Shape> Compiled::output_shapes(const std::vector<array>& inputs) {
+  bool has_reduction =
+      std::any_of(tape_.begin(), tape_.end(), [](const array& a) {
+        if (!a.has_primitive()) {
+          return false;
+        }
+        const auto& p = a.primitive();
+        return typeid(p) == typeid(Reduce);
+      });
+  if (has_reduction) {
+    if (inputs.size() != inputs_.size()) {
+      throw std::runtime_error(
+          "[Compiled] Reduction fusion expects the traced input arity.");
+    }
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      if (inputs[i].shape() != inputs_[i].shape()) {
+        throw std::runtime_error(
+            "[Compiled] Vulkan reduction fusion is shape-specialized and does not yet support input shape changes.");
+      }
+    }
+    std::vector<Shape> shapes;
+    shapes.reserve(outputs_.size());
+    for (auto& out : outputs_) {
+      shapes.push_back(out.shape());
+    }
+    return shapes;
+  }
+
   size_t nd = 0;
   for (auto& in : inputs) {
     nd = std::max(nd, in.ndim());
@@ -850,7 +912,7 @@ void compile_fuse(
       // - Non fusable primitive
       // - Is global output but has a different shape
       if (depth >= max_compile_depth || !a.has_primitive() ||
-          a.primitive().stream() != s || !is_fusable(a.primitive()) ||
+          a.primitive().stream() != s || !is_fusable(a, depth == 0) ||
           (output_map.find(a.id()) != output_map.end() && a.shape() != shape)) {
         // Possible input
         input_set.insert(a.id());

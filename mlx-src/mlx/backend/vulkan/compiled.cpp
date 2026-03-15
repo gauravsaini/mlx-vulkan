@@ -14,6 +14,7 @@
 #include <fstream>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 
@@ -346,6 +347,117 @@ std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, 
   throw std::runtime_error("[Compiled::eval_gpu] AST to GLSL unhandled primitive: " + pr);
 }
 
+struct TerminalSumReduction {
+  Shape source_shape;
+  Shape output_shape;
+  size_t reduce_size{0};
+};
+
+std::optional<TerminalSumReduction> analyze_terminal_sum_reduction(
+    const std::vector<array>& outputs,
+    const std::vector<array>& tape) {
+  if (outputs.size() != 1 || tape.empty()) {
+    return std::nullopt;
+  }
+  const auto& reduce_node = outputs[0];
+  if (reduce_node.id() != tape.back().id() || !reduce_node.has_primitive()) {
+    return std::nullopt;
+  }
+  const auto& reduce_primitive = reduce_node.primitive();
+  if (typeid(reduce_primitive) != typeid(Reduce)) {
+    return std::nullopt;
+  }
+  for (size_t i = 0; i + 1 < tape.size(); ++i) {
+    if (tape[i].has_primitive()) {
+      const auto& p = tape[i].primitive();
+      if (typeid(p) == typeid(Reduce)) {
+        return std::nullopt;
+      }
+    }
+  }
+
+  const auto& reduce = static_cast<const Reduce&>(reduce_primitive);
+  auto [reduce_type, axes] = reduce.state();
+  if (reduce_type != Reduce::Sum || axes.size() != 1) {
+    return std::nullopt;
+  }
+
+  const auto& reduce_input = reduce_node.inputs()[0];
+  int axis = axes[0];
+  if (axis != reduce_input.ndim() - 1 || reduce_input.ndim() != reduce_node.ndim() ||
+      reduce_input.shape(axis) <= 1) {
+      return std::nullopt;
+  }
+
+  auto expected_output_shape = reduce_input.shape();
+  expected_output_shape[axis] = 1;
+  if (reduce_node.shape() != expected_output_shape) {
+      return std::nullopt;
+  }
+
+  return TerminalSumReduction{
+      reduce_input.shape(),
+      reduce_node.shape(),
+      static_cast<size_t>(reduce_input.shape(axis))};
+}
+
+Strides compiled_broadcast_strides_for_shape(
+    const array& x,
+    const Shape& target_shape) {
+  Strides xstrides;
+  xstrides.reserve(target_shape.size());
+  size_t j = 0;
+  for (; j < target_shape.size() - x.ndim(); ++j) {
+    xstrides.push_back(0);
+  }
+  for (int i = 0; i < x.ndim(); ++i, ++j) {
+    xstrides.push_back(x.shape(i) == 1 ? 0 : x.strides()[i]);
+  }
+  return xstrides;
+}
+
+bool compiled_reduction_inputs_contiguous(
+    const std::vector<array>& inputs,
+    const Shape& source_shape,
+    const std::function<bool(size_t)>& is_constant) {
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (is_constant(i) || is_scalar(inputs[i])) {
+      continue;
+    }
+    if (!inputs[i].flags().row_contiguous || inputs[i].shape() != source_shape) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<int32_t> compiled_reduction_metadata(
+    const std::vector<array>& inputs,
+    const Shape& source_shape,
+    const std::function<bool(size_t)>& is_constant) {
+  std::vector<int32_t> meta;
+  size_t non_scalar_inputs = 0;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (!is_constant(i) && !is_scalar(inputs[i])) {
+      non_scalar_inputs++;
+    }
+  }
+  meta.reserve(source_shape.size() * (1 + non_scalar_inputs));
+  for (auto dim : source_shape) {
+    meta.push_back(static_cast<int32_t>(dim));
+  }
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (is_constant(i) || is_scalar(inputs[i])) {
+      continue;
+    }
+    auto strides = compiled_broadcast_strides_for_shape(inputs[i], source_shape);
+    for (auto stride : strides) {
+      meta.push_back(static_cast<int32_t>(stride));
+    }
+  }
+  return meta;
+}
+
 void build_kernel(
     std::string& os,
     const std::string& kernel_name,
@@ -481,6 +593,143 @@ void build_kernel(
     os += "}\n";
 }
 
+void build_reduction_kernel(
+    std::string& os,
+    const std::string& kernel_name,
+    const std::vector<array>& inputs,
+    const std::vector<array>& outputs,
+    const std::vector<array>& tape,
+    const std::function<bool(size_t)>& is_constant,
+    const TerminalSumReduction& reduction,
+    bool contiguous) {
+    (void)kernel_name;
+    (void)reduction;
+
+    NodeNamer namer;
+    os += "#version 450\n";
+    os += "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n";
+
+    int binding = 0;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        if (is_constant(i)) continue;
+        const auto& x = inputs[i];
+        std::string xname = namer.get_name(x);
+        os += fmt::format(
+            "layout(set = 0, binding = {}) readonly buffer In{} {{ {} {}[]; }};\n",
+            binding++,
+            i,
+            compiled_glsl_type(x.dtype()),
+            xname);
+    }
+
+    if (!contiguous) {
+        os += fmt::format(
+            "layout(set = 0, binding = {}) readonly buffer Meta {{ int meta[]; }} meta_buf;\n",
+            binding++);
+    }
+
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        const auto& x = outputs[i];
+        std::string xname = namer.get_name(x);
+        os += fmt::format(
+            "layout(set = 0, binding = {}) writeonly buffer Out{} {{ {} {}[]; }};\n",
+            binding++,
+            i,
+            compiled_glsl_type(x.dtype()),
+            xname);
+    }
+
+    os += "layout(push_constant) uniform PushConstants {\n";
+    os += "  uint size;\n";
+    os += "  uint ndim;\n";
+    os += "  uint reduce_size;\n";
+    os += "} pc;\n";
+
+    os += "void main() {\n";
+    os += "  uint index = gl_GlobalInvocationID.x;\n";
+    os += "  if (index >= pc.size) return;\n";
+    os += fmt::format(
+        "  {} acc = 0.0;\n",
+        compiled_glsl_type(outputs[0].dtype()));
+    os += "  for (uint r = 0; r < pc.reduce_size; ++r) {\n";
+    os += "    uint reduce_index = index * pc.reduce_size + r;\n";
+
+    int meta_block = 1;
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        auto& x = inputs[i];
+        auto xname = namer.get_name(x);
+        if (is_constant(i)) {
+            std::ostringstream ss;
+            print_constant(ss, x);
+            os += fmt::format(
+                "    {} tmp_{} = {};\n",
+                compiled_glsl_type(x.dtype()),
+                xname,
+                ss.str());
+        } else if (is_scalar(x)) {
+            os += fmt::format(
+                "    {} tmp_{} = {}[0];\n",
+                compiled_glsl_type(x.dtype()),
+                xname,
+                xname);
+        } else if (!contiguous) {
+            os += fmt::format("    uint rem_{0} = reduce_index;\n", xname);
+            os += fmt::format("    int idx_{0} = 0;\n", xname);
+            os += "    for (int d = int(pc.ndim) - 1; d >= 0; --d) {\n";
+            os += "      uint dim = uint(meta_buf.meta[d]);\n";
+            os += "      uint coord = rem_" + xname + " % dim;\n";
+            os += "      rem_" + xname + " /= dim;\n";
+            os += fmt::format(
+                "      idx_{0} += int(coord) * meta_buf.meta[int(pc.ndim) * {1} + d];\n",
+                xname,
+                meta_block);
+            os += "    }\n";
+            os += fmt::format(
+                "    {} tmp_{} = {}[idx_{}];\n",
+                compiled_glsl_type(x.dtype()),
+                xname,
+                xname,
+                xname);
+            meta_block++;
+        } else {
+            os += fmt::format(
+                "    {} tmp_{} = {}[reduce_index];\n",
+                compiled_glsl_type(x.dtype()),
+                xname,
+                xname);
+        }
+    }
+
+    for (size_t i = 0; i + 1 < tape.size(); ++i) {
+        auto& x = tape[i];
+        std::string out_type = compiled_glsl_type(x.dtype());
+        std::string out_name = namer.get_name(x);
+        std::vector<std::string> inps;
+        for (auto& in : x.inputs()) {
+            inps.push_back("tmp_" + namer.get_name(in));
+        }
+
+        if (is_static_cast(x.primitive())) {
+            os += fmt::format(
+                "    {} tmp_{} = {}({});\n",
+                out_type,
+                out_name,
+                out_type,
+                inps[0]);
+        } else {
+            std::string expr = to_glsl_op(x.primitive().name(), x.inputs(), inps);
+            os += fmt::format("    {} tmp_{} = {};\n", out_type, out_name, expr);
+        }
+    }
+
+    const auto& reduce_input = tape.back().inputs()[0];
+    os += fmt::format("    acc += tmp_{};\n", namer.get_name(reduce_input));
+    os += "  }\n";
+    auto out_name = namer.get_name(outputs[0]);
+    os += fmt::format("  {}[index] = acc;\n", out_name);
+    os += "}\n";
+}
+
 } // namespace
 
 
@@ -530,50 +779,110 @@ void Compiled::eval_gpu(
         output_needs_cast[i] = true;
       }
     }
-    
-    std::string kernel_name = kernel_lib_ + "_vulkan_contig";
-    
+
+    auto reduction = analyze_terminal_sum_reduction(outputs_, tape_);
+    if (reduction) {
+      if (inputs.size() != inputs_.size() || outputs.size() != outputs_.size()) {
+        throw std::runtime_error(
+            "[Compiled::eval_gpu] Reduction kernel input/output arity mismatch.");
+      }
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        if (inputs[i].shape() != inputs_[i].shape()) {
+          throw std::runtime_error(
+              "[Compiled::eval_gpu] Vulkan compiled reductions are shape-specialized and do not yet support input shape changes.");
+        }
+      }
+      for (size_t i = 0; i < outputs.size(); ++i) {
+        if (outputs[i].shape() != outputs_[i].shape()) {
+          throw std::runtime_error(
+              "[Compiled::eval_gpu] Vulkan compiled reductions are shape-specialized and do not yet support output shape changes.");
+        }
+      }
+    }
+
+    std::string kernel_name =
+        kernel_lib_ + (reduction ? "_vulkan_sum_last" : "_vulkan_contig");
+
     // Pipeline layout out
     VkPipelineLayout layout;
     VkDescriptorSetLayout ds_layout;
-    
+
     int num_bindings = 0;
     for (int i = 0; i < shader_inputs.size(); i++) {
       if (!is_constant_(i)) num_bindings++;
     }
-    auto [contiguous, shape, strides] =
-        compiled_collapse_contiguous_dims(shader_inputs, shader_outputs[0], is_constant_);
-    if (!contiguous) {
-      num_bindings++;
+
+    bool contiguous = true;
+    Shape shape;
+    std::vector<Strides> strides;
+    std::vector<int32_t> meta_data;
+    uint32_t push_constant_size = sizeof(uint32_t) * 2;
+
+    if (reduction) {
+      shape = reduction->source_shape;
+      contiguous =
+          compiled_reduction_inputs_contiguous(shader_inputs, shape, is_constant_);
+      if (!contiguous) {
+        num_bindings++;
+        meta_data =
+            compiled_reduction_metadata(shader_inputs, shape, is_constant_);
+      }
+      push_constant_size = sizeof(uint32_t) * 3;
+    } else {
+      std::tie(contiguous, shape, strides) = compiled_collapse_contiguous_dims(
+          shader_inputs, shader_outputs[0], is_constant_);
+      if (!contiguous) {
+        num_bindings++;
+        meta_data.reserve(shape.size() * (strides.size()));
+        for (auto dim : shape) {
+          meta_data.push_back(static_cast<int32_t>(dim));
+        }
+        for (size_t i = 1; i < strides.size(); ++i) {
+          for (auto stride : strides[i]) {
+            meta_data.push_back(static_cast<int32_t>(stride));
+          }
+        }
+      }
     }
     num_bindings += shader_outputs.size();
-    
+
     std::string glsl;
-    build_kernel(
-        glsl,
-        kernel_name,
-        inputs_,
-        outputs_,
-        tape_,
-        is_constant_,
-        contiguous,
-        static_cast<int>(shape.size()),
-        !contiguous,
-        false,
-        1
-    );
-    
+    if (reduction) {
+      build_reduction_kernel(
+          glsl,
+          kernel_name,
+          inputs_,
+          outputs_,
+          tape_,
+          is_constant_,
+          *reduction,
+          contiguous);
+    } else {
+      build_kernel(
+          glsl,
+          kernel_name,
+          inputs_,
+          outputs_,
+          tape_,
+          is_constant_,
+          contiguous,
+          static_cast<int>(shape.size()),
+          !contiguous,
+          false,
+          1);
+    }
+
     std::vector<uint32_t> spv = compile_glsl_to_spirv(kernel_name, glsl);
-    
+
     VkPipeline pipeline = d.get_pipeline_from_spirv(
             kernel_name,
             spv,
             layout,
             ds_layout,
             num_bindings,
-            sizeof(uint32_t) * 2 // push constant size
+            push_constant_size
         );
-    
+
     if (pipeline == VK_NULL_HANDLE) {
        throw std::runtime_error("[Compiled::eval_gpu] Vulkan pipeline creation failed");
     }
@@ -621,16 +930,6 @@ void Compiled::eval_gpu(
     }
 
     if (!contiguous) {
-      std::vector<int32_t> meta_data;
-      meta_data.reserve(shape.size() * (strides.size()));
-      for (auto dim : shape) {
-        meta_data.push_back(static_cast<int32_t>(dim));
-      }
-      for (size_t i = 1; i < strides.size(); ++i) {
-        for (auto stride : strides[i]) {
-          meta_data.push_back(static_cast<int32_t>(stride));
-        }
-      }
       auto* staging =
           vulkan::allocator().alloc_staging(meta_data.size() * sizeof(int32_t));
       std::memcpy(
@@ -641,11 +940,16 @@ void Compiled::eval_gpu(
           s, [staging]() { vulkan::allocator().free_staging(staging); });
       bind_buffer(staging->buffer);
     }
-    
-    // allocate outputs
-    compiled_allocate_outputs(
-        shader_inputs, shader_outputs, is_constant_, contiguous);
-    
+
+    if (reduction) {
+      for (auto& out : shader_outputs) {
+        out.set_data(allocator::malloc(out.nbytes()));
+      }
+    } else {
+      compiled_allocate_outputs(
+          shader_inputs, shader_outputs, is_constant_, contiguous);
+    }
+
     for (auto& out : shader_outputs) {
        bind_arr(out);
     }
@@ -665,25 +969,43 @@ void Compiled::eval_gpu(
           &ds,
           0,
           nullptr);
-          
-    // Push constants
-    struct PushConstants {
-      uint32_t size;
-      uint32_t ndim;
-    } pc{
-        static_cast<uint32_t>(shader_outputs[0].size()),
-        static_cast<uint32_t>(shape.size()),
-    };
-    vkCmdPushConstants(
-        compute_encoder.cmd,
-        layout,
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        sizeof(PushConstants),
-        &pc);
+
+    if (reduction) {
+      struct PushConstants {
+        uint32_t size;
+        uint32_t ndim;
+        uint32_t reduce_size;
+      } pc{
+          static_cast<uint32_t>(shader_outputs[0].size()),
+          static_cast<uint32_t>(shape.size()),
+          static_cast<uint32_t>(reduction->reduce_size),
+      };
+      vkCmdPushConstants(
+          compute_encoder.cmd,
+          layout,
+          VK_SHADER_STAGE_COMPUTE_BIT,
+          0,
+          sizeof(PushConstants),
+          &pc);
+    } else {
+      struct PushConstants {
+        uint32_t size;
+        uint32_t ndim;
+      } pc{
+          static_cast<uint32_t>(shader_outputs[0].size()),
+          static_cast<uint32_t>(shape.size()),
+      };
+      vkCmdPushConstants(
+          compute_encoder.cmd,
+          layout,
+          VK_SHADER_STAGE_COMPUTE_BIT,
+          0,
+          sizeof(PushConstants),
+          &pc);
+    }
         
     // Dispatch
-    uint32_t nblock = (pc.size + 255) / 256;
+    uint32_t nblock = (static_cast<uint32_t>(shader_outputs[0].size()) + 255) / 256;
     vkCmdDispatch(compute_encoder.cmd, nblock, 1, 1);
     
     compute_encoder.op_count++;

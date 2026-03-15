@@ -79,6 +79,11 @@ bash scripts/local_amd_profile_compile.sh
       Remaining work is still in Phase 6.2, but the blocker has moved from "no broadcast/strided support" to "finish broader view/shape coverage and then re-profile for the next missing primitive or reduction."
 - [x] **Compiled broadcast + offset regression is now covered**:
       `tests/vulkan/test_compile_logging.py` now exercises a sliced-view broadcast multiply through `mx.compile`, so the new RX 580 broadcast/offset path is checked by the standard scripted compile smoke.
+- [~] **Terminal compiled `Sum` reduction is now live on the RX 580 for the real LLM hot path**:
+      Vulkan `mx.compile` fusion now admits shape-specialized last-axis `Reduce::Sum` roots on GPU traces, and real `mlx-lm` profiling on the RX 580 shows the new `Broadcast -> Multiply -> Sum` kernel dispatching through the Vulkan JIT path during `gated_delta_step_ops`.
+      This is intentionally first-pass only: it is limited to terminal, keepdims, last-axis `Sum` reductions and does not yet cover multi-axis/general reductions or `Prod` / `Max` / `Min`.
+- [~] **The next end-to-end LLM bottleneck has moved beyond compiled reduction fusion**:
+      after the `Sum` kernel landed, the guarded one-token RX 580 benchmark still timed out after 180s with no first token, but the live Python stack is now in `mlx_lm.models.cache.KVCache.update_and_fetch(...)` / `qwen3_next.py` rather than the earlier `gated_delta` reduction path.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -270,6 +275,7 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 
 #### 6.1 Reduction Support in Compiled GLSL
 - [ ] Implement `Sum` reduction in `to_glsl_op` using shared memory + workgroup barriers.
+      First real-hardware pass is now live for the hot case: terminal, last-axis, keepdims `Reduce::Sum` roots such as `Broadcast -> Multiply -> Sum` compile and execute through Vulkan on the RX 580. General/multi-axis reduction lowering and reduction-specific workgroup optimization are still pending.
 - [ ] Implement `Prod`, `Max`, `Min` reductions.
 - [ ] Handle multi-axis reductions and keepdims.
 
@@ -291,12 +297,13 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 - [ ] Measure tokens/sec and compare against CPU-fallback baseline.
 - [ ] Profile GPU utilization to identify remaining bottlenecks.
       Preliminary lower-bound timing on the local RX 580 shows model load is about 3.6s for both GPU and CPU runs, while one-token generation still did not complete within the short benchmark windows (>120s GPU, >60s CPU) and needs better first-token / streaming instrumentation before we treat it as a real throughput number.
+      Latest RX 580 benchmark after compiled `Sum` fusion: model load is about 3.71s on GPU, one-token `generate_step` still timed out after 180s with no first yield, and the live stack now points at `KVCache.update_and_fetch(...)` / `qwen3_next.py` rather than the earlier `gated_delta` reduction loop.
 
 ### Immediate Next Steps
 
-1. Re-profile one-token `mlx-lm generate` on the local AMD box and identify the next blocker now that the main broadcast/offset kernels stay on Vulkan.
-2. Finish remaining view/shape coverage in the compiled stride path if the new profile still exposes unsupported cases.
-3. Implement reduction support (Sum first, then others).
+1. Profile and optimize the RX 580 KV-cache update path now that terminal compiled `Sum` is live and the benchmark stack has moved to `KVCache.update_and_fetch(...)`.
+2. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
+3. Re-run one-token AMD generation and capture a real first-token latency once the cache path stops dominating.
 4. Benchmark tokens/sec only after the updated profile shows the hot path is predominantly on Vulkan.
 
 ---

@@ -4,6 +4,12 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Landed first-pass compiled `Sum` reduction support on the RX 580 and moved the LLM bottleneck forward.
+    - Extended compile fusion in `mlx/compile.cpp` so Vulkan GPU traces can fuse terminal, shape-specialized last-axis `Reduce::Sum` roots instead of stopping at the reduction boundary.
+    - Taught `mlx/backend/vulkan/compiled.cpp` to JIT a dedicated terminal reduction kernel that accumulates a fused elementwise expression across the last axis, while preserving the existing float32 shader-IO bridge and broadcast-aware descriptor-offset path.
+    - Extended `tests/vulkan/test_compile_logging.py` with a compiled `Broadcast -> Multiply -> Sum` regression and revalidated it through the local AMD scripted workflow.
+    - Real RX 580 result: `scripts/local_amd_profile_compile.sh` now shows `Broadcast -> Multiply -> Sum` reaching the Vulkan compiled path during `mlx-lm` generation, matching the hot `gated_delta_step_ops` pattern.
+    - Follow-up benchmark result: one-token `generate_step` on the RX 580 still timed out after 180s with no first yield, but the live Python stack moved out of `gated_delta` and into `mlx_lm.models.cache.KVCache.update_and_fetch(...)` / `qwen3_next.py`, so the next blocker is now the KV-cache update path rather than compiled reduction fusion.
 - **2026-03-15**: Fixed the Vulkan compiled-path dtype bridge on the local RX 580 and converted a crash into an explicit Phase-6 blocker.
     - Added `Sigmoid` and `LogAddExp` lowering to `mlx/backend/vulkan/compiled.cpp`.
     - Switched float16 / bfloat16 compiled execution to a float32 shader-IO bridge, using Vulkan `copy_gpu` casts for pre/post materialization instead of building MLX graph ops inside backend evaluation.

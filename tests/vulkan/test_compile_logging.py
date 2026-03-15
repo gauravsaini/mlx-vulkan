@@ -104,6 +104,42 @@ def compiled_broadcast_offset_snippet():
     )
 
 
+def compiled_sum_snippet():
+    return textwrap.dedent(
+        """
+        import importlib.util
+        import os
+        import sys
+
+        core_so = os.environ.get("MLX_CORE_SO")
+        if core_so:
+            import mlx
+            spec = importlib.util.spec_from_file_location("mlx.core", core_so)
+            mx = importlib.util.module_from_spec(spec)
+            sys.modules["mlx.core"] = mx
+            spec.loader.exec_module(mx)
+            mlx.core = mx
+        else:
+            import mlx.core as mx
+
+        if not mx.is_available(mx.gpu):
+            print("SKIP: mx.gpu not available")
+            raise SystemExit(0)
+
+        fn = mx.compile(lambda x, b: (x * b).sum(axis=-1))
+        with mx.stream(mx.gpu):
+            x = mx.array(
+                [[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]], dtype=mx.float32
+            )
+            b = mx.array([[[10.0, 20.0, 30.0]]], dtype=mx.float32)
+            y0 = fn(x, b)
+            y1 = fn(x, b)
+            mx.eval(y0, y1)
+        print(y0.tolist(), y1.tolist())
+        """
+    )
+
+
 def test_compile_logging():
     proc = run_case(compiled_snippet(), {"MLX_LOG_COMPILE_TAPE": "1"})
     if "SKIP: mx.gpu not available" in proc.stdout:
@@ -201,12 +237,64 @@ def test_compile_logging_broadcast_offset():
     return True
 
 
+def test_compile_logging_sum():
+    proc = run_case(compiled_sum_snippet(), {"MLX_LOG_COMPILE_TAPE": "1"})
+    if "SKIP: mx.gpu not available" in proc.stdout:
+        return False
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"compiled sum logging run failed\nstdout:\n{proc.stdout}\n"
+            f"stderr:\n{proc.stderr}"
+        )
+
+    expected = "[[140.0, 320.0]] [[140.0, 320.0]]"
+    if expected not in proc.stdout:
+        raise AssertionError(f"unexpected sum compiled output:\n{proc.stdout}")
+
+    kernel_logs = [
+        line
+        for line in proc.stderr.splitlines()
+        if line.startswith("[MLX Vulkan][compile profile] kernel=")
+    ]
+    if len(kernel_logs) != 1:
+        raise AssertionError(
+            "expected exactly one unique sum kernel log\n"
+            f"stderr was:\n{proc.stderr}"
+        )
+    if "Multiply" not in kernel_logs[0] or "Sum" not in kernel_logs[0]:
+        raise AssertionError(
+            "sum kernel log missing fused op sequence\n"
+            f"kernel log was:\n{kernel_logs[0]}"
+        )
+
+    summary_line = "[MLX Vulkan][compile profile] summary kernels=1 dispatches=2"
+    if summary_line not in proc.stderr:
+        raise AssertionError(
+            "missing sum compile profile summary\n"
+            f"stderr was:\n{proc.stderr}"
+        )
+    if "op=Multiply dispatches=2 unique_kernels=1" not in proc.stderr:
+        raise AssertionError(
+            "missing Multiply frequency summary for sum case\n"
+            f"stderr was:\n{proc.stderr}"
+        )
+    if "op=Sum dispatches=2 unique_kernels=1" not in proc.stderr:
+        raise AssertionError(
+            "missing Sum frequency summary\n"
+            f"stderr was:\n{proc.stderr}"
+        )
+    return True
+
+
 def main():
     if not test_compile_logging():
         print("SKIP: Vulkan compile logging (mx.gpu not available)")
         return 0
     if not test_compile_logging_broadcast_offset():
         print("SKIP: Vulkan compile logging broadcast/offset (mx.gpu not available)")
+        return 0
+    if not test_compile_logging_sum():
+        print("SKIP: Vulkan compile logging sum (mx.gpu not available)")
         return 0
     print("PASS: Vulkan compile logging succeeded")
     return 0
