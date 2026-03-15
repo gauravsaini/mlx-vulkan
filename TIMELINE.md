@@ -13,6 +13,11 @@
     - Added 20+ unary/binary/ternary primitives to `to_glsl_op`.
     - Verified `sin(x) * exp(y) + max(x,y) - abs(x)` on AMD RX 580 (RADV POLARIS10).
     - Output matches macOS results exactly.
+- **2026-03-15**: Added in-memory SPIR-V caching.
+    - Mutex-protected `unordered_map` keyed by kernel name avoids re-invoking `glslc`.
+    - Removed unused includes (`sstream`, `utils.h` x3).
+    - **Next**: Reduction support → broadcasting → LLM inference benchmarking on AMD.
+
 1. **Massive Architecture Task Started**:
    - The user noticed eager text generation is too slow due to CPU kernel dispatch overhead.
    - We are pivoting from compatibility tests to fully implementing the `Compile` primitive (`mx.compile()`) natively for Vulkan.

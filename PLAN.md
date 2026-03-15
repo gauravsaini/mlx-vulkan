@@ -232,15 +232,38 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Test a simple compiled `mx.compile(lambda x: x + x)` graph natively on Vulkan.
 - [x] Expand `to_glsl_op` with comprehensive unary/binary ops (sin, cos, exp, tanh, sqrt, max, min, comparisons, etc.).
 - [x] Verify expanded ops on native AMD GPU (RX 580 via RADV).
+- [x] Implement in-memory SPIR-V caching (avoid re-invoking `glslc` for identical kernels).
 - [ ] Support complex ops (reduction, broadcasting) in the GLSL generator.
-- [ ] Implement robust `glslc` error handling and SPIR-V caching.
 - [ ] Validate performance on AMD GPUs with LLM inference.
+
+### Phase 6: LLM Inference Acceleration (Next)
+
+The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all hot-path operations execute natively through the compiled Vulkan pipeline.
+
+#### 6.1 Reduction Support in Compiled GLSL
+- [ ] Implement `Sum` reduction in `to_glsl_op` using shared memory + workgroup barriers.
+- [ ] Implement `Prod`, `Max`, `Min` reductions.
+- [ ] Handle multi-axis reductions and keepdims.
+
+#### 6.2 Broadcasting & Strided Access
+- [ ] Support non-contiguous inputs in `build_kernel` (strided index computation).
+- [ ] Handle broadcasting rules (scalar expansion, dimension alignment).
+
+#### 6.3 Missing Primitive Coverage
+- [ ] Audit which primitives LLM inference actually hits (profile a generation run).
+- [ ] Add any missing ops to `to_glsl_op` (e.g., `Erf`, `Sigmoid`, `Softmax` components).
+- [ ] Handle `AsType` / static casts between dtypes in GLSL.
+
+#### 6.4 End-to-End LLM Benchmarking
+- [ ] Run `mlx-lm generate` on AMD RX 580 with `mx.compile` active.
+- [ ] Measure tokens/sec and compare against CPU-fallback baseline.
+- [ ] Profile GPU utilization to identify remaining bottlenecks.
 
 ### Immediate Next Steps
 
-1. Implement SPIR-V caching (avoid recompiling identical kernels).
-2. Add reduction support (sum, prod, max, min across axes).
-3. Re-attempt LLM inference on AMD node with compiled execution.
+1. Profile an LLM generation run to identify which primitives are needed.
+2. Implement reduction support (Sum first, then others).
+3. Add broadcasting/strided access to `build_kernel`.
 
 ---
 
