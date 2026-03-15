@@ -105,6 +105,27 @@ bash scripts/local_amd_profile_compile.sh
 - [~] **Warmed RX 580 decode is still badly underutilizing the GPU**:
       a warmed 16-token RX 580 utilization profile now shows first yield at about `4.63s`, then a very regular `~1.80s` per-token cadence, while `gpu_busy_percent` averages only about `17.9%` with a `0%` median and only about `19%` of samples at or above `50%`.
       That points away from a single missing fused `mx.compile` kernel and toward bursty eager-path work: many small kernels plus host/submit gaps are leaving the card mostly idle during steady-state decode.
+- [~] **The live RX 580 decoder wall is now pinned to the `qwen3_5` linear block's medium transpose QMMs, not cache mutation or attention math**:
+      the current `mlx-community/Qwen3.5-2B-5bit` path on the AMD box resolves to `mlx_lm.models.qwen3_5.GatedDeltaNet` for 3 out of every 4 decoder layers, and a strict layer-13 decode micro-profile shows the same shape family dominating the layer budget:
+      - `in_proj_qkv` about `0.0099-0.0105s` (`K=2048`, `N=6144`)
+      - `in_proj_z` about `0.0035s` (`K=2048`, `N=2048`)
+      - `in_proj_a` / `in_proj_b` about `0.0007-0.0009s` each (`K=2048`, `N=16`)
+      - `out_proj` about `0.0033s` (`K=2048`, `N=2048`)
+      - MLP `gate_proj` / `up_proj` about `0.0099-0.0103s` each (`K=2048`, `N=6144`)
+      - MLP `down_proj` about `0.0100s` (`K=6144`, `N=2048`)
+      while the rest of the same layer is comparatively small:
+      - `gated_delta_update` about `0.0022s`
+      - `conv1d + cache slice + concat` about `0.0012s` combined
+      - norms / residual / pointwise work mostly at or below `~0.0012s`
+      Result: the next real decoder optimization must target these repeated medium affine transpose QMMs directly. Cache-update semantics, grouped attention, and RoPE are no longer the dominant path in the representative linear decoder block.
+- [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
+      `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+- [x] **A persistent dequant-buffer cache for medium transpose QMMs was tested on the RX 580 and rejected**:
+      a bounded cache of dequantized float32 `[K, N]` affine weights was prototyped behind `MLX_VULKAN_QMM_DQ_CACHE_MB` and benchmarked on real hardware.
+      It was not kept because it made the live decode path dramatically worse:
+      - baseline strict `generate_step`, `max_tokens=16`: about `30.29s`, `0.528 tok/s`, first yield about `4.53s`
+      - same run with the dequant cache enabled: timed out at `180s`, only `14/16` yields, first yield about `19.74s`
+      This rules out “persist the fully dequantized float32 matrix” as the next backend move for the RX 580. The remaining viable direction is still a better medium decoder specialization or repacked on-chip access pattern, not a persistent float32 expansion cache.
 - [x] **RX 580 memory pressure is not the current decode blocker**:
       current scripted AMD status checks show the box staying well clear of memory limits during this work: system RAM is around `1.1 / 7.2 GiB` used with about `48 MiB` swap in use, and idle post-run GPU memory is around `299 MiB` VRAM plus about `29 MiB` GTT.
       Earlier active-run checks also stayed comfortably below the RX 580's `8 GiB` VRAM and `3.59 GiB` GTT limits, so the current throughput wall should be treated as a scheduling / kernel-density problem rather than a memory-capacity issue.

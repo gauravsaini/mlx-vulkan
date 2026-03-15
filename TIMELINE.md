@@ -7,13 +7,30 @@
 - **2026-03-16**: Tightened the RX 580 decoder diagnosis around eager cache writes and medium-size affine QMMs.
     - Confirmed from the current `python/src/indexing.cpp` path that eager Python `__setitem__` on concrete Vulkan-backed arrays already bypasses the functional `slice_update(...)` result path and dispatches `copy_gpu_inplace(...)` directly for static slices, which is the same shape used by `KVCache.update_and_fetch(...)`.
     - Fixed a separate Linux build-system regression uncovered during this investigation: `python/src/CMakeLists.txt` now links the Python `core` extension against `Vulkan::Vulkan` when `MLX_BUILD_VULKAN=ON`, so rebuilding `python/src/indexing.cpp` on the RX 580 box no longer fails with missing `<vulkan/vulkan.h>`.
-    - Extended `tests/vulkan/test_quantized_gpu.py` with a stricter transpose affine decode-shape regression (`1 x 256` activation against `2048 x 256` 5-bit weights) so medium decoder projections stay covered by the standard AMD smoke.
+    - Extended `tests/vulkan/test_quantized_gpu.py` with a stricter transpose affine decoder-projection regression (`1 x 2048` activation against `512 x 2048` 5-bit weights) so medium decoder projections stay covered by the standard AMD smoke.
     - Added local AMD debug-script passthrough for `MLX_VULKAN_DEBUG_QMM` and used it during a real one-token `generate_step` run to capture the actual repeated decoder projection shapes on the RX 580:
       - `K=2048`, `N` in `{16, 512, 2048, 4096, 6144}`
       - `K=6144`, `N=2048`
       - plus the existing tied-logits case `K=2048`, `N=248320`
     - Also tested a broader direct-QMV gate for these smaller transpose projections and rejected it after RX 580 validation because it regressed prompt prefill and whole-run throughput; the existing narrow `lm_head` gate remains the right baseline.
     - Result: the next real optimization target is not KV-cache slice semantics, and it is not “turn on direct QMV everywhere.” It is a new medium-size decoder QMM specialization tuned for the repeated `2048/6144`-class transpose projections.
+- **2026-03-16**: Re-profiled the live `qwen3_5` linear decoder path and rejected a persistent float32 dequant-cache idea on the RX 580.
+    - Confirmed the current `mlx-community/Qwen3.5-2B-5bit` load resolves to `mlx_lm.models.qwen3_5.GatedDeltaNet` for the repeated “linear” decoder layers, not the older fused-attribute layout from `qwen3_next.py`.
+    - Added a reusable local AMD-only decode micro-profiler for a chosen linear layer and used it on layer 13 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+    - The resulting steady-state layer breakdown shows the representative linear block is overwhelmingly medium affine transpose QMM work:
+      - `in_proj_qkv` about `0.0099-0.0105s`
+      - `in_proj_z` about `0.0035s`
+      - `out_proj` about `0.0033s`
+      - MLP `gate_proj`, `up_proj`, and `down_proj` each about `0.0100s`
+      - `gated_delta_update` only about `0.0022s`
+      - `conv1d + cache slice + concat` only about `0.0012s` combined
+    - Re-ran the same profile with `MLX_VULKAN_DEBUG_QMM=1` and verified the actual hot shape mix inside that layer is still the same family:
+      - `K=2048`, `N` in `{16, 512, 2048, 4096, 6144}`
+      - `K=6144`, `N=2048`
+    - Prototyped a bounded persistent cache of fully dequantized float32 `[K, N]` affine weights behind `MLX_VULKAN_QMM_DQ_CACHE_MB` and benchmarked it on the RX 580. It was explicitly rejected and reverted:
+      - baseline strict `generate_step`, `max_tokens=16`: about `30.29s`, `0.528 tok/s`, first yield about `4.53s`
+      - same run with the dequant cache enabled: timed out at `180s`, only `14/16` yields, first yield about `19.74s`
+    - Result: the useful output of this pass is the stronger diagnosis, not the cache prototype. The next candidate must target medium decoder QMM access/computation more directly rather than persisting the full float32 expansion.
 - **2026-03-16**: Added a native Vulkan RoPE path for the scalar-offset decode case and remeasured the RX 580 attention block.
     - Replaced Vulkan `RoPE::eval_gpu(...)`'s unconditional fallback-graph materialization with a native shader path for the actual rotary case being exercised by Qwen on the RX 580:
       - forward only
