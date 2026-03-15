@@ -43,6 +43,8 @@ Host gsai-box
 
 **Minimum bar**: `mx.compile()` successfully generates a fused GLSL shader, compiles it dynamically to SPIR-V, and evaluates the pipeline without CPU fallback on the Vulkan backend.
 
+**Immediate profiling focus**: trace the primitive mixes that `mlx-lm` actually fuses during real generation so the remaining Vulkan compile work is driven by observed coverage, not guesses.
+
 ### Current Truth
 
 > [!IMPORTANT]
@@ -251,6 +253,7 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 
 #### 6.3 Missing Primitive Coverage
 - [ ] Audit which primitives LLM inference actually hits (profile a generation run).
+- [ ] Add compile-coverage logging for fused Vulkan kernels and summarize primitive frequency from real generation runs.
 - [ ] Add any missing ops to `to_glsl_op` (e.g., `Erf`, `Sigmoid`, `Softmax` components).
 - [ ] Handle `AsType` / static casts between dtypes in GLSL.
 
@@ -262,8 +265,9 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 ### Immediate Next Steps
 
 1. Profile an LLM generation run to identify which primitives are needed.
-2. Implement reduction support (Sum first, then others).
-3. Add broadcasting/strided access to `build_kernel`.
+2. Add compile-coverage logging that makes fused primitive mixes and repeat counts visible during generation.
+3. Implement reduction support (Sum first, then others).
+4. Add broadcasting/strided access to `build_kernel`.
 
 ---
 

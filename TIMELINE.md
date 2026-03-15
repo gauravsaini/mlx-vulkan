@@ -4,6 +4,10 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Pivoted to compile-coverage profiling for real LLM generation.
+    - Confirmed `mlx-lm` already exercises internal `mx.compile` sites, so the next blocker is visibility into which fused primitive mixes are actually hitting the Vulkan compiled path.
+    - Added an explicit profiling task: log unique fused kernels plus an aggregated primitive summary during normal generation runs.
+    - This profiling pass will drive the remaining reduction / broadcast / missing-op work in Phase 6.
 - **2026-03-15**: Implemented Vulkan `Compile` primitive.
     - Created `mlx/backend/vulkan/compiled.cpp` for AST-to-GLSL generation.
     - Added `Device::get_pipeline_from_spirv` for JIT shader loading.

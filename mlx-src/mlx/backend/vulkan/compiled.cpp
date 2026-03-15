@@ -1,6 +1,7 @@
 // Copyright © 2025 Apple Inc.
 #include <fmt/format.h>
 
+#include <algorithm>
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/vulkan/allocator.h"
 #include "mlx/backend/vulkan/device.h"
@@ -20,6 +21,196 @@ namespace {
 // In-memory SPIR-V cache to avoid re-invoking glslc for identical kernels
 std::mutex spirv_cache_mutex_;
 std::unordered_map<std::string, std::vector<uint32_t>> spirv_cache_;
+
+struct KernelProfile {
+  size_t executions{0};
+  size_t tape_size{0};
+  std::vector<std::string> ops;
+  std::string inputs;
+  std::string outputs;
+};
+
+std::mutex compile_profile_mutex_;
+std::unordered_map<std::string, KernelProfile> compile_profiles_;
+
+bool compile_profile_enabled() {
+  static bool enabled = (std::getenv("MLX_LOG_COMPILE_TAPE") != nullptr);
+  return enabled;
+}
+
+std::string shape_to_string(const Shape& shape) {
+  if (shape.empty()) {
+    return "scalar";
+  }
+  std::string out = "[";
+  for (size_t i = 0; i < shape.size(); ++i) {
+    out += std::to_string(shape[i]);
+    if (i + 1 < shape.size()) {
+      out += "x";
+    }
+  }
+  out += "]";
+  return out;
+}
+
+std::string array_summary(const array& arr) {
+  return fmt::format(
+      "{}{}{}",
+      get_type_string(arr.dtype()),
+      shape_to_string(arr.shape()),
+      arr.flags().contiguous ? ":contig" : ":strided");
+}
+
+std::string arrays_summary(const std::vector<array>& arrays) {
+  std::string out = "[";
+  for (size_t i = 0; i < arrays.size(); ++i) {
+    out += array_summary(arrays[i]);
+    if (i + 1 < arrays.size()) {
+      out += ", ";
+    }
+  }
+  out += "]";
+  return out;
+}
+
+std::vector<std::string> tape_ops(const std::vector<array>& tape) {
+  std::vector<std::string> ops;
+  ops.reserve(tape.size());
+  for (auto& x : tape) {
+    if (x.has_primitive()) {
+      ops.push_back(x.primitive().name());
+    }
+  }
+  return ops;
+}
+
+void dump_compile_profile_summary() {
+  if (!compile_profile_enabled()) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lk(compile_profile_mutex_);
+  if (compile_profiles_.empty()) {
+    return;
+  }
+
+  size_t total_dispatches = 0;
+  std::unordered_map<std::string, size_t> op_dispatch_counts;
+  std::unordered_map<std::string, size_t> op_kernel_counts;
+  std::vector<std::pair<std::string, KernelProfile>> kernels;
+  kernels.reserve(compile_profiles_.size());
+
+  for (const auto& [kernel_name, profile] : compile_profiles_) {
+    total_dispatches += profile.executions;
+    kernels.push_back({kernel_name, profile});
+    std::unordered_map<std::string, size_t> seen_ops;
+    for (const auto& op : profile.ops) {
+      op_dispatch_counts[op] += profile.executions;
+      seen_ops[op]++;
+    }
+    for (const auto& [op, _] : seen_ops) {
+      op_kernel_counts[op]++;
+    }
+  }
+
+  std::sort(
+      kernels.begin(),
+      kernels.end(),
+      [](const auto& a, const auto& b) {
+        if (a.second.executions != b.second.executions) {
+          return a.second.executions > b.second.executions;
+        }
+        return a.first < b.first;
+      });
+
+  std::vector<std::pair<std::string, size_t>> ranked_ops(
+      op_dispatch_counts.begin(), op_dispatch_counts.end());
+  std::sort(
+      ranked_ops.begin(),
+      ranked_ops.end(),
+      [](const auto& a, const auto& b) {
+        if (a.second != b.second) {
+          return a.second > b.second;
+        }
+        return a.first < b.first;
+      });
+
+  std::fprintf(
+      stderr,
+      "[MLX Vulkan][compile profile] summary kernels=%zu dispatches=%zu\n",
+      kernels.size(),
+      total_dispatches);
+  for (const auto& [op, dispatches] : ranked_ops) {
+    std::fprintf(
+        stderr,
+        "  op=%s dispatches=%zu unique_kernels=%zu\n",
+        op.c_str(),
+        dispatches,
+        op_kernel_counts[op]);
+  }
+  for (const auto& [kernel_name, profile] : kernels) {
+    std::fprintf(
+        stderr,
+        "  kernel=%s dispatches=%zu tape=%zu inputs=%s outputs=%s ops=",
+        kernel_name.c_str(),
+        profile.executions,
+        profile.tape_size,
+        profile.inputs.c_str(),
+        profile.outputs.c_str());
+    for (size_t i = 0; i < profile.ops.size(); ++i) {
+      std::fprintf(stderr, "%s%s", i == 0 ? "" : " -> ", profile.ops[i].c_str());
+    }
+    std::fprintf(stderr, "\n");
+  }
+  std::fflush(stderr);
+}
+
+void maybe_log_compile_profile(
+    const std::string& kernel_name,
+    const std::vector<array>& inputs,
+    const std::vector<array>& outputs,
+    const std::vector<array>& tape) {
+  if (!compile_profile_enabled()) {
+    return;
+  }
+
+  static bool registered = []() {
+    std::atexit(dump_compile_profile_summary);
+    return true;
+  }();
+  (void)registered;
+
+  auto ops = tape_ops(tape);
+  auto input_desc = arrays_summary(inputs);
+  auto output_desc = arrays_summary(outputs);
+  auto profile_key =
+      fmt::format("{}|{}|{}", kernel_name, input_desc, output_desc);
+  std::lock_guard<std::mutex> lk(compile_profile_mutex_);
+  auto [it, inserted] = compile_profiles_.try_emplace(
+      profile_key,
+      KernelProfile{
+          0,
+          tape.size(),
+          ops,
+          std::move(input_desc),
+          std::move(output_desc)});
+  it->second.executions++;
+
+  if (inserted) {
+    std::fprintf(
+        stderr,
+        "[MLX Vulkan][compile profile] kernel=%s tape=%zu inputs=%s outputs=%s ops=",
+        kernel_name.c_str(),
+        it->second.tape_size,
+        it->second.inputs.c_str(),
+        it->second.outputs.c_str());
+    for (size_t i = 0; i < it->second.ops.size(); ++i) {
+      std::fprintf(stderr, "%s%s", i == 0 ? "" : " -> ", it->second.ops[i].c_str());
+    }
+    std::fprintf(stderr, "\n");
+    std::fflush(stderr);
+  }
+}
 
 // Helper to compile dynamic GLSL to SPIR-V (with caching)
 std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, const std::string& glsl_source) {
@@ -208,7 +399,8 @@ void build_kernel(
 void Compiled::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  
+  maybe_log_compile_profile(kernel_lib_, inputs, outputs, tape_);
+
   if (!outputs[0].flags().contiguous) {
     throw std::runtime_error("[Compiled::eval_gpu] Strided Vulkan compilation not implemented yet.");
   }
