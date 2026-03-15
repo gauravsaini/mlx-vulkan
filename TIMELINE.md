@@ -20,6 +20,13 @@
       - `Exp -> Negative -> Broadcast -> Add -> Broadcast -> LogAddExp -> ...`
       now all reach the Vulkan compiled path during real `mlx-lm` profiling.
     - Remaining work is no longer the original broadcast/stride crash/fallback wall; the next step is to re-profile from this new baseline and find the next true hot-path blocker.
+- **2026-03-15**: Added a regression for compiled broadcasted sliced views and took an initial timing pass.
+    - Extended `tests/vulkan/test_compile_logging.py` with a broadcasted `mx.compile(lambda x, b: x * b)` case where both inputs come from sliced views, covering both stride metadata and descriptor-offset handling in the Vulkan compiled path.
+    - Validated that regression through the standard `scripts/local_amd_profile_compile.sh` flow on the RX 580.
+    - Added a local-only benchmark harness and captured preliminary lower bounds:
+      - model load is about 3.6s on both GPU and CPU default-device runs,
+      - one-token generation did not finish within the short benchmark windows (>120s on GPU, >60s on CPU),
+      - so the next blocker looks like throughput / instrumentation rather than a fresh compiled-kernel correctness failure.
 - **2026-03-15**: Added a reusable local-RX-580 sync/build/profile workflow.
     - Standardized the canonical remote validation directory at `/home/gsai/mlx-vulkan`.
     - Added `scripts/local_amd_sync.sh`, `scripts/local_amd_build.sh`, and `scripts/local_amd_profile_compile.sh`.

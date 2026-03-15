@@ -77,6 +77,8 @@ bash scripts/local_amd_profile_compile.sh
 - [~] **Broadcast / stride coverage is partially live on the RX 580 compiled path**:
       real `mlx-lm` profiling now keeps the previously hot fused kernels `Broadcast -> Multiply`, `Subtract -> Broadcast -> Multiply`, `Broadcast -> Broadcast -> Multiply -> Add -> Broadcast -> Multiply`, and the `LogAddExp` softmax-style kernel on Vulkan after adding generic stride metadata and descriptor-offset support.
       Remaining work is still in Phase 6.2, but the blocker has moved from "no broadcast/strided support" to "finish broader view/shape coverage and then re-profile for the next missing primitive or reduction."
+- [x] **Compiled broadcast + offset regression is now covered**:
+      `tests/vulkan/test_compile_logging.py` now exercises a sliced-view broadcast multiply through `mx.compile`, so the new RX 580 broadcast/offset path is checked by the standard scripted compile smoke.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -288,6 +290,7 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 - [ ] Run `mlx-lm generate` on AMD RX 580 with `mx.compile` active.
 - [ ] Measure tokens/sec and compare against CPU-fallback baseline.
 - [ ] Profile GPU utilization to identify remaining bottlenecks.
+      Preliminary lower-bound timing on the local RX 580 shows model load is about 3.6s for both GPU and CPU runs, while one-token generation still did not complete within the short benchmark windows (>120s GPU, >60s CPU) and needs better first-token / streaming instrumentation before we treat it as a real throughput number.
 
 ### Immediate Next Steps
 
