@@ -4428,7 +4428,7 @@ void dispatch_affine_qmv_transpose(
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
-  vkCmdDispatch(cmd, vulkan::div_ceil(M * N, 256u), 1, 1);
+  vkCmdDispatch(cmd, vulkan::div_ceil(N, dev.preferred_workgroup_size()), M, 1);
 
   VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

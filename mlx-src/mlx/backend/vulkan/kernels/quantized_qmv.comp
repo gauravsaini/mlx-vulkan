@@ -22,6 +22,9 @@ layout(push_constant) uniform Params {
     uint sb_elem_bytes;
 } params;
 
+const uint TILE_K = 64u;
+shared float x_tile[TILE_K];
+
 float read_x(uint raw_index) {
     if (params.x_elem_bytes == 4u) {
         return uintBitsToFloat(x_data[raw_index]);
@@ -127,36 +130,58 @@ uint packed_value_at(uint byte_base, uint elem_index, uint bits) {
 }
 
 void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    uint total = params.M * params.N;
-    if (idx >= total) {
+    uint local_col = gl_LocalInvocationID.x;
+    uint m = gl_WorkGroupID.y;
+    uint n = gl_WorkGroupID.x * gl_WorkGroupSize.x + local_col;
+    if (m >= params.M) {
         return;
     }
 
-    uint m = idx / params.N;
-    uint n = idx % params.N;
     uint pf = pack_factor(params.bits);
     uint bpp = bytes_per_pack(params.bits);
     uint packs_per_row = params.K / pf;
     uint groups_per_row = params.K / params.group_size;
-    uint w_row_base = n * packs_per_row * bpp;
-    uint sb_row_base = n * groups_per_row;
     uint x_row_base = m * params.K;
 
     float acc = 0.0;
-    for (uint k_base = 0u; k_base < params.K; k_base += params.group_size) {
-        uint group_index = k_base / params.group_size;
-        float scale = read_scale(sb_row_base + group_index);
-        float bias = read_bias(sb_row_base + group_index);
-        uint k_end = min(k_base + params.group_size, params.K);
-        for (uint k = k_base; k < k_end; ++k) {
-            uint pack_index = k / pf;
-            uint elem_in_pack = k % pf;
-            uint byte_base = w_row_base + pack_index * bpp;
-            float wv = float(packed_value_at(byte_base, elem_in_pack, params.bits)) * scale + bias;
-            acc += read_x(x_row_base + k) * wv;
-        }
+    uint w_row_base = 0u;
+    uint sb_row_base = 0u;
+    bool in_bounds = (n < params.N);
+    if (in_bounds) {
+        w_row_base = n * packs_per_row * bpp;
+        sb_row_base = n * groups_per_row;
     }
 
-    out_data[idx] = floatBitsToUint(acc);
+    for (uint k_base = 0u; k_base < params.K; k_base += TILE_K) {
+        uint tile_len = min(TILE_K, params.K - k_base);
+        if (local_col < tile_len) {
+            x_tile[local_col] = read_x(x_row_base + k_base + local_col);
+        }
+        barrier();
+
+        if (in_bounds) {
+            uint cached_group = 0xFFFFFFFFu;
+            float scale = 0.0;
+            float bias = 0.0;
+            for (uint kk = 0u; kk < tile_len; ++kk) {
+                uint k = k_base + kk;
+                uint group_index = k / params.group_size;
+                if (group_index != cached_group) {
+                    scale = read_scale(sb_row_base + group_index);
+                    bias = read_bias(sb_row_base + group_index);
+                    cached_group = group_index;
+                }
+                uint pack_index = k / pf;
+                uint elem_in_pack = k % pf;
+                uint byte_base = w_row_base + pack_index * bpp;
+                float wv = float(packed_value_at(byte_base, elem_in_pack, params.bits)) * scale + bias;
+                acc += x_tile[kk] * wv;
+            }
+        }
+        barrier();
+    }
+
+    if (in_bounds) {
+        out_data[m * params.N + n] = floatBitsToUint(acc);
+    }
 }

@@ -4,6 +4,22 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Added an RX 580 decode-utilization profiler and started a second-pass tied-logits kernel rewrite.
+    - Added a new local AMD-only profiling helper that runs a warmed `generate_step` decode pass while sampling `/sys/class/drm/card*/device/gpu_busy_percent` and reporting per-token yield timings.
+    - First real RX 580 utilization result from the warmed 16-token run:
+      - first yield about `4.63s`
+      - then a very regular `~1.80s` per-token cadence
+      - average GPU busy about `17.9%`
+      - median GPU busy `0%`
+      - only about `19%` of samples at or above `50%`
+    - Conclusion from that run: the remaining decode wall is not a single catastrophic missing compiled kernel; the RX 580 is mostly idle between bursts, so the next wins need to come from eager-path cleanup and/or making the hottest kernels denser.
+    - Used that result to revisit the giant-vocab tied `lm_head` path and rewrote `mlx/backend/vulkan/kernels/quantized_qmv.comp` so each workgroup reuses a shared tile of the activation vector across many output columns instead of having every invocation re-read the same `x` row independently.
+    - AMD validation completed before the host dropped off SSH:
+      - the RX 580 Vulkan build succeeds with the new shader,
+      - the focused tied-`lm_head` probe still confirms `direct_qmv=1` on the real `N=248320`, `K=2048` projection,
+      - isolated tied-logits timings improved to about `1.09s` for the full 5-token pass and about `0.77s` for the last-token-only path,
+      - the warm layer probe now shows `lm_head_tied` around `0.58s` instead of the earlier `~0.65s` class.
+    - The matching whole-run decode rerun did not finish cleanly because the AMD host stopped accepting new SSH connections mid-benchmark, so no new end-to-end tokens/sec claim is recorded yet.
 - **2026-03-16**: Measured steady-state RX 580 generation throughput after the persistent compiled-cache fix and refreshed real compile coverage.
     - Reused the local AMD benchmark flow to measure a warmed `generate_step` run with `max_tokens=16`.
     - Current result on the RX 580:

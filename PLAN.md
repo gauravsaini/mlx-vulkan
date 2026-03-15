@@ -102,6 +102,17 @@ bash scripts/local_amd_profile_compile.sh
       Vulkan now uses a dedicated transpose affine QMM shader for the giant-vocab, small-`M` case instead of materializing a full dequantized `[K, N]` matrix before matmul. The gate is intentionally narrow: `transpose=True`, 2D packed weights, `M <= 8`, and `N >= 8192`, which keeps normal decoder projections on the proven two-pass path while targeting the Qwen tied `lm_head`.
       The strict AMD smoke `tests/vulkan/test_quantized_gpu.py` now includes a large-vocab bfloat16 regression for this path, and the guarded one-token `generate_step` benchmark on the RX 580 improved from about `7.18s` to about `5.44s`, now beating the matching CPU baseline (`~7.08s`).
       Follow-up probing shows the next meaningful latency target is first-layer / first-use warmup plus the remaining decoder prefill cost rather than the tied logits projection itself.
+- [~] **Warmed RX 580 decode is still badly underutilizing the GPU**:
+      a warmed 16-token RX 580 utilization profile now shows first yield at about `4.63s`, then a very regular `~1.80s` per-token cadence, while `gpu_busy_percent` averages only about `17.9%` with a `0%` median and only about `19%` of samples at or above `50%`.
+      That points away from a single missing fused `mx.compile` kernel and toward bursty eager-path work: many small kernels plus host/submit gaps are leaving the card mostly idle during steady-state decode.
+- [~] **The direct tied-logits kernel still has headroom, but the latest RX 580 rewrite is only partially validated so far**:
+      `mlx/backend/vulkan/kernels/quantized_qmv.comp` now tiles the activation vector through shared memory across output columns instead of having every invocation re-read the same `x` row independently.
+      Real AMD validation so far is promising but incomplete:
+      - the local AMD Vulkan build succeeds with the new shader,
+      - `scripts/local_amd_probe_lm_head.sh` still confirms `direct_qmv=1` on the real `N=248320`, `K=2048` Qwen projection,
+      - isolated tied-logits timing improved to about `1.09s` for the full 5-token logits pass and about `0.77s` for the last-token-only path,
+      - the warm layer probe now shows `lm_head_tied` around `0.58s` instead of the earlier `~0.65s` class.
+      However, the follow-up end-to-end decode rerun was interrupted when the AMD host stopped accepting SSH connections mid-benchmark, so no new whole-run tokens/sec claim is recorded yet.
 - [~] **Vulkan compiled JIT kernels now persist SPIR-V across processes, removing the pathological cold-start cliff on RX 580**:
       `mlx/backend/vulkan/compiled.cpp` no longer relies on an in-memory-only SPIR-V cache. The generated GLSL source and compiled `.spv` are now reused from `~/.cache/mlx_vulkan_jit` when the on-disk GLSL text matches the current kernel source, so identical `mx.compile` kernels do not re-run `glslc` for every new Python process.
       Real RX 580 validation shows the cross-process cold-start wall collapsed: a fresh-process first token that had ballooned to about `54.35s` in the same-process warm probe now drops to about `5.57s` on the first post-build run, and a second fresh process reaches about `4.69s`, matching the warmed steady-state path.
@@ -333,12 +344,14 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
       Latest strict RX 580 benchmark after the selective direct large-vocab QMM path landed: model load is about `3.56s`, guarded one-token `generate_step` reaches first yield in about `5.44s`, and the GPU is now ahead of the matching CPU baseline (`~7.08s`). A focused tied-`lm_head` probe confirms the new direct path is active for the real `N=248320`, `K=2048` Qwen projection.
       Latest strict RX 580 benchmark after persistent compiled SPIR-V caching landed: model load is about `4.63s`, guarded one-token `generate_step` reaches first yield in about `4.69s`, and fresh-process warm-probe runs now show `cold_in_process` about `5.57s` on the first run and about `4.69s` on the next fresh process instead of the earlier `~54s` cold-start cliff.
       Latest warm-cache multi-token benchmark (`generate_step`, `max_tokens=16`): GPU is about `31.85s` total / `0.502 tok/s` with first yield about `4.68s`, while the matching CPU baseline is about `31.02s` / `0.516 tok/s` with first yield about `4.60s`. So fresh-process cold start is fixed, but steady-state decode throughput is still only around CPU parity.
+      Latest warmed utilization profile over that same decode regime: average GPU busy is only about `17.9%`, median `0%`, and the post-first-yield cadence is about `1.80s` per token, confirming that the remaining wall is low occupancy / bursty scheduling rather than a single catastrophic shader miss.
+      Latest isolated tied-logits experiment: a shared-`x` rewrite of `quantized_qmv.comp` builds and runs on the RX 580, keeps `direct_qmv=1` active, and reduces the isolated tied `lm_head` timings to about `1.09s` for the full 5-token pass, about `0.77s` for the last-token path, and about `0.58s` in the warm layer probe; the matching whole-run decode rerun still needs to be repeated after the AMD host connectivity issue is resolved.
 
 ### Immediate Next Steps
 
-1. Profile the remaining steady-state decode bottleneck on the RX 580 now that fresh-process cold start is fixed but 16-token throughput is still only about CPU parity (`~0.50 tok/s` GPU vs `~0.52 tok/s` CPU).
-2. Add explicit RX 580 utilization sampling during the warmed multi-token benchmark so we can tell whether decode is compute-bound, memory-bound, or dispatch-bound.
-3. Investigate any remaining non-JIT warmup in early decoder layers only after the steady-state decode path is better understood.
+1. Re-run the full warmed RX 580 decode benchmark once the local AMD host is stable again, using the new utilization profiler to confirm whether the shared-`x` tied-logits kernel improves whole-run tokens/sec.
+2. If whole-run decode is still mostly idle on GPU, profile the non-compiled eager path around KV-cache maintenance / attention plumbing instead of continuing blind `mx.compile` expansion.
+3. Keep iterating on the tied-logits kernel only if isolated `lm_head` wins continue to translate into end-to-end decode gains; otherwise switch effort to the next hottest eager path.
 4. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
 5. Add more compile primitives only if later profiling shows a real uncovered fused kernel, since the current hot compiled kernels are already present on Vulkan.
 
