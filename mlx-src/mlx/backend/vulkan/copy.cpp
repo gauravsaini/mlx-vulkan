@@ -197,11 +197,24 @@ static void dispatch_copy_shader(
 }
 
 void copy_gpu(const array& in, array& out, CopyType ctype, const Stream& s) {
-  bool donated = set_copy_output_data(
-      in, out, ctype, [&](size_t n) { return allocator::malloc(n); });
-  if (donated && in.dtype() == out.dtype()) {
-    return; // Same type, buffer donated - nothing to copy
+  bool can_donate = in.dtype() == out.dtype();
+  
+  if (can_donate) {
+     bool donated = set_copy_output_data(
+         in, out, ctype, [&](size_t n) { return allocator::malloc(n); });
+     if (donated) return;
+  } else {
+     if (ctype == CopyType::Vector) {
+        out.set_data(
+          allocator::malloc(in.data_size() * out.itemsize()),
+          in.data_size(),
+          in.strides(),
+          in.flags());
+     } else {
+        out.set_data(allocator::malloc(out.nbytes()));
+     }
   }
+
   if (ctype == CopyType::GeneralGeneral) {
     ctype = CopyType::General;
   }

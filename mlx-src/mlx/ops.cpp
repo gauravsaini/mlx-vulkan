@@ -4805,10 +4805,15 @@ std::vector<array> quantize(
     throw std::invalid_argument(msg.str());
   }
   validate_global_scale("quantize", qmode, global_scale);
+  auto normalized_global_scale = global_scale;
+  if (normalized_global_scale.has_value() && !metal::is_available()) {
+    normalized_global_scale = array(normalized_global_scale->item<float>(), float32);
+  }
   if (qmode == QuantizationMode::Affine) {
     return affine_quantize(w, group_size, bits, s);
   } else {
-    return fp_quantize(w, group_size, bits, qmode, global_scale, to_stream(s));
+    return fp_quantize(
+        w, group_size, bits, qmode, normalized_global_scale, to_stream(s));
   }
 }
 
@@ -4993,9 +4998,9 @@ array fp_dequantize(
               -6.0f,
           },
           out_type);
-      out = view(reshape(out, {-1, 4}, s), int8, s);
-      auto idx_lo = bitwise_and(out, array(0x0F, int8), s);
-      auto idx_hi = right_shift(out, array(4, int8), s);
+      out = view(reshape(out, {-1, 4}, s), uint8, s);
+      auto idx_lo = bitwise_and(out, array(0x0F, uint8), s);
+      auto idx_hi = right_shift(out, array(4, uint8), s);
       auto lo = gather(lut, idx_lo, 0, {1}, s);
       auto hi = gather(lut, idx_hi, 0, {1}, s);
       out = concatenate({lo, hi}, -1, s);
@@ -5071,6 +5076,10 @@ array dequantize(
     }
   }
   validate_global_scale("dequantize", qmode, global_scale);
+  auto normalized_global_scale = global_scale;
+  if (normalized_global_scale.has_value() && !metal::is_available()) {
+    normalized_global_scale = array(normalized_global_scale->item<float>(), float32);
+  }
 
   if (qmode == QuantizationMode::Affine) {
     return astype(
@@ -5085,7 +5094,7 @@ array dequantize(
         bits,
         out_type,
         qmode,
-        global_scale,
+        normalized_global_scale,
         to_stream(s));
   }
 }
@@ -5153,7 +5162,8 @@ array gather_qmm(
   } else {
     out_type = x.dtype();
   }
-  if (out_type == float16 || out_type == bfloat16) {
+  if (qmode == QuantizationMode::Affine &&
+      (out_type == float16 || out_type == bfloat16)) {
     out_type = float32;
   }
   if (!issubdtype(out_type, floating)) {

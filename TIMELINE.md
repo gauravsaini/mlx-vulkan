@@ -1,5 +1,30 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-13
+
+### feat (2026-03-13) — LoRA / small-LLM finetuning smoke added
+
+1. **LoRA Finetuning Smoke Test added** (`tests/vulkan/test_lora_smoke.py`):
+   - Created a new local verification gate based on the `TinyGPT` 10-epoch training smoke.
+   - The script freezes the base model and injects a `LoRALinear` wrapper into the `q_proj` and `v_proj` layers of every transformer block.
+   - Confirmed that LoRA parameter scaling and finetuning (`optim.Adam` applied only to injected weights) converges locally on the Vulkan backend (Apple M1 / MoltenVK) without invoking CPU fallback.
+   - Status: Extends the local training ladder beyond `TinyGPT`, successfully demonstrating `freeze()` + LoRA gradient updates cleanly on Vulkan.
+
+### fix (2026-03-13) — Quantized GatherMM / sorted fallback stability
+
+1. **`GatherMM` Vulkan fallback issue fixed** (`mlx/backend/vulkan/primitives.cpp`):
+   - Root cause: `GatherMM::eval_gpu(...)` was staging Vulkan inputs to CPU and then re-entering the generic lazy `gather_mm(...)` path on CPU. In repeated mixed-mode runs, that re-entry was the stateful corruption point for `test_gather_qmm_sorted`.
+   - Fix: The Vulkan fallback now computes `GatherMM` via a direct CPU reference path from the already-staged primitive inputs and the exact staged `lhs`/`rhs` index arrays.
+   - Important detail: The direct path matches the CPU backend's transpose/stride behavior exactly, preserving `GatherMM` semantics rather than just avoiding NaNs. The handoff stays CPU-materialized since the bug was in the re-entry graph, not the memory copy.
+
+2. **Validation** (`python/tests/test_quantized.py`):
+   - Added `test_gather_mm_sorted_cpu_stability` to check baseline correctness.
+   - Added `test_gather_mm_sorted_mixed_prefix_stability` to mirror the actual mixed-prefix trigger causing the unsorted failure.
+   - Re-ran the original repro `test_gather_qmm_sorted`, which now passes cleanly.
+   - Status: Scoped `GatherMM`/sorted-gather Vulkan blocker is fixed and covered by regression tests.
+
+---
+
 ## UPDATED ON : 2026-03-12
 
 ### confirm (2026-03-12) — Real AMD tiny-transformer and TinyGPT training now pass

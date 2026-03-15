@@ -58,6 +58,42 @@ namespace mlx::core {
 
 namespace {
 
+uint32_t to_input_dtype(Dtype dt) {
+  switch (dt) {
+    case float32:
+    case float16:
+    case bfloat16:
+      return 0;
+    case int8:
+    case int16:
+    case int32:
+    case int64:
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+void linalg_upload_output(
+    const array& host_arr,
+    array& gpu_out,
+    const Stream& gpu_s) {
+  if (host_arr.size() == 0) {
+    gpu_out.set_data(allocator::malloc(0));
+    return;
+  }
+
+  auto bytes = host_arr.buffer_size();
+  gpu_out.set_data(
+      allocator::malloc(bytes),
+      host_arr.data_size(),
+      host_arr.strides(),
+      host_arr.flags());
+  vulkan::copy_from_host(
+      gpu_out, host_arr.data<char>(), host_arr.buffer_size(), gpu_s);
+  gpu_out.set_status(array::Status::available);
+}
+
 bool debug_vulkan_qmm() {
   const char* env = std::getenv("MLX_VULKAN_DEBUG_QMM");
   return env != nullptr && env[0] != '\0' && env[0] != '0';
@@ -525,75 +561,31 @@ void dispatch_binary(
     array& out,
     uint32_t op_id,
     const Stream& s) {
-  if (try_scalar_graph_binary_cpu(a, b, out, op_id, s)) {
-    return;
-  }
-
-  std::optional<array> a_scalar_materialized;
-  std::optional<array> b_scalar_materialized;
   const array* a_src = &a;
   const array* b_src = &b;
-  if (requires_scalar_view_materialization(a)) {
-    a_scalar_materialized = materialize_scalar_view_input(a, s);
-    a_src = &*a_scalar_materialized;
-  }
-  if (requires_scalar_view_materialization(b)) {
-    b_scalar_materialized = materialize_scalar_view_input(b, s);
-    b_src = &*b_scalar_materialized;
-  }
+  std::optional<array> a_contig;
+  std::optional<array> b_contig;
 
-  if (!is_vulkan_backed_array(*a_src) || !is_vulkan_backed_array(*b_src)) {
-    auto a_gpu = is_vulkan_backed_array(*a_src)
-        ? *a_src
-        : upload_explicit_vulkan_input(*a_src, s);
-    auto b_gpu = is_vulkan_backed_array(*b_src)
-        ? *b_src
-        : upload_explicit_vulkan_input(*b_src, s);
-    dispatch_binary(a_gpu, b_gpu, out, op_id, s);
-    return;
-  }
-
-  // If either input has a non-zero buffer offset, strided_idx in the shader
-  // computes offsets from buffer[0] but the data starts at buffer[offset].
-  // Copy non-zero-offset inputs to contiguous arrays first.
-  if (a_src->offset() != 0 || b_src->offset() != 0) {
-    array a_eff(a_src->shape(), a_src->dtype(), nullptr, {});
-    array b_eff(b_src->shape(), b_src->dtype(), nullptr, {});
-    if (a_src->offset() != 0) {
-      a_eff.set_data(allocator::malloc(a_eff.nbytes()));
-      copy_gpu(*a_src, a_eff, CopyType::General, s);
-    } else {
-      a_eff = *a_src;
+  // 1. Ensure inputs are row-contiguous, zero offset, <= 4 dims, AND on GPU
+  auto prepare_input = [&](const array& in, std::optional<array>& contig, const array*& src) {
+    if (!is_vulkan_backed_array(in)) {
+      contig = upload_explicit_vulkan_input(in, s);
+      src = &*contig;
+      vulkan::device(s.device).add_temporary(s, *contig);
+    } else if (in.offset() != 0 || !in.flags().row_contiguous || in.ndim() > 4 ||
+        requires_scalar_view_materialization(in)) {
+      contig = array(in.shape(), in.dtype(), nullptr, {});
+      contig->set_data(allocator::malloc(contig->nbytes()));
+      copy_gpu(in, *contig, CopyType::General, s);
+      src = &*contig;
+      vulkan::device(s.device).add_temporary(s, *contig);
     }
-    if (b_src->offset() != 0) {
-      b_eff.set_data(allocator::malloc(b_eff.nbytes()));
-      copy_gpu(*b_src, b_eff, CopyType::General, s);
-    } else {
-      b_eff = *b_src;
-    }
-    dispatch_binary(a_eff, b_eff, out, op_id, s);
-    return;
-  }
+  };
 
-  auto [shape, strides] = collapse_contiguous_dims(*a_src, *b_src, out);
-  if (shape.size() > 4) {
-    array a_contig(out.shape(), a_src->dtype(), nullptr, {});
-    a_contig.set_data(allocator::malloc(a_contig.nbytes()));
-    copy_gpu(*a_src, a_contig, CopyType::General, s);
-
-    array b_contig(out.shape(), b_src->dtype(), nullptr, {});
-    b_contig.set_data(allocator::malloc(b_contig.nbytes()));
-    copy_gpu(*b_src, b_contig, CopyType::General, s);
-
-    dispatch_binary(a_contig, b_contig, out, op_id, s);
-    return;
-  }
+  prepare_input(a, a_contig, a_src);
+  prepare_input(b, b_contig, b_src);
 
   // Always allocate fresh output memory on Vulkan GPU.
-  // Even when aliasing a single input looks element-wise safe in theory,
-  // deferred GPU execution still lets later consumers observe corrupted data.
-  // Quantized gather coverage exposed this for plain binary subtraction, in the
-  // same way compile/autograd exposed it earlier for unary ops.
   out.set_data(allocator::malloc(out.nbytes()));
 
   // Nothing to do for empty output
@@ -611,14 +603,12 @@ void dispatch_binary(
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
-  // 4 bindings: InA(uint), InB(uint), OutC(uint raw), OutCBool(uint8)
-  // push constant size = 84 bytes (21 x uint32)
   VkPipeline pipeline = dev.get_pipeline(
       "binary",
       layout,
       ds_layout,
       4,
-      84,
+      112,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE)
     return;
@@ -654,32 +644,18 @@ void dispatch_binary(
   writes[3].pBufferInfo = &c_info;
   vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
 
-  auto to_input_dtype = [](Dtype dt) -> uint32_t {
-    switch (dt) {
-      case float32:
-      case float16:
-      case bfloat16:
-        return 0;
-      case int8:
-      case int16:
-      case int32:
-      case int64:
-        return 1;
-      default:
-        return 2;
-    }
-  };
-
-  // Layout must match binary.comp push constants exactly
   struct PushConst {
     uint32_t n;
     uint32_t op;
     uint32_t output_is_bool;
-    uint32_t input_dtype;
+    uint32_t a_dtype;
+    uint32_t b_dtype;
+    uint32_t out_dtype;
     uint32_t a_elem_bytes;
     uint32_t b_elem_bytes;
     uint32_t out_elem_bytes;
     uint32_t ndim;
+    uint32_t h_pad[6];
     uint32_t out_shape[4];
     uint32_t a_strides[4];
     uint32_t b_strides[4];
@@ -688,7 +664,26 @@ void dispatch_binary(
   pc.n = static_cast<uint32_t>(out.size());
   pc.op = op_id;
   pc.output_is_bool = output_is_bool ? 1u : 0u;
-  pc.input_dtype = to_input_dtype(promote_types(a_src->dtype(), b_src->dtype()));
+
+  auto to_glsl_dtype = [](Dtype dt) -> uint32_t {
+    switch (dt) {
+      case float32:
+      case float16:
+      case bfloat16:
+        return 0; // DTYPE_FLOAT
+      case int8:
+      case int16:
+      case int32:
+      case int64:
+        return 1; // DTYPE_INT
+      default:
+        return 2; // DTYPE_UINT/BOOL
+    }
+  };
+
+  pc.a_dtype = to_glsl_dtype(a_src->dtype());
+  pc.b_dtype = to_glsl_dtype(b_src->dtype());
+  pc.out_dtype = to_glsl_dtype(out.dtype());
 
   pc.a_elem_bytes =
       a_src->dtype() == bfloat16 ? 3u : static_cast<uint32_t>(a_src->itemsize());
@@ -696,20 +691,13 @@ void dispatch_binary(
       b_src->dtype() == bfloat16 ? 3u : static_cast<uint32_t>(b_src->itemsize());
   pc.out_elem_bytes =
       out.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(out.itemsize());
-  // std::cout << "PushConst: a_elem_bytes=" << pc.a_elem_bytes
-  //           << " b=" << pc.b_elem_bytes << " out=" << pc.out_elem_bytes
-  //           << " input_dtype=" << pc.input_dtype << " a_dtype=" << a.dtype()
-  //           << " b_dtype=" << b.dtype() << std::endl;
 
-  const auto& out_shape = shape;
-  const auto& a_strides = strides[0];
-  const auto& b_strides = strides[1];
 
-  // Set up ND dimensions for broadcast indexing
+
+  auto [out_shape, strides] = collapse_contiguous_dims(*a_src, *b_src, out);
   int ndim = out_shape.size();
   pc.ndim = static_cast<uint32_t>(ndim > 4 ? 4 : ndim);
 
-  // Fill out_shape and strides (right-aligned, padded)
   for (int i = 0; i < 4; i++) {
     pc.out_shape[i] = 1;
     pc.a_strides[i] = 0;
@@ -718,8 +706,8 @@ void dispatch_binary(
   for (int i = 0; i < std::min(ndim, 4); i++) {
     int out_i = (ndim <= 4) ? i : (i + ndim - 4);
     pc.out_shape[i] = static_cast<uint32_t>(out_shape[out_i]);
-    pc.a_strides[i] = static_cast<uint32_t>(a_strides[out_i]);
-    pc.b_strides[i] = static_cast<uint32_t>(b_strides[out_i]);
+    pc.a_strides[i] = static_cast<uint32_t>(strides[0][out_i]);
+    pc.b_strides[i] = static_cast<uint32_t>(strides[1][out_i]);
   }
 
   VkCommandBuffer cmd = encoder.cmd;
@@ -731,21 +719,7 @@ void dispatch_binary(
 
   uint32_t groups = vulkan::div_ceil(out.size(), vulkan::WORKGROUP_SIZE);
   vkCmdDispatch(cmd, groups, 1, 1);
-
-  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(
-      cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      1,
-      &barrier,
-      0,
-      nullptr,
-      0,
-      nullptr);
+  vulkan::insert_buffer_barrier(cmd, c_buf);
 }
 
 // Dispatch a unary elementwise shader.
@@ -755,9 +729,11 @@ bool dispatch_unary(
     array& out,
     uint32_t op_id,
     Stream stream) {
+  /*
   if (try_scalar_graph_unary_cpu(in, out, op_id, stream)) {
     return true;
   }
+  */
 
   // Complex types (complex64 = 8 bytes) not handled by the GPU unary shader
   if (issubdtype(in.dtype(), complexfloating)) {
@@ -834,17 +810,19 @@ bool dispatch_unary(
     uint32_t out_elem_bytes;
     uint32_t input_offset;
     uint32_t out_offset;
+    uint32_t input_dtype;
   } pc{
       static_cast<uint32_t>(out.size()),
       op_id,
       src->dtype() == bfloat16 ? 3u : static_cast<uint32_t>(src->itemsize()),
       static_cast<uint32_t>(out.itemsize()),
       static_cast<uint32_t>(src->offset()),
-      static_cast<uint32_t>(out.offset())};
+      static_cast<uint32_t>(out.offset()),
+      to_input_dtype(src->dtype())};
 
   VkCommandBuffer cmd = encoder.cmd;
   vkCmdPushConstants(
-      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 28, &pc);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   vkCmdBindDescriptorSets(
       cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
@@ -3978,46 +3956,59 @@ void GatherMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 
 void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
-  if (debug_vulkan_qmm()) {
-    std::fprintf(
-        stderr,
-        "[gather_qmm] begin mode=%d transpose=%d sorted=%d\n",
-        int(mode_),
-        int(transpose_),
-        int(right_sorted_));
-    std::fflush(stderr);
-  }
+  // Sync and stage to CPU for reliable lazy evaluation
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(stream().device).synchronize(stream());
-  auto cpu_stream = default_stream(Device::cpu);
-  auto cpu_copies =
-      materialize_family_to_cpu_stream_copies({inputs[1], inputs[2]}, cpu_stream);
-  if (mode_ == QuantizationMode::Affine) {
-    cpu_copies.merge(
-        materialize_family_to_cpu_stream_copies({inputs[3]}, cpu_stream));
-  }
-  auto stage_to_cpu = [&](const array& src) {
-    auto value = copy(src, cpu_stream);
-    value = contiguous(value, false, cpu_stream);
-    value.eval();
-    mlx::core::synchronize(cpu_stream);
-    return materialize_to_cpu_copy(value);
-  };
-  auto to_cpu_copy = [&](const array& src) {
-    auto value = src;
-    if (!value.flags().row_contiguous) {
-      value = contiguous(value, false, stream());
-      value.eval();
+
+  auto to_cpu_safe = [&](const array& arr) {
+    if (!arr.flags().row_contiguous) {
+      auto contig = mlx::core::contiguous(arr, false, stream());
+      mlx::core::eval({contig});
       vulkan::device(stream().device).synchronize(stream());
+      return materialize_to_cpu_copy(contig);
     }
-    auto it = cpu_copies.find(value.id());
-    if (it != cpu_copies.end()) {
-      return it->second;
-    }
-    return materialize_family_member_to_cpu_copy(value);
+    return materialize_to_cpu_copy(arr);
   };
-  auto to_cpu_indices = [&](const array& src) {
-    return stage_to_cpu(src);
-  };
+
+  auto gather_qmm_internal =
+      [&](const array& x,
+          const array& w,
+          const array& scales,
+          const std::optional<array>& biases,
+          const std::optional<array>& lhs_indices,
+          const std::optional<array>& rhs_indices,
+          bool transpose,
+          int group_size,
+          int bits,
+          const std::string& mode,
+          bool sorted,
+          const Stream& st) {
+        return mlx::core::gather_qmm(
+            x,
+            w,
+            scales,
+            biases,
+            lhs_indices,
+            rhs_indices,
+            transpose,
+            group_size,
+            bits,
+            mode,
+            sorted,
+            st);
+      };
+
+  auto x_cpu = to_cpu_safe(inputs[0]);
+  auto w_cpu = to_cpu_safe(inputs[1]);
+  auto scales_cpu = to_cpu_safe(inputs[2]);
+  auto lhs_indices_cpu = to_cpu_safe(inputs[4]);
+  auto rhs_indices_cpu = to_cpu_safe(inputs[5]);
+
+  std::optional<array> biases_cpu = std::nullopt;
+  if (mode_ == QuantizationMode::Affine) {
+    biases_cpu = to_cpu_safe(inputs[3]);
+  }
+
   auto is_default_indices = [&](const array& idx, const array& src) {
     Shape base_shape(src.shape().begin(), src.shape().end() - 2);
     if (base_shape.size() > idx.ndim()) {
@@ -4033,81 +4024,19 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     int total = std::accumulate(
         base_shape.begin(), base_shape.end(), 1, std::multiplies<int>());
     auto expected =
-        reshape(arange(total, uint32, cpu_stream), std::move(base_shape), cpu_stream);
+        reshape(arange(total, uint32, default_stream(Device::cpu)), std::move(base_shape), default_stream(Device::cpu));
     if (expected.shape() != idx.shape()) {
-      expected = broadcast_to(expected, idx.shape(), cpu_stream);
+      expected = broadcast_to(expected, idx.shape(), default_stream(Device::cpu));
     }
-    auto matches = all(equal(idx, expected, cpu_stream), cpu_stream);
+    auto matches = all(equal(idx, expected, default_stream(Device::cpu)), default_stream(Device::cpu));
     matches.eval();
-    mlx::core::synchronize(cpu_stream);
+    mlx::core::synchronize(default_stream(Device::cpu));
     auto matches_cpu = materialize_to_cpu_copy(matches);
     uint8_t value = 0;
     allocator::copy_to_host(
         matches_cpu.buffer(), &value, sizeof(uint8_t), matches_cpu.offset());
     return value != 0;
   };
-  auto x_cpu = [&]() {
-    auto value = copy(inputs[0], cpu_stream);
-    value = contiguous(value, false, cpu_stream);
-    value.eval();
-    mlx::core::synchronize(cpu_stream);
-    return materialize_to_cpu_copy(value);
-  }();
-  if (debug_vulkan_qmm()) {
-    std::fprintf(
-        stderr,
-        "[gather_qmm] staged x=%g lhs_prim=%s rhs_prim=%s\n",
-        debug_max_abs_cpu(x_cpu, cpu_stream),
-        inputs[inputs.size() - 2].has_primitive()
-            ? inputs[inputs.size() - 2].primitive().name()
-            : "<none>",
-        inputs[inputs.size() - 1].has_primitive()
-            ? inputs[inputs.size() - 1].primitive().name()
-            : "<none>");
-    std::fflush(stderr);
-  }
-  auto w_cpu = to_cpu_copy(inputs[1]);
-  auto scales_cpu = to_cpu_copy(inputs[2]);
-  auto lhs_indices_cpu = to_cpu_indices(inputs[inputs.size() - 2]);
-  auto rhs_indices_cpu = to_cpu_indices(inputs[inputs.size() - 1]);
-  if (debug_vulkan_qmm()) {
-    std::vector<uint32_t> lhs_host(std::min<size_t>(lhs_indices_cpu.size(), 8));
-    std::vector<uint32_t> rhs_host(std::min<size_t>(rhs_indices_cpu.size(), 8));
-    if (!lhs_host.empty()) {
-      allocator::copy_to_host(
-          lhs_indices_cpu.buffer(),
-          lhs_host.data(),
-          lhs_host.size() * sizeof(uint32_t),
-          lhs_indices_cpu.offset());
-    }
-    if (!rhs_host.empty()) {
-      allocator::copy_to_host(
-          rhs_indices_cpu.buffer(),
-          rhs_host.data(),
-          rhs_host.size() * sizeof(uint32_t),
-          rhs_indices_cpu.offset());
-    }
-    std::fprintf(
-        stderr,
-        "[gather_qmm] staged q=%g s=%g lhs=%g rhs=%g lhs0=%u,%u,%u,%u rhs0=%u,%u,%u,%u\n",
-        debug_max_abs_cpu(w_cpu, cpu_stream),
-        debug_max_abs_cpu(scales_cpu, cpu_stream),
-        debug_max_abs_cpu(lhs_indices_cpu, cpu_stream),
-        debug_max_abs_cpu(rhs_indices_cpu, cpu_stream),
-        lhs_host.size() > 0 ? lhs_host[0] : 0u,
-        lhs_host.size() > 1 ? lhs_host[1] : 0u,
-        lhs_host.size() > 2 ? lhs_host[2] : 0u,
-        lhs_host.size() > 3 ? lhs_host[3] : 0u,
-        rhs_host.size() > 0 ? rhs_host[0] : 0u,
-        rhs_host.size() > 1 ? rhs_host[1] : 0u,
-        rhs_host.size() > 2 ? rhs_host[2] : 0u,
-        rhs_host.size() > 3 ? rhs_host[3] : 0u);
-    std::fflush(stderr);
-  }
-  std::optional<array> biases_cpu =
-      mode_ == QuantizationMode::Affine
-      ? std::optional<array>(to_cpu_copy(inputs[3]))
-      : std::nullopt;
 
   std::optional<array> lhs_indices_opt =
       is_default_indices(lhs_indices_cpu, x_cpu) ? std::nullopt
@@ -4115,34 +4044,20 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   std::optional<array> rhs_indices_opt =
       is_default_indices(rhs_indices_cpu, w_cpu) ? std::nullopt
                                                  : std::optional<array>(rhs_indices_cpu);
-  if (debug_vulkan_qmm()) {
-    std::fprintf(
-        stderr,
-        "[gather_qmm] defaults lhs=%d rhs=%d\n",
-        int(!lhs_indices_opt.has_value()),
-        int(!rhs_indices_opt.has_value()));
-    std::fflush(stderr);
-  }
-  auto result = [&]() {
-    if (
-        mode_ == QuantizationMode::Affine && !left_sorted_ && !right_sorted_ &&
-        !lhs_indices_opt && rhs_indices_opt.has_value()) {
-      auto rhs_shape = rhs_indices_opt->shape();
-      auto rhs_last_dim = rhs_shape.back();
-      auto rhs_flat = flatten(*rhs_indices_opt, cpu_stream);
-      auto order = argsort(rhs_flat, cpu_stream);
-      auto inv_order = argsort(order, cpu_stream);
-      auto gather_rows = floor_divide(
-          order, array(static_cast<uint32_t>(rhs_last_dim), uint32), cpu_stream);
-      auto x_sorted =
-          take(flatten(x_cpu, 0, -3, cpu_stream), gather_rows, 0, cpu_stream);
-      auto rhs_sorted = take(rhs_flat, order, 0, cpu_stream);
-      auto sorted = gather_qmm(
+
+  auto cpu_stream = default_stream(Device::cpu);
+  auto compute_result = [&]() {
+    if (left_sorted_ || right_sorted_) {
+      std::vector<int> rhs_shape(out.shape().begin() + 1, out.shape().end());
+      auto inv_order = to_cpu_safe(inputs[inputs.size() - 1]);
+      auto x_sorted = x_cpu;
+      auto rhs_sorted = rhs_indices_opt;
+      auto sorted = gather_qmm_internal(
           x_sorted,
           w_cpu,
           scales_cpu,
           biases_cpu,
-          std::nullopt,
+          lhs_indices_opt,
           rhs_sorted,
           transpose_,
           group_size_,
@@ -4151,9 +4066,9 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
           true,
           cpu_stream);
       sorted = take(sorted, inv_order, 0, cpu_stream);
-      return unflatten(sorted, 0, std::move(rhs_shape), cpu_stream);
+      return unflatten(sorted, 0, Shape(rhs_shape.begin(), rhs_shape.end()), cpu_stream);
     }
-    return gather_qmm(
+    return gather_qmm_internal(
         x_cpu,
         w_cpu,
         scales_cpu,
@@ -4167,28 +4082,20 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
         left_sorted_ || right_sorted_,
         cpu_stream);
   }();
-  result.eval();
+
+  compute_result.eval();
   mlx::core::synchronize(cpu_stream);
-  result = materialize_to_cpu_copy(result);
-  if (debug_vulkan_qmm()) {
-    std::fprintf(
-        stderr,
-        "[gather_qmm] gathered to cpu result=%g\n",
-        debug_max_abs_cpu(result, cpu_stream));
-    std::fflush(stderr);
-  }
-  if (result.dtype() != out.dtype()) {
-    result = astype(result, out.dtype(), cpu_stream);
-    result.eval();
+  auto compute_result_materialized = materialize_to_cpu_copy(compute_result);
+
+  if (compute_result_materialized.dtype() != out.dtype()) {
+    compute_result_materialized = astype(compute_result_materialized, out.dtype(), cpu_stream);
+    compute_result_materialized.eval();
     mlx::core::synchronize(cpu_stream);
-    result = materialize_to_cpu_copy(result);
+    compute_result_materialized = materialize_to_cpu_copy(compute_result_materialized);
   }
-  auto gpu_out = copy(result, stream());
-  gpu_out.eval();
+
+  linalg_upload_output(compute_result_materialized, out, stream());
   vulkan::device(stream().device).synchronize(stream());
-  gpu_out.detach();
-  out.copy_shared_buffer(gpu_out);
-  out.set_status(array::Status::available);
 }
 
 void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -4216,7 +4123,7 @@ void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (mode_ != QuantizationMode::Affine) {
-    auto w = dequantize(
+    auto w = mlx::core::dequantize(
         inputs[1],
         inputs[2],
         std::nullopt,
@@ -4235,47 +4142,53 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
-  vulkan::device(stream().device).synchronize(stream());
+  // Affine mode CPU fallback
+  auto& s = stream();
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
+  vulkan::device(s.device).synchronize(s);
+
   auto cpu_stream = default_stream(Device::cpu);
-  auto to_cpu_value = [&](const array& src) {
-    auto cpu = materialize_to_cpu_copy(src);
-    if (!cpu.flags().row_contiguous) {
-      cpu = contiguous(cpu, false, cpu_stream);
+  auto to_cpu_safe = [&](const array& arr) {
+    if (!arr.flags().row_contiguous) {
+      auto contig = mlx::core::contiguous(arr, false, s);
+      mlx::core::eval({contig});
+      vulkan::device(s.device).synchronize(s);
+      return materialize_to_cpu_copy(contig);
     }
-    cpu.eval();
-    mlx::core::synchronize(cpu_stream);
-    cpu = materialize_to_cpu_copy(cpu);
-    return cpu;
+    return materialize_to_cpu_copy(arr);
   };
-  std::optional<array> biases =
-      std::optional<array>(to_cpu_value(inputs[3]));
-  auto w = dequantize(
-      to_cpu_value(inputs[1]),
-      to_cpu_value(inputs[2]),
-      biases,
+
+  auto w_cpu = to_cpu_safe(inputs[1]);
+  auto scales_cpu = to_cpu_safe(inputs[2]);
+  std::optional<array> biases_cpu = std::nullopt;
+  if (inputs.size() > 3) {
+    biases_cpu = to_cpu_safe(inputs[3]);
+  }
+
+  // The first input is actually x if we are here (check logic in eval_cpu)
+  auto x_cpu = to_cpu_safe(inputs[0]);
+
+  auto cpu_result = mlx::core::quantized_matmul(
+      x_cpu,
+      w_cpu,
+      scales_cpu,
+      biases_cpu,
+      transpose_,
       group_size_,
       bits_,
       quantization_mode_to_string(mode_),
-      std::nullopt,
-      out.dtype(),
       cpu_stream);
-  auto result = matmul(
-      astype(to_cpu_value(inputs[0]), out.dtype(), cpu_stream),
-      transpose_ ? swapaxes(w, -1, -2, cpu_stream) : w,
-      cpu_stream);
-  result.eval();
+  cpu_result.eval();
   mlx::core::synchronize(cpu_stream);
-  result = materialize_to_cpu_copy(result);
-  auto gpu_out = copy(result, stream());
-  gpu_out.eval();
-  vulkan::device(stream().device).synchronize(stream());
-  gpu_out.detach();
-  out.copy_shared_buffer(gpu_out);
-  out.set_status(array::Status::available);
-  if (debug_vulkan_qmm()) {
-    std::fprintf(stderr, "[gather_qmm] end\n");
-    std::fflush(stderr);
+  auto result_cpu_materialized = materialize_to_cpu_copy(cpu_result);
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.nbytes() > 0) {
+    vulkan::copy_from_host(
+        out, result_cpu_materialized.data<char>(), out.nbytes(), s);
   }
+  out.set_status(array::Status::available);
+  vulkan::device(s.device).synchronize(s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4302,6 +4215,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(stream().device).synchronize(stream());
   eval_cpu(inputs, out);
 }
@@ -4618,54 +4532,16 @@ namespace {
 // Materialize a GPU array into a host-shadow array by downloading its backing
 // bytes and then seeding a fresh buffer with that host copy. This lets the
 // existing CPU LAPACK implementations keep using data<T>().
-array linalg_to_host(const array& gpu_arr, const Stream& gpu_s) {
-  if (gpu_arr.size() == 0) {
-    array host(gpu_arr.shape(), gpu_arr.dtype(), nullptr, {});
-    host.set_data(allocator::malloc(0));
-    return host;
-  }
-
-  // Stage 1: download GPU buffer contents to a temporary host vector.
-  size_t bytes = gpu_arr.nbytes();
-  std::vector<char> buf(bytes);
-  vulkan::copy_to_host(gpu_arr, buf.data(), bytes, gpu_s);
-
-  // Stage 2: seed a fresh buffer with the downloaded host bytes so the CPU
-  // implementation can operate via data<T>() on a stable host snapshot.
-  array host(gpu_arr.shape(), gpu_arr.dtype(), nullptr, {});
-  host.set_data(
-      allocator::malloc(bytes),
-      gpu_arr.data_size(),
-      gpu_arr.strides(),
-      gpu_arr.flags());
-  allocator::copy_from_host(host.buffer(), buf.data(), bytes);
-  return host;
+array linalg_to_host(const array& src, const Stream& s) {
+  if (src.size() == 0) return src;
+  auto cpu_s = default_stream(Device::cpu);
+  auto cpu_arr = copy(src, cpu_s);
+  cpu_arr = contiguous(cpu_arr, false, cpu_s);
+  cpu_arr.eval();
+  mlx::core::synchronize(cpu_s);
+  return cpu_arr;
 }
 
-// Upload a host-shadow output array into a fresh Vulkan-backed output while
-// preserving the logical layout (flags/strides/data_size) chosen by eval_cpu.
-void linalg_upload_output(
-    const array& host_arr,
-    array& gpu_out,
-    const Stream& gpu_s) {
-  if (host_arr.size() == 0) {
-    gpu_out.set_data(allocator::malloc(0));
-    return;
-  }
-
-  auto bytes = host_arr.buffer_size();
-  gpu_out.set_data(
-      allocator::malloc(bytes),
-      host_arr.data_size(),
-      host_arr.strides(),
-      host_arr.flags(),
-      [](allocator::Buffer buffer) { allocator::free(buffer); });
-  vulkan::copy_from_host(
-      gpu_out,
-      const_cast<array&>(host_arr).buffer().raw_ptr(),
-      bytes,
-      gpu_s);
-}
 
 } // namespace
 
@@ -4706,7 +4582,7 @@ void QRF::eval_gpu(
   std::vector<array> host_inputs;
   host_inputs.reserve(inputs.size());
   for (auto& in : inputs) {
-    host_inputs.push_back(linalg_to_host(in, gpu_s));
+    host_inputs.push_back(contiguous(linalg_to_host(in, gpu_s), false, default_stream(Device::cpu)));
   }
 
   std::vector<array> host_outputs;
@@ -4725,12 +4601,13 @@ void SVD::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   auto& gpu_s = stream();
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(gpu_s.device).synchronize(gpu_s);
 
   std::vector<array> host_inputs;
   host_inputs.reserve(inputs.size());
   for (auto& in : inputs) {
-    host_inputs.push_back(linalg_to_host(in, gpu_s));
+    host_inputs.push_back(contiguous(linalg_to_host(in, gpu_s), false, default_stream(Device::cpu)));
   }
 
   std::vector<array> host_outputs;
@@ -4743,18 +4620,20 @@ void SVD::eval_gpu(
   for (size_t i = 0; i < outputs.size(); i++) {
     linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
   }
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
 }
 
 void Eig::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   auto& gpu_s = stream();
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(gpu_s.device).synchronize(gpu_s);
 
   std::vector<array> host_inputs;
   host_inputs.reserve(inputs.size());
   for (auto& in : inputs) {
-    host_inputs.push_back(linalg_to_host(in, gpu_s));
+    host_inputs.push_back(contiguous(linalg_to_host(in, gpu_s), false, default_stream(Device::cpu)));
   }
 
   std::vector<array> host_outputs;
@@ -4767,18 +4646,20 @@ void Eig::eval_gpu(
   for (size_t i = 0; i < outputs.size(); i++) {
     linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
   }
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
 }
 
 void Eigh::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   auto& gpu_s = stream();
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(gpu_s.device).synchronize(gpu_s);
 
   std::vector<array> host_inputs;
   host_inputs.reserve(inputs.size());
   for (auto& in : inputs) {
-    host_inputs.push_back(linalg_to_host(in, gpu_s));
+    host_inputs.push_back(contiguous(linalg_to_host(in, gpu_s), false, default_stream(Device::cpu)));
   }
 
   std::vector<array> host_outputs;
@@ -4791,12 +4672,14 @@ void Eigh::eval_gpu(
   for (size_t i = 0; i < outputs.size(); i++) {
     linalg_upload_output(host_outputs[i], outputs[i], gpu_s);
   }
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
 }
 
 // -- Single-output ops --------------------------------------------------------
 
 void Inverse::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& gpu_s = stream();
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(gpu_s.device).synchronize(gpu_s);
 
   std::vector<array> host_inputs;
@@ -4809,10 +4692,12 @@ void Inverse::eval_gpu(const std::vector<array>& inputs, array& out) {
   eval_cpu(host_inputs, host_out);
 
   linalg_upload_output(host_out, out, gpu_s);
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
 }
 
 void Cholesky::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& gpu_s = stream();
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
   vulkan::device(gpu_s.device).synchronize(gpu_s);
 
   std::vector<array> host_inputs;
@@ -4825,6 +4710,7 @@ void Cholesky::eval_gpu(const std::vector<array>& inputs, array& out) {
   eval_cpu(host_inputs, host_out);
 
   linalg_upload_output(host_out, out, gpu_s);
+  vulkan::device(gpu_s.device).synchronize(gpu_s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5189,8 +5075,20 @@ void RoPE::eval_gpu(
   // fallback graph until a Vulkan-specialized path is added for those inputs.
   materialize_fallback_outputs(fallback_(inputs), outputs);
 }
-NO_GPU_MULTI(ScaledDotProductAttention)
-NO_GPU_MULTI(ScaledDotProductAttentionVJP)
+void ScaledDotProductAttention::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  // Decompose SDPA into matmul + softmax ops which have GPU shaders.
+  // The fallback graph computes Q@K^T -> scale -> mask -> softmax -> @V
+  // using existing GPU primitives (matmul, binary, softmax).
+  materialize_fallback_outputs(fallback_(inputs), outputs);
+}
+
+void ScaledDotProductAttentionVJP::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  materialize_fallback_outputs(fallback_(inputs), outputs);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fast::ConvertFP8 — CPU fallback (no GPU shader for FP8 conversion yet)
@@ -5230,19 +5128,18 @@ void Quantize::eval_gpu(
     std::fflush(stderr);
   }
   vulkan::device(stream().device).synchronize(stream());
+  mlx::core::eval(std::vector<array>(inputs.begin(), inputs.end()));
+  vulkan::device(stream().device).synchronize(stream());
+
   auto cpu_stream = default_stream(Device::cpu);
-  auto cpu_copies = materialize_family_to_cpu_copies(inputs);
   auto to_cpu_value = [&](const array& src) {
-    auto it = cpu_copies.find(src.id());
-    auto cpu =
-        it != cpu_copies.end() ? it->second : materialize_family_member_to_cpu_copy(src);
-    if (!cpu.flags().row_contiguous) {
-      cpu = contiguous(cpu, false, cpu_stream);
-      cpu.eval();
-      mlx::core::synchronize(cpu_stream);
-      cpu = materialize_to_cpu_copy(cpu);
+    if (!src.flags().row_contiguous) {
+      auto contig = mlx::core::contiguous(src, false, stream());
+      mlx::core::eval({contig});
+      vulkan::device(stream().device).synchronize(stream());
+      return materialize_to_cpu_copy(contig);
     }
-    return cpu;
+    return materialize_family_member_to_cpu_copy(src);
   };
   std::vector<array> cpu_outputs;
 

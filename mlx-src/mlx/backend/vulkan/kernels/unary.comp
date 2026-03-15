@@ -4,7 +4,6 @@
 #extension GL_GOOGLE_include_directive : enable
 #include "bf16.glsl"
 
-// Unary operation constants — must match enum class UnaryOp in primitives.cpp
 #define UNARY_ABS       0
 #define UNARY_NEG       1
 #define UNARY_SIGN      2
@@ -15,7 +14,6 @@
 #define UNARY_EXPM1     7
 #define UNARY_LOG       8
 #define UNARY_LOG1P     9
-// 10 = Sin (no Log2 in this enum)
 #define UNARY_SIN       10
 #define UNARY_COS       11
 #define UNARY_TAN       12
@@ -39,10 +37,14 @@
 #define UNARY_LOG10     30
 #define UNARY_DEGREES   31
 #define UNARY_RADIANS   32
-#define UNARY_LOGNOT    33  // logical NOT: 0→1, else→0 (for bool arrays)
+#define UNARY_LOGNOT    33
 #define UNARY_ISINF     34
 #define UNARY_ISNAN     35
 #define UNARY_ISNEGINF  36
+
+#define DTYPE_FLOAT  0
+#define DTYPE_INT    1
+#define DTYPE_UINT   2
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
@@ -51,30 +53,26 @@ layout(set = 0, binding = 1) writeonly buffer OutBuf  { uint out_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBool { uint8_t out_bool[]; };
 
 layout(push_constant) uniform Params {
-    uint n;                 // total number of elements
-    uint op;                // UnaryOp enum value
-    uint input_elem_bytes;  // bytes per element (2 = float16, 4 = float32/int32)
-    uint out_elem_bytes;    // bytes per output element
-    uint input_offset;      // element offset into input buffer
-    uint out_offset;        // element offset into output buffer
+    uint n;
+    uint op;
+    uint input_elem_bytes;
+    uint out_elem_bytes;
+    uint input_offset;
+    uint out_offset;
+    uint input_dtype; // Added to distinguish signed/unsigned
 } params;
 
-// Error function approximation (Horner's method)
+// ... (erf_approx, erfinv_approx, cw_sin, cw_cos unchanged) ...
 float erf_approx(float x) {
     float t = 1.0 / (1.0 + 0.3275911 * abs(x));
     float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
                       - 0.284496736) * t + 0.254829592) * t * exp(-x * x);
     return sign(x) * y;
 }
-
-// Inverse erf using Newton's method
 float erfinv_approx(float x) {
-    // Explicit boundary conditions to match scipy/numpy/MLX semantics:
-    // erfinv(x) for |x| > 1 = NaN
-    // erfinv(+1) = +inf, erfinv(-1) = -inf
-    if (x > 1.0 || x < -1.0) return uintBitsToFloat(0x7FC00000u);  // NaN
-    if (x >= 1.0)  return uintBitsToFloat(0x7F800000u);  // +inf
-    if (x <= -1.0) return uintBitsToFloat(0xFF800000u);  // -inf
+    if (x > 1.0 || x < -1.0) return uintBitsToFloat(0x7FC00000u);
+    if (x >= 1.0)  return uintBitsToFloat(0x7F800000u);
+    if (x <= -1.0) return uintBitsToFloat(0xFF800000u);
     float w = -log((1.0 - x) * (1.0 + x));
     float p;
     if (w < 5.0) {
@@ -102,34 +100,16 @@ float erfinv_approx(float x) {
     }
     return p * x;
 }
-
-// Cody-Waite range reduction for sin/cos matching glibc/libm float32 output.
-//
-// Uses the standard glibc libm constants for float32 (s_cosf.c / s_sinf.c):
-//   C1 = 0x3FC90FDA = 1.5707962512969971...  (1 ULP below float32(π/2))
-//   C2 = 0x33A22168 = 7.5497894159e-8        (positive correction)
-//   C1 + C2 = π/2 to double precision
-//
-// For x = float32(π/2) = 0x3FC90FDB and n=1:
-//   x - n*C1 = ULP(π/2) = 1.192e-7  (exact float32 subtract)
-//   r = 1.192e-7 - 7.55e-8 = 4.37e-8
-//   q=1 → -sin(4.37e-8) ≈ -4.37e-8  (matches ARM libm)
 float cw_reduce(float xabs, out int q) {
-    // Standard glibc float32 pio2 Cody-Waite constants (s_cosf.c / s_sinf.c)
-    // C1+C2 = π/2 in double: 1.5707962513 + 7.5497894e-8 = 1.57079632...
-    const float FRAC_2_PI = 0.6366197468;  // nearest float32 to 2/π
-    const float C1 = 1.5707962513;         // 0x3FC90FDA: 1 ULP below float32(π/2)
-    const float C2 = 7.5497894159e-8;      // 0x33A22168: correction
-
+    const float FRAC_2_PI = 0.6366197468;
+    const float C1 = 1.5707962513;
+    const float C2 = 7.5497894159e-8;
     float n = floor(xabs * FRAC_2_PI + 0.5);
-    // Use `precise` to prevent the compiler from contracting
-    // (xabs - n*C1) - n*C2  →  xabs - n*(C1+C2) = xabs - float32(π/2) = 0
     precise float r1 = xabs - n * C1;
     precise float r  = r1 - n * C2;
     q = int(n) & 3;
     return r;
 }
-
 float cw_sin(float x) {
     int q;
     float r = cw_reduce(abs(x), q);
@@ -138,9 +118,8 @@ float cw_sin(float x) {
     else if (q == 1) s =  cos(r);
     else if (q == 2) s = -sin(r);
     else             s = -cos(r);
-    return sign(x) * s;  // sin is odd
+    return sign(x) * s;
 }
-
 float cw_cos(float x) {
     int q;
     float r = cw_reduce(abs(x), q);
@@ -183,21 +162,12 @@ float compute_op(float val) {
         case UNARY_CONJUGATE: return val;
         case UNARY_LOG2:    return log2(val);
         case UNARY_LOG10:   return log(val) / log(10.0);
-        case UNARY_DEGREES: return val * (180.0 / 3.14159265358979323846);
-        case UNARY_RADIANS: return val * (3.14159265358979323846 / 180.0);
+        case UNARY_DEGREES: return val * (180.0 / 3.141592653589793);
+        case UNARY_RADIANS: return val * (3.141592653589793 / 180.0);
         case UNARY_LOGNOT:  return (val == 0.0) ? 1.0 : 0.0;
-        case UNARY_ISINF: {
-            uint u = floatBitsToUint(val);
-            return ((u & 0x7FFFFFFFu) == 0x7F800000u) ? 1.0 : 0.0;
-        }
-        case UNARY_ISNAN: {
-            uint u = floatBitsToUint(val);
-            return ((u & 0x7FFFFFFFu) > 0x7F800000u) ? 1.0 : 0.0;
-        }
-        case UNARY_ISNEGINF: {
-            uint u = floatBitsToUint(val);
-            return (u == 0xFF800000u) ? 1.0 : 0.0;
-        }
+        case UNARY_ISINF:   return isinf(val) ? 1.0 : 0.0;
+        case UNARY_ISNAN:   return isnan(val) ? 1.0 : 0.0;
+        case UNARY_ISNEGINF: return (isinf(val) && val < 0.0) ? 1.0 : 0.0;
         default: return val;
     }
 }
@@ -208,101 +178,32 @@ void main() {
     uint in_idx = idx + params.input_offset;
     uint out_idx = idx + params.out_offset;
 
-    if (params.out_elem_bytes == 1u) {
-        float val;
-        if (params.input_elem_bytes == 1u) {
-            uint word = in_data[in_idx >> 2u];
-            uint byte_val = (word >> ((in_idx & 3u) * 8u)) & 0xFFu;
-            val = float(byte_val != 0u ? 1 : 0);
-        } else if (params.input_elem_bytes == 2u) {
-            uint word = in_data[in_idx >> 1u];
-            val = ((in_idx & 1u) == 0u) ? unpackHalf2x16(word).x : unpackHalf2x16(word).y;
-        } else if (params.input_elem_bytes == 3u) {
-            uint word = in_data[in_idx >> 1u];
-            val = ((in_idx & 1u) == 0u) ? unpackBfloat2x16(word).x : unpackBfloat2x16(word).y;
+    float val;
+    if (params.input_elem_bytes == 1u) {
+        uint word = in_data[in_idx >> 2u];
+        uint b = (word >> ((in_idx & 3u) * 8u)) & 0xFFu;
+        if (params.input_dtype == DTYPE_INT) val = float(int(b << 24) >> 24);
+        else val = float(b);
+    } else if (params.input_elem_bytes == 2u || params.input_elem_bytes == 3u) {
+        uint word = in_data[in_idx >> 1u];
+        uint h = ((in_idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        if (params.input_dtype == DTYPE_FLOAT) {
+            val = (params.input_elem_bytes == 3u) ? unpackBfloat2x16(h).x : unpackHalf2x16(h).x;
+        } else if (params.input_dtype == DTYPE_INT) {
+            val = float(int(h << 16) >> 16);
         } else {
-            val = uintBitsToFloat(in_data[in_idx]);
+            val = float(h);
         }
-        float res = compute_op(val);
-        out_bool[out_idx] = uint8_t((res != 0.0) ? 1u : 0u);
-        return;
+    } else {
+        val = uintBitsToFloat(in_data[in_idx]);
+        if (params.input_dtype == DTYPE_INT) val = float(int(in_data[in_idx]));
+        else if (params.input_dtype == DTYPE_UINT) val = float(in_data[in_idx]);
     }
 
-    if (params.input_elem_bytes == 1u) {
-        // bool/int8 path: 4 elements packed per uint32 word
-        // Only the first thread in each group of 4 does the work
-        if ((idx & 3u) != 0u) return;
-
-        uint word_idx = in_idx >> 2u;
-        uint out_word_idx = out_idx >> 2u;
-        uint word = in_data[word_idx];
-        uint out_word = 0u;
-        uint out_lane = out_idx & 3u;
-
-        // Extract bytes 0..3 (little-endian), apply op, pack back
-        for (uint b = 0u; b < 4u; b++) {
-            if (idx + b >= params.n) break;
-            uint in_lane = (in_idx + b) & 3u;
-            uint byte_val = (word >> (in_lane * 8u)) & 0xFFu;
-            float val = float(byte_val != 0u ? 1 : 0);
-            float res = compute_op(val);
-            uint out_byte = (res != 0.0) ? 1u : 0u;
-            out_word |= (out_byte << (((out_lane + b) & 3u) * 8u));
-        }
-        out_data[out_word_idx] = out_word;
-    } else if (params.input_elem_bytes == 2u) {
-        // float16 path: two f16 elements packed into one uint32 word
-        // Only even-indexed threads do work (each handles a pair)
-        if ((idx & 1u) == 1u) return;
-
-        uint word_idx = in_idx >> 1u;
-        uint out_word_idx = out_idx >> 1u;
-        uint word = in_data[word_idx];
-        vec2 halves = unpackHalf2x16(word);
-
-        if ((in_idx & 1u) == 0u) {
-            halves.x = compute_op(halves.x);
-            if (idx + 1u < params.n) {
-                halves.y = compute_op(halves.y);
-            }
-        } else {
-            halves = halves.yx;
-            halves.x = compute_op(halves.x);
-            if (idx + 1u < params.n) {
-                halves.y = compute_op(halves.y);
-            }
-            halves = halves.yx;
-        }
-
-        out_data[out_word_idx] = packHalf2x16(halves);
-    } else if (params.input_elem_bytes == 3u) {
-        // bfloat16 path: two bf16 elements packed into one uint32 word
-        if ((idx & 1u) == 1u) return;
-
-        uint word_idx = in_idx >> 1u;
-        uint out_word_idx = out_idx >> 1u;
-        uint word = in_data[word_idx];
-        vec2 halves = unpackBfloat2x16(word);
-
-        if ((in_idx & 1u) == 0u) {
-            halves.x = compute_op(halves.x);
-            if (idx + 1u < params.n) {
-                halves.y = compute_op(halves.y);
-            }
-        } else {
-            halves = halves.yx;
-            halves.x = compute_op(halves.x);
-            if (idx + 1u < params.n) {
-                halves.y = compute_op(halves.y);
-            }
-            halves = halves.yx;
-        }
-
-        out_data[out_word_idx] = packBfloat2x16(halves);
+    float res = compute_op(val);
+    if (params.out_elem_bytes == 1u) {
+        out_bool[out_idx] = uint8_t((res != 0.0) ? 1u : 0u);
     } else {
-        // float32/int32 path: direct bit reinterpretation
-        float val = uintBitsToFloat(in_data[in_idx]);
-        float res = compute_op(val);
         out_data[out_idx] = floatBitsToUint(res);
     }
 }

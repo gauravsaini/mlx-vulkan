@@ -3705,6 +3705,17 @@ std::vector<array> GatherQMM::vjp(
 
   bool sorted = left_sorted_ || right_sorted_;
   bool no_broadcast = rhs_indices.size() * M * K == x.size();
+  auto gather_batch = [&](const array& src, const array& indices) {
+    if (src.ndim() < 3) {
+      return src;
+    }
+    int batch_ndim = static_cast<int>(src.ndim()) - 2;
+    auto flat = flatten(src, 0, batch_ndim - 1, stream());
+    auto gathered = take(flat, flatten(indices, stream()), 0, stream());
+    Shape out_shape = indices.shape();
+    out_shape.insert(out_shape.end(), src.shape().end() - 2, src.shape().end());
+    return reshape(gathered, std::move(out_shape), stream());
+  };
   for (auto arg : argnums) {
     // gradient wrt to x
     if (arg == 0) {
@@ -3753,13 +3764,26 @@ std::vector<array> GatherQMM::vjp(
             << quantization_mode_to_string(mode_) << " quantization.";
         throw std::invalid_argument(msg.str());
       }
-
-      // Match current public MLX indexing semantics used by the reference
-      // tests: gathered scales and biases are materialized/detached before the
-      // downstream quantized matmul, so no gradient flows back to the original
-      // parameter tensors through the rhs gather.
-      vjps.push_back(arg == 3 ? zeros_like(*biases, stream())
-                              : zeros_like(scales, stream()));
+      auto x_gathered = gather_batch(x, lhs_indices);
+      auto w_gathered = gather_batch(w, rhs_indices);
+      auto affine_fun = [&](const std::vector<array>& inputs) {
+        auto gathered_scales = gather_batch(inputs[0], rhs_indices);
+        auto gathered_biases = gather_batch(inputs[1], rhs_indices);
+        auto y = quantized_matmul(
+            x_gathered,
+            w_gathered,
+            gathered_scales,
+            gathered_biases,
+            transpose_,
+            group_size_,
+            bits_,
+            quantization_mode_to_string(mode_),
+            stream());
+        return std::vector<array>{y};
+      };
+      auto [_, affine_vjps] =
+          mlx::core::vjp(affine_fun, {scales, *biases}, {cotan});
+      vjps.push_back(arg == 3 ? affine_vjps[1] : affine_vjps[0]);
     }
   }
   return vjps;

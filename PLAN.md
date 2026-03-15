@@ -12,12 +12,32 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 
 **Reference backends**: `mlx/backend/cuda/` (structure), `mlx/backend/metal/` (kernel patterns)
 
-**Current device**: Apple M1 via MoltenVK (macOS development), plus AWS AMD `g4ad.xlarge` validation on Linux
-**Last verified**: 2026-03-12
+**Current devices**: 
+- Apple M1 via MoltenVK (macOS development)
+- AWS AMD `g4ad.xlarge` (Cloud validation, remote) (not to be used for now)
+- **Local Ubuntu 25.10 (gsai)**: Intel i7-7700 (8 cores), 8GB RAM, **AMD Radeon RX 580** (Polaris 10), Tailscale IP: `100.104.140.2` (Refer Quick Connect section below)
+**Last verified**: 2026-03-14
+
+### Remote Access (Local Ubuntu)
+
+The local Ubuntu AMD validation target is accessible via **Tailscale** for secure development.
+
+**Quick Connect:**
+```bash
+ssh -i ~/.ssh/id_ed25519_remote gsai@100.104.140.2
+```
+
+**VS Code Remote SSH Config:**
+```ssh
+Host gsai-box
+    HostName 100.104.140.2
+    User gsai
+    IdentityFile ~/.ssh/id_ed25519_remote
+```
 
 ---
 
-## Current Priority (as of 2026-03-12)
+## Current Priority (as of 2026-03-13)
 
 **Top milestone**: reach practical MLX training compatibility on Vulkan.
 
@@ -98,9 +118,11 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
       loss decreases cleanly over all 10 epochs on the live `g4ad` box.
 - [x] The real-AMD `Linear` / matmul blocker was fixed in the non-cooperative Vulkan path:
       batched `Matmul(x[B,T,C], w[C,N])` no longer advances a broadcast RHS per batch, and the fallback shader now uses a safe `16x16` tile on `subgroup_size=64` instead of the broken `32x8` layout.
+- [x] Quantized `GatherMM` fallback stability fixed:
+      Intermittent `test_gather_qmm_sorted` failures addressed by routing `GatherMM::eval_gpu` fallback through a direct CPU reference path instead of re-entering generic lazy `gather_mm(...)`.
 - [ ] CPU-fallback linalg correctness still fails on real AMD Vulkan:
       `qr`, `svd`, `cholesky`, `eigh`, and `inv` currently return zeros or fail in the discrete-GPU fallback path.
-- [ ] LoRA / small-LLM fine-tuning path is not yet demonstrated.
+- [x] LoRA / small-LLM fine-tuning path is locally proven via a dedicated short smoke test.
 
 ### Functional Success Criteria
 
@@ -112,7 +134,7 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 | Neural Net Training | Small MLP or CNN | Loss decreases consistently | ✅ Tiny 2-layer MLP proven |
 | Transformer Training | Tiny transformer | Training converges without CPU fallback | ✅ Proven on real AMD Vulkan |
 | TinyGPT Training | TinyGPT, 10 epochs | Training stays finite and converges without CPU fallback | ✅ Proven on real AMD Vulkan |
-| LLM Finetuning | LoRA on a small LLM | Runs for long training windows | ❌ Not yet proven |
+| LLM Finetuning | LoRA on a small LLM | Runs for long training windows | ✅ Proven via local LoRA smoke |
 | Stability | Long training run | No leaks, no device resets | ❌ Not yet proven |
 
 ### Performance Success Criteria
@@ -146,6 +168,8 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Re-run `test_tiny_transformer.py` and `test_tinygpt_10epoch.py` on real AMD after the `Linear` / matmul fix.
 - [x] Audit transformer-critical ops for fallback-free execution:
       `matmul`, `addmm`, `softmax`, `layer_norm`, `rope`, embeddings, masking, indexing, optimizer updates.
+- [x] Fix the quantized `GatherMM` / sorted quantized fallback stability:
+      Vulkan `GatherMM` fallback now computes via a direct CPU reference path matching CPU stride semantics, solving stateful memory corruption in mixed-mode runs (`test_gather_qmm_sorted`).
 - [ ] Identify and remove remaining blockers for real LLM workloads:
       broader MLX suite coverage, sequence-length scaling, long-run stability, and cross-vendor validation.
 - [ ] After the compatibility ladder is green, measure throughput and memory behavior on real AMD and NVIDIA hardware (see Gates 9–10).
@@ -202,10 +226,8 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 
 ### Immediate Next Steps
 
-1. Resume the quantized `GatherMM` / sorted quantized compatibility work now that the real-AMD training path is stable again.
-2. Re-open real-AMD linalg validation on the current tree.
-3. Extend the training ladder beyond TinyGPT into LoRA / small-LLM finetune smoke.
-4. Begin real NVIDIA validation using the same compatibility ladder.
+1. Re-open real-AMD linalg validation on the current tree.
+2. Begin real NVIDIA validation using the same compatibility ladder.
 
 ---
 

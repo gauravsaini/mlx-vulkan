@@ -1056,6 +1056,116 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 self.assertTrue(mx.allclose(y1, y3, atol=tol))
                 self.assertTrue(mx.allclose(y1, y4, atol=tol))
 
+    def test_gather_mm_sorted_cpu_stability(self):
+        def gather_sort(x, indices):
+            N, M = indices.shape
+            indices = indices.flatten()
+            order = mx.argsort(indices)
+            inv_order = mx.argsort(order)
+            return x.flatten(0, -3)[order // M], indices[order], inv_order
+
+        def scatter_unsort(x, inv_order, shape):
+            return mx.unflatten(x[inv_order], 0, shape)
+
+        L, E, I = 64, 4, 2
+        D = K = 512
+        key = mx.random.key(0)
+        k1, k2, k3 = mx.random.split(key, 3)
+
+        indices = (mx.random.uniform(shape=(L, I), key=k1, stream=mx.cpu) * E).astype(
+            mx.uint32, stream=mx.cpu
+        )
+        x = (
+            mx.random.normal((L, 1, 1, D), key=k2, stream=mx.cpu) / D**0.5
+        ).astype(mx.float32, stream=mx.cpu)
+        w = (
+            mx.random.normal((E, D, K), key=k3, stream=mx.cpu) / D**0.5
+        ).astype(mx.float32, stream=mx.cpu)
+
+        xs, idx, inv_order = gather_sort(x, indices)
+        mx.eval(indices, x, w, xs, idx, inv_order)
+
+        for _ in range(3):
+            y1 = mx.gather_mm(x, w, rhs_indices=indices, stream=mx.cpu)
+            y3 = mx.gather_mm(
+                xs, w, rhs_indices=idx, sorted_indices=True, stream=mx.cpu
+            )
+            y3 = scatter_unsort(y3, inv_order, indices.shape)
+            mx.eval(y1, y3)
+
+            self.assertTrue(mx.all(mx.isfinite(y1)))
+            self.assertTrue(mx.all(mx.isfinite(y3)))
+            self.assertTrue(mx.allclose(y1, y3, atol=1e-5))
+
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU is not available")
+    def test_gather_mm_sorted_mixed_prefix_stability(self):
+        def gather_sort(x, indices):
+            N, M = indices.shape
+            indices = indices.flatten()
+            order = mx.argsort(indices)
+            inv_order = mx.argsort(order)
+            return x.flatten(0, -3)[order // M], indices[order], inv_order
+
+        def scatter_unsort(x, inv_order, shape):
+            return mx.unflatten(x[inv_order], 0, shape)
+
+        cases = [
+            (32, 512, 512, 4, 2, True, mx.float16),
+            (32, 512, 544, 4, 2, True, mx.bfloat16),
+            (64, 512, 544, 4, 2, False, mx.bfloat16),
+            (133, 512, 544, 4, 2, False, mx.float16),
+        ]
+        key = mx.random.key(0)
+        k1, k2, k3 = mx.random.split(key, 3)
+
+        for repeat in range(2):
+            for case_id, (L, K, D, E, I, transpose, dtype) in enumerate(cases):
+                with self.subTest(
+                    repeat=repeat,
+                    case_id=case_id,
+                    L=L,
+                    K=K,
+                    D=D,
+                    transpose=transpose,
+                    dtype=dtype,
+                ):
+                    K, D = (K, D) if transpose else (D, K)
+                    indices = (
+                        mx.random.uniform(shape=(L, I), key=k1, stream=mx.gpu) * E
+                    ).astype(mx.uint32, stream=mx.gpu)
+                    x = (
+                        mx.random.normal((L, 1, 1, K), key=k2, stream=mx.gpu)
+                        / K**0.5
+                    ).astype(dtype, stream=mx.gpu)
+                    w = (
+                        mx.random.normal(
+                            (E, D, K) if transpose else (E, K, D),
+                            key=k3,
+                            stream=mx.gpu,
+                        )
+                        / K**0.5
+                    ).astype(dtype, stream=mx.gpu)
+                    if transpose:
+                        w = w.swapaxes(-1, -2)
+
+                    xs, idx, inv_order = gather_sort(x, indices)
+                    mx.eval(indices, x, w, xs, idx, inv_order)
+
+                    y1 = mx.gather_mm(x, w, rhs_indices=indices, stream=mx.gpu)
+                    y3 = mx.gather_mm(
+                        xs,
+                        w,
+                        rhs_indices=idx,
+                        sorted_indices=True,
+                        stream=mx.gpu,
+                    )
+                    y3 = scatter_unsort(y3, inv_order, indices.shape)
+                    mx.eval(y1, y3)
+
+                    self.assertTrue(mx.all(mx.isfinite(y1)))
+                    self.assertTrue(mx.all(mx.isfinite(y3)))
+                    self.assertTrue(mx.allclose(y1, y3, atol=2.5e-4))
+
     def test_gather_qmm_grad(self):
         def gather_qmm_ref(x, w, s, b, lhs, rhs, trans, sort):
             if lhs is not None:

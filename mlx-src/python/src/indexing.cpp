@@ -10,20 +10,19 @@
 #include "mlx/primitives.h"
 
 namespace {
+mx::array materialize_array_read(const mx::array& value);
+
 mx::array materialize_array_update(const mx::array& value) {
-  mx::array staged = value;
-  staged.eval();
-  mx::allocator::ScopedCpuAllocatorOverride cpu_allocator;
-  mx::array out(staged.shape(), staged.dtype(), nullptr, {});
-  out.set_data(mx::allocator::malloc(staged.nbytes()));
-  if (staged.nbytes() > 0) {
-    std::vector<char> host(staged.nbytes());
-    mx::allocator::copy_to_host(
-        staged.buffer(), host.data(), host.size(), staged.offset());
-    mx::allocator::copy_from_host(out.buffer(), host.data(), host.size());
+  auto staged = materialize_array_read(value);
+  if (!mx::is_available(mx::Device::gpu)) {
+    return staged;
   }
-  out.set_status(mx::array::Status::available);
-  return out;
+  auto gpu_stream = mx::default_stream(mx::Device::gpu);
+  auto concrete = mx::copy(staged, gpu_stream);
+  concrete = mx::contiguous(concrete, false, gpu_stream);
+  concrete.eval();
+  concrete.detach();
+  return concrete;
 }
 
 mx::array materialize_array_read(const mx::array& value) {
@@ -146,9 +145,7 @@ mx::array mlx_get_item_array(const mx::array& src, const mx::array& indices) {
         materialized_indices,
         0,
         mx::default_stream(mx::Device::cpu));
-    result.eval();
-    result.detach();
-    return result;
+    return materialize_array_read(result);
   }
   return take(src, materialized_indices, 0);
 }
@@ -984,27 +981,40 @@ void mlx_set_item(
     src.overwrite_descriptor(result);
   };
 
+  mx::array update_src = src;
+  if (!src.is_tracer()) {
+    // Eager Python setitem should operate on a concrete source array. Running
+    // slice/scatter updates against lazy eager values can leave updates
+    // partially unapplied across repeated GPU cases.
+    src.overwrite_descriptor(materialize_array_update(src));
+    update_src = src;
+  }
+
   ScalarOrArray staged_value = v;
   if (auto arr = std::get_if<mx::array>(&staged_value); arr != nullptr) {
     staged_value = materialize_array_update(*arr);
+  } else if (!src.is_tracer()) {
+    staged_value =
+        materialize_array_update(to_array(staged_value, update_src.dtype()));
   }
 
-  auto [success, out] = mlx_slice_update(src, obj, staged_value);
+  auto [success, out] = mlx_slice_update(update_src, obj, staged_value);
   if (success) {
     commit_result(std::move(out));
     return;
   }
 
   if (auto mask = extract_boolean_mask(obj)) {
-    auto updates = to_array(staged_value, src.dtype());
-    auto result = masked_scatter(src, *mask, updates);
+    auto updates = to_array(staged_value, update_src.dtype());
+    auto result = masked_scatter(update_src, *mask, updates);
     commit_result(std::move(result));
     return;
   }
 
-  auto [indices, updates, axes] = mlx_compute_scatter_args(src, obj, staged_value);
+  auto [indices, updates, axes] =
+      mlx_compute_scatter_args(update_src, obj, staged_value);
   if (indices.size() > 0) {
-    auto out = scatter(src, indices, updates, axes);
+    auto out = scatter(update_src, indices, updates, axes);
     commit_result(std::move(out));
   } else {
     commit_result(std::move(updates));
