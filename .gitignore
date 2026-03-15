@@ -6,7 +6,7 @@ __pycache__/
 # tensor files
 *.safe
 *.safetensors
-
+run_local*
 # Metal libraries
 *.metallib
 

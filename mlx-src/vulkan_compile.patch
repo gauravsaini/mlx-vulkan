@@ -1,0 +1,545 @@
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..4b4eb83
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,6 @@
++# Agent Instructions
++
++- **Goal**: Implement the `Compile` primitive for the Vulkan backend to enable fused graph execution, avoiding CPU fallbacks and eager execution overhead during LLM inference.
++- **Documentation First**: Always keep `PLAN.md` and `TIMELINE.md` updated with progress.
++- **Frequent Commits**: Commit changes frequently to track progress and provide rollback points.
++- **Bold Action**: Do not shy away from massive architectural undertakings like `mlx/backend/metal/compiled.cpp`. "Nothing is massive." Just start working on it.
+diff --git a/PLAN.md b/PLAN.md
+index e95c098..a2ef5c6 100644
+--- a/PLAN.md
++++ b/PLAN.md
+@@ -37,11 +37,11 @@ Host gsai-box
+ 
+ ---
+ 
+-## Current Priority (as of 2026-03-13)
++## Current Priority (as of 2026-03-15)
+ 
+-**Top milestone**: reach practical MLX training compatibility on Vulkan.
++**Top milestone**: Implement the Vulkan `Compile` primitive (fused graph execution) to achieve fast, native real-time LLM inference.
+ 
+-**Minimum bar**: a tiny transformer trains and converges on the Vulkan backend without CPU fallback.
++**Minimum bar**: `mx.compile()` successfully generates a fused GLSL shader, compiles it dynamically to SPIR-V, and evaluates the pipeline without CPU fallback on the Vulkan backend.
+ 
+ ### Current Truth
+ 
+@@ -123,6 +123,8 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
+ - [ ] CPU-fallback linalg correctness still fails on real AMD Vulkan:
+       `qr`, `svd`, `cholesky`, `eigh`, and `inv` currently return zeros or fail in the discrete-GPU fallback path.
+ - [x] LoRA / small-LLM fine-tuning path is locally proven via a dedicated short smoke test.
++- [x] End-to-End LLM Inference passes on real AMD Vulkan:
++      `Qwen3.5-2B-5bit` quantified model successfully generated text natively through `mlx-lm` without crashing.
+ 
+ ### Functional Success Criteria
+ 
+@@ -226,8 +228,9 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
+ 
+ ### Immediate Next Steps
+ 
+-1. Re-open real-AMD linalg validation on the current tree.
+-2. Begin real NVIDIA validation using the same compatibility ladder.
++1. Architect `mlx/backend/vulkan/compiled.cpp` based on the Metal JIT pattern.
++2. Introduce a mechanism to dynamically generate GLSL shaders from `mx.compile()` graphs.
++3. Test a simple compiled `mx.compile(lambda x: x + x)` graph natively on Vulkan.
+ 
+ ---
+ 
+diff --git a/TIMELINE.md b/TIMELINE.md
+index eb173e1..b4e1f54 100644
+--- a/TIMELINE.md
++++ b/TIMELINE.md
+@@ -1,5 +1,26 @@
+ # MLX Vulkan Backend — Change Timeline
+ 
++## UPDATED ON : 2026-03-15
++
++### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
++
++1. **Massive Architecture Task Started**:
++   - The user noticed eager text generation is too slow due to CPU kernel dispatch overhead.
++   - We are pivoting from compatibility tests to fully implementing the `Compile` primitive (`mx.compile()`) natively for Vulkan.
++   - This prevents LLMs from falling back to CPU and will fuse operations dynamically into SPIR-V.
++
++---
++
++### confirm (2026-03-15) — Real AMD End-to-End Quantized LLM Inference passes
++
++1. **End-to-End LLM Generation Proven** (`run_local_amd_inference.sh`):
++   - Successfully loaded and ran inference on `mlx-community/Qwen3.5-2B-5bit` (using `mlx-lm`) natively on the local AMD RX 580.
++   - Verified that the `mlx-lm` package works correctly over the Vulkan backend when explicitly compiled against the correct shader path.
++   - Identified that `pip install` overrode the Vulkan built `mlx` package with a CPU-only wheel unless explicitly built from source with `-DMLX_BUILD_VULKAN=ON`.
++   - Filtered out noisy `copy debug` logs emitted during generation to provide a clean UX.
++   
++---
++
+ ## UPDATED ON : 2026-03-13
+ 
+ ### feat (2026-03-13) — LoRA / small-LLM finetuning smoke added
+diff --git a/mlx-src/mlx/backend/vulkan/CMakeLists.txt b/mlx-src/mlx/backend/vulkan/CMakeLists.txt
+index e6442c5..319ff78 100644
+--- a/mlx-src/mlx/backend/vulkan/CMakeLists.txt
++++ b/mlx-src/mlx/backend/vulkan/CMakeLists.txt
+@@ -155,6 +155,7 @@ target_sources(
+   mlx
+   PRIVATE
+     ${CMAKE_CURRENT_SOURCE_DIR}/allocator.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/compiled.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/copy.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/device.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/device_info.cpp
+diff --git a/mlx-src/mlx/backend/vulkan/compiled.cpp b/mlx-src/mlx/backend/vulkan/compiled.cpp
+new file mode 100644
+index 0000000..396c59d
+--- /dev/null
++++ b/mlx-src/mlx/backend/vulkan/compiled.cpp
+@@ -0,0 +1,272 @@
++// Copyright © 2025 Apple Inc.
++#include <fmt/format.h>
++#include <sstream>
++
++#include "mlx/backend/common/compiled.h"
++#include "mlx/backend/common/utils.h"
++#include "mlx/backend/vulkan/allocator.h"
++#include "mlx/backend/vulkan/device.h"
++#include "mlx/backend/vulkan/utils.h"
++#include "mlx/graph_utils.h"
++#include "mlx/primitives.h"
++#include "mlx/utils.h"
++
++#include <cstdlib>
++#include <fstream>
++#include <filesystem>
++
++namespace mlx::core {
++
++namespace {
++
++// Helper to compile dynamic GLSL to SPIR-V
++std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, const std::string& glsl_source) {
++  std::string tmp_dir = "/tmp/mlx_vulkan_jit/";
++  std::filesystem::create_directories(tmp_dir);
++  std::string comp_path = tmp_dir + kernel_name + ".comp";
++  std::string spv_path = tmp_dir + kernel_name + ".spv";
++  
++  std::ofstream out(comp_path);
++  out << glsl_source;
++  out.close();
++  
++  std::string cmd = "glslc -c " + comp_path + " -o " + spv_path + " -fshader-stage=compute --target-env=vulkan1.2";
++  if (std::system(cmd.c_str()) != 0) {
++    throw std::runtime_error("[Compiled::eval_gpu] Failed to compile dynamic kernel with glslc.");
++  }
++  
++  std::ifstream spv_in(spv_path, std::ios::binary | std::ios::ate);
++  if (!spv_in) {
++    throw std::runtime_error("[Compiled::eval_gpu] Failed to read compiled SPIR-V.");
++  }
++  size_t size = spv_in.tellg();
++  spv_in.seekg(0);
++  std::vector<uint32_t> code(size / sizeof(uint32_t));
++  spv_in.read(reinterpret_cast<char*>(code.data()), size);
++  return code;
++}
++
++// Minimal AST to GLSL builtins mappings
++std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, const std::vector<std::string>& input_names) {
++  if (pr == "Add") {
++    return input_names[0] + " + " + input_names[1];
++  } else if (pr == "Subtract") {
++    return input_names[0] + " - " + input_names[1];
++  } else if (pr == "Multiply") {
++    return input_names[0] + " * " + input_names[1];
++  } else if (pr == "Divide") {
++    return input_names[0] + " / " + input_names[1];
++  }
++  // TODO: Expand
++  throw std::runtime_error("Unsupported primitive in MLX Vulkan Compiled backend: " + pr);
++}
++
++void build_kernel(
++    std::string& os,
++    const std::string& kernel_name,
++    const std::vector<array>& inputs,
++    const std::vector<array>& outputs,
++    const std::vector<array>& tape,
++    const std::function<bool(size_t)>& is_constant,
++    bool contiguous,
++    int ndim,
++    bool dynamic_dims,
++    bool use_big_index = false,
++    int work_per_thread = 1) {
++    
++    NodeNamer namer;
++    os += "#version 450\n";
++    os += "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n";
++    
++    int binding = 0;
++    
++    // Inputs
++    std::vector<std::string> in_names;
++    for (size_t i = 0; i < inputs.size(); ++i) {
++        if (is_constant(i)) continue;
++        const auto& x = inputs[i];
++        std::string xname = namer.get_name(x);
++        in_names.push_back(xname);
++        os += fmt::format("layout(set = 0, binding = {}) readonly buffer In{} {{ {} {}[]; }};\n",
++                      binding++, i, get_type_string(x.dtype()), xname);
++    }
++    
++    // Outputs
++    std::vector<std::string> out_names;
++    for (size_t i = 0; i < outputs.size(); ++i) {
++        const auto& x = outputs[i];
++        std::string xname = namer.get_name(x);
++        out_names.push_back(xname);
++        os += fmt::format("layout(set = 0, binding = {}) writeonly buffer Out{} {{ {} {}[]; }};\n",
++                      binding++, i, get_type_string(x.dtype()), xname);
++    }
++    
++    // Push constants
++    os += "layout(push_constant) uniform PushConstants {\n";
++    os += "  uint size;\n";
++    os += "} pc;\n";
++    
++    os += "void main() {\n";
++    os += "  uint index = gl_GlobalInvocationID.x;\n";
++    os += "  if (index >= pc.size) return;\n";
++    
++    // Reading inputs
++    for (int i = 0; i < inputs.size(); ++i) {
++        if(is_constant(i)) continue;
++        auto xname = namer.get_name(inputs[i]);
++        os += fmt::format("  {} tmp_{} = {}[index];\n", get_type_string(inputs[i].dtype()), xname, xname);
++    }
++    
++    // Tape
++    for (auto& x : tape) {
++        std::string out_type = get_type_string(x.dtype());
++        std::string out_name = namer.get_name(x);
++        
++        std::vector<std::string> inps;
++        for (auto& in : x.inputs()) {
++            inps.push_back("tmp_" + namer.get_name(in));
++        }
++        
++        if (is_static_cast(x.primitive())) {
++           os += fmt::format("  {} tmp_{} = {}({});\n", out_type, out_name, out_type, inps[0]);
++        } else {
++           std::string expr = to_glsl_op(x.primitive().name(), x.inputs(), inps);
++           os += fmt::format("  {} tmp_{} = {};\n", out_type, out_name, expr);
++        }
++    }
++    
++    // Write outputs
++    for (auto& x : outputs) {
++        auto xname = namer.get_name(x);
++        os += fmt::format("  {}[index] = tmp_{};\n", xname, xname);
++    }
++    os += "}\n";
++}
++
++} // namespace
++
++
++void Compiled::eval_gpu(
++    const std::vector<array>& inputs,
++    std::vector<array>& outputs) {
++  
++  if (!outputs[0].flags().contiguous) {
++    throw std::runtime_error("[Compiled::eval_gpu] Strided Vulkan compilation not implemented yet.");
++  }
++  
++  auto& s = stream();
++  auto& d = vulkan::device(s.device);
++  auto& compute_encoder = d.get_command_encoder(s);
++  
++  std::string kernel_name = kernel_lib_ + "_vulkan_contig";
++  
++  // Pipeline layout out
++  VkPipelineLayout layout;
++  VkDescriptorSetLayout ds_layout;
++  
++  int num_bindings = 0;
++  for (int i = 0; i < inputs.size(); i++) {
++    if (!is_constant_(i)) num_bindings++;
++  }
++  num_bindings += outputs.size();
++  
++  std::string glsl;
++  build_kernel(
++      glsl,
++      kernel_name,
++      inputs_,
++      outputs_,
++      tape_,
++      is_constant_,
++      true, // contiguous
++      0,
++      false,
++      false,
++      1
++  );
++  
++  std::vector<uint32_t> spv = compile_glsl_to_spirv(kernel_name, glsl);
++  
++  VkPipeline pipeline = d.get_pipeline_from_spirv(
++          kernel_name,
++          spv,
++          layout,
++          ds_layout,
++          num_bindings,
++          sizeof(uint32_t) // push constant size
++      );
++  
++  if (pipeline == VK_NULL_HANDLE) {
++     throw std::runtime_error("[Compiled::eval_gpu] Vulkan pipeline creation failed");
++  }
++
++  // Allocate descriptor set
++  VkDescriptorSet ds = d.alloc_descriptor_set(s, ds_layout);
++  
++  // Update Descriptor sets
++  std::vector<VkDescriptorBufferInfo> buf_infos(num_bindings);
++  std::vector<VkWriteDescriptorSet> writes(num_bindings);
++  int bind_idx = 0;
++  
++  auto bind_arr = [&](const array& arr) {
++    allocator::Buffer buf(const_cast<void*>(arr.data<void>()));
++    buf_infos[bind_idx].buffer = vulkan::allocator().vk_buffer(buf);
++    buf_infos[bind_idx].offset = 0;
++    buf_infos[bind_idx].range = VK_WHOLE_SIZE;
++    
++    writes[bind_idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++    writes[bind_idx].dstSet = ds;
++    writes[bind_idx].dstBinding = bind_idx;
++    writes[bind_idx].descriptorCount = 1;
++    writes[bind_idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++    writes[bind_idx].pBufferInfo = &buf_infos[bind_idx];
++    bind_idx++;
++  };
++  
++  for (int i=0; i<inputs.size(); i++) {
++    if(!is_constant_(i)) {
++      bind_arr(inputs[i]);
++    }
++  }
++  
++  // allocate outputs
++  compiled_allocate_outputs(inputs, outputs, is_constant_, true);
++  
++  for (auto& out : outputs) {
++     bind_arr(out);
++  }
++  
++  vkUpdateDescriptorSets(d.vk_device(), num_bindings, writes.data(), 0, nullptr);
++  
++  // Bind pipeline
++  vkCmdBindPipeline(compute_encoder.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
++
++  // Bind DS
++  vkCmdBindDescriptorSets(
++        compute_encoder.cmd,
++        VK_PIPELINE_BIND_POINT_COMPUTE,
++        layout,
++        0,
++        1,
++        &ds,
++        0,
++        nullptr);
++        
++  // Push constants
++  uint32_t size = outputs[0].data_size();
++  vkCmdPushConstants(
++      compute_encoder.cmd,
++      layout,
++      VK_SHADER_STAGE_COMPUTE_BIT,
++      0,
++      sizeof(uint32_t),
++      &size);
++      
++  // Dispatch
++  uint32_t nblock = (size + 255) / 256;
++  vkCmdDispatch(compute_encoder.cmd, nblock, 1, 1);
++  
++  compute_encoder.op_count++;
++}
++
++} // namespace mlx::core
+diff --git a/mlx-src/mlx/backend/vulkan/device.cpp b/mlx-src/mlx/backend/vulkan/device.cpp
+index 41d8d44..16afc51 100644
+--- a/mlx-src/mlx/backend/vulkan/device.cpp
++++ b/mlx-src/mlx/backend/vulkan/device.cpp
+@@ -813,8 +813,9 @@ void Device::synchronize(Stream s) {
+ // Pipeline management: load SPIR-V and create cached compute pipelines
+ // ────────────────────────────────────────────────────────────────────────────
+ 
+-VkPipeline Device::get_pipeline(
++VkPipeline Device::get_pipeline_from_spirv(
+     const std::string& name,
++    const std::vector<uint32_t>& code,
+     VkPipelineLayout& layout_out,
+     VkDescriptorSetLayout& ds_layout_out,
+     uint32_t num_bindings,
+@@ -867,22 +868,6 @@ VkPipeline Device::get_pipeline(
+       vkCreatePipelineLayout(device_, &layout_info, nullptr, &layout),
+       "vkCreatePipelineLayout");
+ 
+-  // Load SPIR-V
+-  const char* env_path = std::getenv("MLX_VULKAN_PATH");
+-  std::string base_path = env_path ? std::string(env_path) + "/" : std::string(VULKAN_KERNELS_PATH);
+-  std::string spv_path = base_path + name + ".spv";
+-  std::vector<uint32_t> code;
+-  try {
+-    code = read_spirv(spv_path);
+-  } catch (const std::exception& e) {
+-    fprintf(stderr, "[MLX Vulkan] WARNING: %s\n", e.what());
+-    // Return null pipeline — callers should fall back to CPU
+-    pipeline_map_[name] = {VK_NULL_HANDLE, layout, ds_layout};
+-    layout_out = layout;
+-    ds_layout_out = ds_layout;
+-    return VK_NULL_HANDLE;
+-  }
+-
+   VkShaderModuleCreateInfo shader_info{};
+   shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+   shader_info.codeSize = code.size() * sizeof(uint32_t);
+@@ -1043,6 +1028,54 @@ VkPipeline Device::get_pipeline(
+   return pipeline;
+ }
+ 
++VkPipeline Device::get_pipeline(
++    const std::string& name,
++    VkPipelineLayout& layout_out,
++    VkDescriptorSetLayout& ds_layout_out,
++    uint32_t num_bindings,
++    uint32_t push_constant_size,
++    const VkSpecializationInfo* specialization_info) {
++
++  // Before locking via get_pipeline_from_spirv, let's just check the map to avoid doing disk I/O
++  // if we already have it.
++  {
++    std::lock_guard<std::mutex> lk(mutex_);
++    auto it = pipeline_map_.find(name);
++    if (it != pipeline_map_.end()) {
++      layout_out = it->second.layout;
++      ds_layout_out = it->second.ds_layout;
++      return it->second.pipeline;
++    }
++  }
++
++  // Load SPIR-V
++  const char* env_path = std::getenv("MLX_VULKAN_PATH");
++  std::string base_path = env_path ? std::string(env_path) + "/" : std::string(VULKAN_KERNELS_PATH);
++  std::string spv_path = base_path + name + ".spv";
++  std::vector<uint32_t> code;
++  try {
++    code = read_spirv(spv_path);
++  } catch (const std::exception& e) {
++    fprintf(stderr, "[MLX Vulkan] WARNING: %s\n", e.what());
++    
++    // Fallback: return null pipeline
++    std::lock_guard<std::mutex> lk(mutex_);
++    pipeline_map_[name] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
++    layout_out = VK_NULL_HANDLE;
++    ds_layout_out = VK_NULL_HANDLE;
++    return VK_NULL_HANDLE;
++  }
++
++  return get_pipeline_from_spirv(
++      name,
++      code,
++      layout_out,
++      ds_layout_out,
++      num_bindings,
++      push_constant_size,
++      specialization_info);
++}
++
+ // ────────────────────────────────────────────────────────────────────────────
+ // Descriptor set allocation
+ // ────────────────────────────────────────────────────────────────────────────
+diff --git a/mlx-src/mlx/backend/vulkan/device.h b/mlx-src/mlx/backend/vulkan/device.h
+index 6f045d6..44c4177 100644
+--- a/mlx-src/mlx/backend/vulkan/device.h
++++ b/mlx-src/mlx/backend/vulkan/device.h
+@@ -69,6 +69,15 @@ class Device {
+       uint32_t push_constant_size = 0,
+       const VkSpecializationInfo* specialization_info = nullptr);
+ 
++  VkPipeline get_pipeline_from_spirv(
++      const std::string& name,
++      const std::vector<uint32_t>& spirv,
++      VkPipelineLayout& layout_out,
++      VkDescriptorSetLayout& ds_layout_out,
++      uint32_t num_bindings,
++      uint32_t push_constant_size = 0,
++      const VkSpecializationInfo* specialization_info = nullptr);
++
+   // Memory management
+   VmaAllocator vma_allocator() const {
+     return vma_allocator_;
+diff --git a/mlx-src/mlx/backend/vulkan/primitives.cpp b/mlx-src/mlx/backend/vulkan/primitives.cpp
+index 1bb6342..298ff5c 100644
+--- a/mlx-src/mlx/backend/vulkan/primitives.cpp
++++ b/mlx-src/mlx/backend/vulkan/primitives.cpp
+@@ -3516,21 +3516,6 @@ void MaskedScatter::eval_gpu(const std::vector<array>& inputs, array& out) {
+ // Compiled / JIT
+ // ─────────────────────────────────────────────────────────────────────────────
+ 
+-void Compiled::eval_gpu(
+-    const std::vector<array>& inputs,
+-    std::vector<array>& outputs) {
+-  // Vulkan JIT is not implemented yet. Drain pending GPU work before the CPU
+-  // fallback so the fallback never reads stale device data.
+-  vulkan::device(stream().device).synchronize(stream());
+-  if (fail_on_vulkan_cpu_fallback()) {
+-    throw std::runtime_error(
+-        "Compiled Vulkan graphs are not supported while "
+-        "MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1. Disable mx.compile() or use eager "
+-        "execution.");
+-  }
+-  warn_once_about_compiled_cpu_fallback();
+-  eval_cpu(inputs, outputs);
+-}
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Matmul variants.
+diff --git a/mlx-src/test_vulkan_compile.py b/mlx-src/test_vulkan_compile.py
+new file mode 100644
+index 0000000..7ef7c39
+--- /dev/null
++++ b/mlx-src/test_vulkan_compile.py
+@@ -0,0 +1,27 @@
++import mlx.core as mx
++
++# Force use of Vulkan
++mx.set_default_device(mx.gpu)
++
++@mx.compile
++def f(x, y):
++    return x + y
++
++def main():
++    print(f"Device: {mx.default_device()}")
++    a = mx.array([1., 2., 3.], dtype=mx.float32)
++    b = mx.array([4., 5., 6.], dtype=mx.float32)
++    
++    print("Inputs:")
++    print("a =", a)
++    print("b =", b)
++    
++    print("\nRunning compiled f(a, b)...")
++    c = f(a, b)
++    
++    # Evaluate so the graph executes
++    mx.eval(c)
++    print("Output:", c)
++
++if __name__ == "__main__":
++    main()
