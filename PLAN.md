@@ -16,7 +16,7 @@ Target: Linux-first. macOS via MoltenVK deferred. Full primitive coverage. AOT S
 - Apple M1 via MoltenVK (macOS development)
 - AWS AMD `g4ad.xlarge` (Cloud validation, remote) (not to be used for now)
 - **Local Ubuntu 25.10 (gsai)**: Intel i7-7700 (8 cores), 8GB RAM, **AMD Radeon RX 580** (Polaris 10), Tailscale IP: `100.104.140.2` (Refer Quick Connect section below)
-**Last verified**: 2026-03-14
+**Last verified**: 2026-03-16
 
 ### Remote Access (Local Ubuntu)
 
@@ -54,13 +54,13 @@ bash scripts/local_amd_profile_compile.sh
 
 ---
 
-## Current Priority (as of 2026-03-15)
+## Current Priority (as of 2026-03-16)
 
-**Top milestone**: Implement the Vulkan `Compile` primitive (fused graph execution) to achieve fast, native real-time LLM inference.
+**Top milestone**: push steady-state RX 580 decode clearly past CPU parity during real `mlx-lm` generation.
 
-**Minimum bar**: `mx.compile()` successfully generates a fused GLSL shader, compiles it dynamically to SPIR-V, and evaluates the pipeline without CPU fallback on the Vulkan backend.
+**Minimum bar**: a strict `generate_step` run on the local AMD box should stay on Vulkan under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1` and materially improve warmed multi-token throughput, not just first-token latency.
 
-**Immediate profiling focus**: trace the primitive mixes that `mlx-lm` actually fuses during real generation so the remaining Vulkan compile work is driven by observed coverage, not guesses.
+**Immediate profiling focus**: keep narrowing the hottest eager decode path on real Qwen runs, using RX 580 layer timing and utilization data to decide whether the next win is attention, KV-cache maintenance, RoPE, or host/submit overhead.
 
 ### Current Truth
 
@@ -105,6 +105,28 @@ bash scripts/local_amd_profile_compile.sh
 - [~] **Warmed RX 580 decode is still badly underutilizing the GPU**:
       a warmed 16-token RX 580 utilization profile now shows first yield at about `4.63s`, then a very regular `~1.80s` per-token cadence, while `gpu_busy_percent` averages only about `17.9%` with a `0%` median and only about `19%` of samples at or above `50%`.
       That points away from a single missing fused `mx.compile` kernel and toward bursty eager-path work: many small kernels plus host/submit gaps are leaving the card mostly idle during steady-state decode.
+- [x] **RX 580 memory pressure is not the current decode blocker**:
+      current scripted AMD status checks show the box staying well clear of memory limits during this work: system RAM is around `1.1 / 7.2 GiB` used with about `48 MiB` swap in use, and idle post-run GPU memory is around `299 MiB` VRAM plus about `29 MiB` GTT.
+      Earlier active-run checks also stayed comfortably below the RX 580's `8 GiB` VRAM and `3.59 GiB` GTT limits, so the current throughput wall should be treated as a scheduling / kernel-density problem rather than a memory-capacity issue.
+- [~] **Decode-time grouped-query SDPA now has a native Vulkan fast path on the RX 580**:
+      `mlx/backend/vulkan/primitives.cpp` now routes the real decode-only `mx.fast.scaled_dot_product_attention(...)` case to a dedicated Vulkan kernel instead of materializing the fallback graph. The current gate is intentionally narrow: `q_len == 1`, no array mask, no sinks, no training/VJP, float32/float16/bfloat16 inputs, and head dim `128` or `256`.
+      The new shader `mlx/backend/vulkan/kernels/sdpa_vector.comp` runs the causal/no-array-mask grouped-query decode case in one dispatch with an online softmax update, and the new strict regression `tests/vulkan/test_sdpa_gpu.py` passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+- [~] **The native decode SDPA kernel improved the real Qwen path, but steady-state decode is still only near CPU parity**:
+      refreshed RX 580 layer profiling for `mlx-community/Qwen3.5-2B-5bit` now shows decode full-attention layers around `0.053-0.055s` instead of the earlier `~0.054-0.061s` class, while `lm_head_tied` is about `0.586s`.
+      Updated strict end-to-end 16-token `generate_step` measurements on the RX 580 now land around:
+      - GPU run 1: `29.35s`, `0.545 tok/s`, first yield `4.38s`
+      - GPU run 2: `28.24s`, `0.566 tok/s`, first yield `4.23s`
+      - matching CPU rerun: `27.91s`, `0.573 tok/s`, first yield `4.24s`
+      So the new SDPA path clearly improved the GPU decode baseline (older warmed GPU result was about `31.85s` / `0.502 tok/s`), but the RX 580 is still only at rough CPU parity rather than decisively ahead.
+- [~] **Even after the SDPA fast path, the RX 580 is still mostly idle during warmed decode**:
+      the refreshed utilization profile after the SDPA change shows:
+      - first yield about `4.38s`
+      - total `16`-token run about `28.54s` / `0.561 tok/s`
+      - average GPU busy about `17.8%`
+      - median GPU busy `0%`
+      - `gpu_busy_p95` about `98.95%`
+      - memory busy average only about `3.12%`
+      The card is still seeing short bursts of useful work separated by long idle gaps, so the next throughput target remains eager decode orchestration rather than another blind compiled-op expansion.
 - [~] **The direct tied-logits kernel still has headroom, but the latest RX 580 rewrite is only partially validated so far**:
       `mlx/backend/vulkan/kernels/quantized_qmv.comp` now tiles the activation vector through shared memory across output columns instead of having every invocation re-read the same `x` row independently.
       Real AMD validation so far is promising but incomplete:

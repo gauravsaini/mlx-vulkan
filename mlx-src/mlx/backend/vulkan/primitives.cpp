@@ -5220,6 +5220,59 @@ void Cholesky::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 namespace fast {
 
+namespace {
+
+bool supports_vulkan_decode_sdpa(
+    const array& q,
+    const array& k,
+    const array& v,
+    bool has_arr_mask,
+    bool is_training,
+    bool output_logsumexp,
+    Stream s) {
+  if (s.device == Device::cpu || is_training || output_logsumexp ||
+      has_arr_mask) {
+    return false;
+  }
+  if (q.ndim() != 4 || k.ndim() != 4 || v.ndim() != 4) {
+    return false;
+  }
+  if (q.shape(2) != 1 || k.shape(2) == 0 || q.shape(1) == 0 || k.shape(1) == 0) {
+    return false;
+  }
+  if (q.shape(1) % k.shape(1) != 0) {
+    return false;
+  }
+  if (q.shape(3) != k.shape(3) || q.shape(3) != v.shape(3) ||
+      (q.shape(3) != 128 && q.shape(3) != 256)) {
+    return false;
+  }
+  if (q.strides(-1) != 1 || k.strides(-1) != 1 || v.strides(-1) != 1) {
+    return false;
+  }
+  auto dt = q.dtype();
+  return (dt == float16 || dt == bfloat16 || dt == float32) &&
+      k.dtype() == dt && v.dtype() == dt;
+}
+
+array prepare_vulkan_sdpa_input(
+    const array& src,
+    const Stream& s,
+    std::optional<array>& owned) {
+  if (!is_vulkan_backed_array(src)) {
+    owned = upload_explicit_vulkan_input(src, s);
+    return *owned;
+  }
+  if (src.ndim() != 4 || src.strides(-1) != 1 ||
+      requires_scalar_view_materialization(src)) {
+    owned = contiguous_copy_gpu(src, s);
+    return *owned;
+  }
+  return src;
+}
+
+} // namespace
+
 bool ScaledDotProductAttention::use_fallback(
     const array& q,
     const array& k,
@@ -5230,7 +5283,10 @@ bool ScaledDotProductAttention::use_fallback(
     bool is_training,
     bool output_logsumexp,
     Stream s) {
-  return true; // Vulkan SDPA not yet implemented
+  (void)has_mask;
+  (void)do_causal;
+  return !supports_vulkan_decode_sdpa(
+      q, k, v, has_arr_mask, is_training, output_logsumexp, s);
 }
 
 bool ScaledDotProductAttention::supports_bool_mask() {
@@ -5579,10 +5635,160 @@ void RoPE::eval_gpu(
 void ScaledDotProductAttention::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // Decompose SDPA into matmul + softmax ops which have GPU shaders.
-  // The fallback graph computes Q@K^T -> scale -> mask -> softmax -> @V
-  // using existing GPU primitives (matmul, binary, softmax).
-  materialize_fallback_outputs(fallback_(inputs), outputs);
+  auto& s = stream();
+  auto& dev = vulkan::device(s.device);
+
+  if (inputs.size() != 3) {
+    materialize_fallback_outputs(fallback_(inputs), outputs);
+    return;
+  }
+
+  std::optional<array> q_owned;
+  std::optional<array> k_owned;
+  std::optional<array> v_owned;
+  array q = prepare_vulkan_sdpa_input(inputs[0], s, q_owned);
+  array k = prepare_vulkan_sdpa_input(inputs[1], s, k_owned);
+  array v = prepare_vulkan_sdpa_input(inputs[2], s, v_owned);
+
+  auto& out = outputs[0];
+  bool use_temp_out = out.dtype() != float32;
+  std::optional<array> temp_out;
+  array shader_out = out;
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0) {
+    return;
+  }
+
+  if (use_temp_out) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+    shader_out = *temp_out;
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline(
+      "sdpa_vector",
+      layout,
+      ds_layout,
+      4,
+      88,
+      nullptr);
+  if (pipeline == VK_NULL_HANDLE) {
+    materialize_fallback_outputs(fallback_(inputs), outputs);
+    return;
+  }
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
+  VkDescriptorBufferInfo infos[4]{
+      {vulkan::get_buffer(q), 0, VK_WHOLE_SIZE},
+      {vulkan::get_buffer(k), 0, VK_WHOLE_SIZE},
+      {vulkan::get_buffer(v), 0, VK_WHOLE_SIZE},
+      {vulkan::get_buffer(shader_out), 0, VK_WHOLE_SIZE},
+  };
+  VkWriteDescriptorSet writes[4]{};
+  for (int i = 0; i < 4; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+  }
+  vkUpdateDescriptorSets(dev.vk_device(), 4, writes, 0, nullptr);
+
+  struct PushConst {
+    uint32_t Hq;
+    uint32_t Hkv;
+    uint32_t kL;
+    uint32_t D;
+    uint32_t Dv;
+    uint32_t gqa_factor;
+    float scale;
+    uint32_t elem_bytes;
+    uint32_t q_offset;
+    uint32_t k_offset;
+    uint32_t v_offset;
+    uint32_t o_offset;
+    uint32_t q_batch_stride;
+    uint32_t q_head_stride;
+    uint32_t k_batch_stride;
+    uint32_t k_head_stride;
+    uint32_t k_seq_stride;
+    uint32_t v_batch_stride;
+    uint32_t v_head_stride;
+    uint32_t v_seq_stride;
+    uint32_t o_batch_stride;
+    uint32_t o_head_stride;
+  } pc{
+      static_cast<uint32_t>(q.shape(1)),
+      static_cast<uint32_t>(k.shape(1)),
+      static_cast<uint32_t>(k.shape(2)),
+      static_cast<uint32_t>(q.shape(3)),
+      static_cast<uint32_t>(v.shape(3)),
+      static_cast<uint32_t>(q.shape(1) / k.shape(1)),
+      scale_,
+      q.dtype() == bfloat16 ? 3u : static_cast<uint32_t>(q.itemsize()),
+      static_cast<uint32_t>(q.offset()),
+      static_cast<uint32_t>(k.offset()),
+      static_cast<uint32_t>(v.offset()),
+      static_cast<uint32_t>(shader_out.offset()),
+      static_cast<uint32_t>(q.strides(0)),
+      static_cast<uint32_t>(q.strides(1)),
+      static_cast<uint32_t>(k.strides(0)),
+      static_cast<uint32_t>(k.strides(1)),
+      static_cast<uint32_t>(k.strides(2)),
+      static_cast<uint32_t>(v.strides(0)),
+      static_cast<uint32_t>(v.strides(1)),
+      static_cast<uint32_t>(v.strides(2)),
+      static_cast<uint32_t>(shader_out.strides(0)),
+      static_cast<uint32_t>(shader_out.strides(1)),
+  };
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  vkCmdDispatch(
+      cmd,
+      static_cast<uint32_t>(q.shape(1)),
+      static_cast<uint32_t>(q.shape(0)),
+      1);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  if (use_temp_out) {
+    copy_gpu(*temp_out, out, CopyType::General, s);
+    dev.add_temporary(s, *temp_out);
+  }
+  if (q_owned.has_value()) {
+    dev.add_temporary(s, *q_owned);
+  }
+  if (k_owned.has_value()) {
+    dev.add_temporary(s, *k_owned);
+  }
+  if (v_owned.has_value()) {
+    dev.add_temporary(s, *v_owned);
+  }
 }
 
 void ScaledDotProductAttentionVJP::eval_gpu(

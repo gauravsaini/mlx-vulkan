@@ -1,0 +1,161 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "bf16.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer QBuf { uint q_raw[]; };
+layout(set = 0, binding = 1) readonly  buffer KBuf { uint k_raw[]; };
+layout(set = 0, binding = 2) readonly  buffer VBuf { uint v_raw[]; };
+layout(set = 0, binding = 3) writeonly buffer OBuf { float o_data[]; };
+
+layout(push_constant) uniform Params {
+    uint Hq;
+    uint Hkv;
+    uint kL;
+    uint D;
+    uint Dv;
+    uint gqa_factor;
+    float scale;
+    uint elem_bytes;
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint o_offset;
+    uint q_batch_stride;
+    uint q_head_stride;
+    uint k_batch_stride;
+    uint k_head_stride;
+    uint k_seq_stride;
+    uint v_batch_stride;
+    uint v_head_stride;
+    uint v_seq_stride;
+    uint o_batch_stride;
+    uint o_head_stride;
+} params;
+
+const float NEG_INF = -3.402823466e+38;
+const uint WORKGROUP_SIZE = 256u;
+const uint MAX_HEAD_DIM = 256u;
+
+shared float q_shared[MAX_HEAD_DIM];
+shared float scratch[WORKGROUP_SIZE];
+shared float score_tile[WORKGROUP_SIZE];
+
+float unpack_elem(uint word, uint elem_index) {
+    if (params.elem_bytes == 4u) {
+        return uintBitsToFloat(word);
+    }
+    uint half_val = ((elem_index & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    if (params.elem_bytes == 2u) {
+        return unpackHalf2x16(half_val).x;
+    }
+    return unpackBfloat2x16(half_val).x;
+}
+
+float read_q(uint idx) {
+    if (params.elem_bytes == 4u) {
+        return uintBitsToFloat(q_raw[idx]);
+    }
+    return unpack_elem(q_raw[idx >> 1u], idx);
+}
+
+float read_k(uint idx) {
+    if (params.elem_bytes == 4u) {
+        return uintBitsToFloat(k_raw[idx]);
+    }
+    return unpack_elem(k_raw[idx >> 1u], idx);
+}
+
+float read_v(uint idx) {
+    if (params.elem_bytes == 4u) {
+        return uintBitsToFloat(v_raw[idx]);
+    }
+    return unpack_elem(v_raw[idx >> 1u], idx);
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint q_head = gl_WorkGroupID.x;
+    uint batch = gl_WorkGroupID.y;
+
+    if (q_head >= params.Hq) {
+        return;
+    }
+
+    uint kv_head = q_head / params.gqa_factor;
+    uint q_base = params.q_offset + batch * params.q_batch_stride + q_head * params.q_head_stride;
+
+    if (tid < params.D) {
+        q_shared[tid] = read_q(q_base + tid);
+    }
+    barrier();
+
+    float running_max = NEG_INF;
+    float running_sum = 0.0;
+    float out_acc = 0.0;
+
+    for (uint base = 0u; base < params.kL; base += WORKGROUP_SIZE) {
+        uint seq = base + tid;
+        float score = NEG_INF;
+        if (seq < params.kL) {
+            uint k_base = params.k_offset + batch * params.k_batch_stride +
+                kv_head * params.k_head_stride + seq * params.k_seq_stride;
+            float dot = 0.0;
+            for (uint d = 0u; d < params.D; ++d) {
+                dot += q_shared[d] * read_k(k_base + d);
+            }
+            score = dot * params.scale;
+        }
+
+        scratch[tid] = score;
+        barrier();
+        for (uint stride = WORKGROUP_SIZE / 2u; stride > 0u; stride >>= 1u) {
+            if (tid < stride) {
+                scratch[tid] = max(scratch[tid], scratch[tid + stride]);
+            }
+            barrier();
+        }
+        float tile_max = scratch[0];
+        float next_max = max(running_max, tile_max);
+        float alpha = (running_max < -3.0e38) ? 0.0 : exp(running_max - next_max);
+
+        float weight = 0.0;
+        if (seq < params.kL) {
+            weight = exp(score - next_max);
+        }
+        score_tile[tid] = weight;
+        scratch[tid] = weight;
+        barrier();
+        for (uint stride = WORKGROUP_SIZE / 2u; stride > 0u; stride >>= 1u) {
+            if (tid < stride) {
+                scratch[tid] += scratch[tid + stride];
+            }
+            barrier();
+        }
+        float tile_sum = scratch[0];
+
+        if (tid < params.Dv) {
+            float tile_acc = 0.0;
+            uint tile_count = min(WORKGROUP_SIZE, params.kL - base);
+            for (uint t = 0u; t < tile_count; ++t) {
+                uint v_base = params.v_offset + batch * params.v_batch_stride +
+                    kv_head * params.v_head_stride + (base + t) * params.v_seq_stride;
+                tile_acc += score_tile[t] * read_v(v_base + tid);
+            }
+            out_acc = out_acc * alpha + tile_acc;
+        }
+
+        running_sum = running_sum * alpha + tile_sum;
+        running_max = next_max;
+        barrier();
+    }
+
+    if (tid < params.Dv) {
+        uint out_idx = params.o_offset + batch * params.o_batch_stride +
+            q_head * params.o_head_stride + tid;
+        o_data[out_idx] = (running_sum > 0.0) ? (out_acc / running_sum) : 0.0;
+    }
+}

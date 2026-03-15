@@ -4,6 +4,31 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Added a native Vulkan decode-time grouped-query SDPA fast path and re-benchmarked real Qwen generation on the RX 580.
+    - Added `mlx/backend/vulkan/kernels/sdpa_vector.comp`, a dedicated decode-only SDPA shader that consumes the original `q/k/v` tensors and performs grouped-query attention with an online softmax update in one dispatch.
+    - Wired that path into `mlx/backend/vulkan/primitives.cpp` behind a deliberately narrow gate:
+      - `q_len == 1`
+      - no array mask
+      - no sinks
+      - no training / VJP / logsumexp
+      - float32 / float16 / bfloat16 inputs
+      - head dim `128` or `256`
+    - The first cut targeted `head_dim=128`, but the real RX 580 Qwen probe showed the active attention path was `8` query heads, `2` KV heads, and `head_dim=256`, so the kernel was widened before final validation to match the actual model.
+    - Added a strict grouped-query decode regression at `tests/vulkan/test_sdpa_gpu.py`; it now passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+    - Refreshed AMD validation through the local scripts shows:
+      - the new strict SDPA smoke passes,
+      - real Qwen decode full-attention layers move down to about `0.053-0.055s`,
+      - strict 16-token GPU `generate_step` improves from the older `31.85s` / `0.502 tok/s` baseline to about `29.35s` / `0.545 tok/s`, with a follow-up rerun at about `28.24s` / `0.566 tok/s`,
+      - the matching CPU rerun is about `27.91s` / `0.573 tok/s`.
+    - Result: the RX 580 SDPA decode path is no longer only decomposed eager matmul/softmax work, and the GPU baseline improved materially, but steady-state decode is still only near CPU parity rather than clearly ahead.
+- **2026-03-16**: Confirmed again that RX 580 memory pressure is not driving the current decode wall.
+    - Extended the routine AMD status check to keep reporting RAM, swap, VRAM, visible VRAM, and GTT usage.
+    - Current scripted measurements stay comfortably below capacity:
+      - system RAM about `1.1 / 7.2 GiB`
+      - swap about `48 MiB / 4 GiB`
+      - idle post-run VRAM about `299 MiB / 8 GiB`
+      - idle post-run GTT about `29 MiB / 3.59 GiB`
+    - Conclusion: the remaining Phase 6 decode bottleneck should still be treated as kernel-density / host-submit inefficiency, not memory exhaustion.
 - **2026-03-16**: Added an RX 580 decode-utilization profiler and started a second-pass tied-logits kernel rewrite.
     - Added a new local AMD-only profiling helper that runs a warmed `generate_step` decode pass while sampling `/sys/class/drm/card*/device/gpu_busy_percent` and reporting per-token yield timings.
     - First real RX 580 utilization result from the warmed 16-token run:
