@@ -4,6 +4,19 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Specialized the tied-logits Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and moved RX 580 decode forward again.
+    - Kept the existing direct large-vocab QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv.comp` for the actual Qwen tied-`lm_head` format:
+      - affine `5-bit`
+      - `group_size=64`
+      - 64-value `x` tiles
+    - Instead of paying the generic per-element packed-weight decode and group-check path on every multiply, the new fast path decodes each 64-value tile packwise and reuses one scale/bias pair for the whole tile.
+    - Restored and kept a strict `1 x 2048 -> 2048` decoder-square regression in `tests/vulkan/test_quantized_gpu.py` alongside the existing decoder-shape and large-vocab smokes.
+    - AMD validation through the local scripts shows:
+      - strict quantized smoke passes on the RX 580,
+      - isolated tied-`lm_head` timings improve from about `1.22s` to about `0.59s` for the full 5-token logits path and from about `0.73s` to about `0.53s` for the last-token path,
+      - strict 16-token GPU `generate_step` improves from the recent `24.56s` / `0.651 tok/s` checkpoint to about `23.63s` / `0.677 tok/s`, with a follow-up rerun at about `23.60s` / `0.678 tok/s`,
+      - matching clean CPU rerun is about `23.93s` / `0.669 tok/s`.
+    - Result: this is a real end-to-end win, not just an isolated kernel micro-benchmark. The RX 580 GPU is again modestly ahead of CPU on the strict warmed decode benchmark, and the next decode wall looks even more concentrated in the medium decoder QMM family.
 - **2026-03-16**: Removed the MoltenVK-only pipeline warmup penalty from Linux Vulkan and revalidated on the RX 580.
     - Limited the dummy-dispatch pipeline warmup path in `mlx/backend/vulkan/device.cpp` to `__APPLE__`, matching the existing comment that the workaround is for newly created `MTLComputePipelineState` objects on Apple Silicon rather than Linux Vulkan drivers.
     - Rebuilt and revalidated on the local AMD box using the scripted workflow only.

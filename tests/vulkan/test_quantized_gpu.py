@@ -164,6 +164,23 @@ def main():
 
         run_case(
             mx,
+            "qmm_affine_transpose_5bit_decoder_square_float16",
+            (
+                np.arange(1, 1 + 2048, dtype=np.float32).reshape(1, 2048) / 64.0
+            ).astype(np.float16),
+            (
+                np.arange(1, 1 + 2048 * 2048, dtype=np.float32).reshape(2048, 2048)
+                / 256.0
+            ).astype(np.float16),
+            transpose=True,
+            group_size=64,
+            bits=5,
+            atol=1.5e-1,
+            rtol=1.5e-1,
+        )
+
+        run_case(
+            mx,
             "qmm_affine_transpose_5bit_decoder_mlp_down_float16",
             (
                 np.arange(1, 1 + 6144, dtype=np.float32).reshape(1, 6144) / 64.0

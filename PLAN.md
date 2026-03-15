@@ -102,6 +102,14 @@ bash scripts/local_amd_profile_compile.sh
       Vulkan now uses a dedicated transpose affine QMM shader for the giant-vocab, small-`M` case instead of materializing a full dequantized `[K, N]` matrix before matmul. The gate is intentionally narrow: `transpose=True`, 2D packed weights, `M <= 8`, and `N >= 8192`, which keeps normal decoder projections on the proven two-pass path while targeting the Qwen tied `lm_head`.
       The strict AMD smoke `tests/vulkan/test_quantized_gpu.py` now includes a large-vocab bfloat16 regression for this path, and the guarded one-token `generate_step` benchmark on the RX 580 improved from about `7.18s` to about `5.44s`, now beating the matching CPU baseline (`~7.08s`).
       Follow-up probing shows the next meaningful latency target is first-layer / first-use warmup plus the remaining decoder prefill cost rather than the tied logits projection itself.
+- [~] **The tied-vocab logits kernel now has a 5-bit, group-size-64 fast unpack path for the real Qwen weights**:
+      `mlx/backend/vulkan/kernels/quantized_qmv.comp` now specializes the hot inner loop for the actual `lm_head` case we are exercising on the RX 580: affine `5-bit` weights with `group_size=64`. Instead of paying the generic per-element packed-weight decode path for every multiply, the kernel now decodes each 64-value tile packwise with one scale/bias load per tile.
+      The strict AMD quantized smoke still passes, including the restored `1 x 2048 -> 2048` decoder-square regression in `tests/vulkan/test_quantized_gpu.py`.
+      Real RX 580 impact:
+      - isolated tied-`lm_head` probe improved from about `1.22s` to about `0.59s` for the full 5-token path, and from about `0.73s` to about `0.53s` for the last-token path
+      - strict warmed `generate_step`, `max_tokens=16` improved from about `24.56s`, `0.651 tok/s`, first yield `3.93s` to about `23.60-23.63s`, `0.677-0.678 tok/s`, first yield `3.81-3.89s`
+      - matching clean CPU rerun is about `23.93s`, `0.669 tok/s`, first yield `4.02s`
+      Result: the RX 580 GPU now stays modestly ahead of CPU again on the current strict decode benchmark, and the remaining wall shifts further toward the medium decoder QMM family.
 - [~] **Warmed RX 580 decode is still badly underutilizing the GPU**:
       a warmed 16-token RX 580 utilization profile now shows first yield at about `4.63s`, then a very regular `~1.80s` per-token cadence, while `gpu_busy_percent` averages only about `17.9%` with a `0%` median and only about `19%` of samples at or above `50%`.
       That points away from a single missing fused `mx.compile` kernel and toward bursty eager-path work: many small kernels plus host/submit gaps are leaving the card mostly idle during steady-state decode.
