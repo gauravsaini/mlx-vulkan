@@ -1,5 +1,26 @@
 # MLX Vulkan Backend — Change Timeline
 
+## UPDATED ON : 2026-03-15
+
+### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
+
+1. **Massive Architecture Task Started**:
+   - The user noticed eager text generation is too slow due to CPU kernel dispatch overhead.
+   - We are pivoting from compatibility tests to fully implementing the `Compile` primitive (`mx.compile()`) natively for Vulkan.
+   - This prevents LLMs from falling back to CPU and will fuse operations dynamically into SPIR-V.
+
+---
+
+### confirm (2026-03-15) — Real AMD End-to-End Quantized LLM Inference passes
+
+1. **End-to-End LLM Generation Proven** (`run_local_amd_inference.sh`):
+   - Successfully loaded and ran inference on `mlx-community/Qwen3.5-2B-5bit` (using `mlx-lm`) natively on the local AMD RX 580.
+   - Verified that the `mlx-lm` package works correctly over the Vulkan backend when explicitly compiled against the correct shader path.
+   - Identified that `pip install` overrode the Vulkan built `mlx` package with a CPU-only wheel unless explicitly built from source with `-DMLX_BUILD_VULKAN=ON`.
+   - Filtered out noisy `copy debug` logs emitted during generation to provide a clean UX.
+   
+---
+
 ## UPDATED ON : 2026-03-13
 
 ### feat (2026-03-13) — LoRA / small-LLM finetuning smoke added

@@ -37,11 +37,11 @@ Host gsai-box
 
 ---
 
-## Current Priority (as of 2026-03-13)
+## Current Priority (as of 2026-03-15)
 
-**Top milestone**: reach practical MLX training compatibility on Vulkan.
+**Top milestone**: Implement the Vulkan `Compile` primitive (fused graph execution) to achieve fast, native real-time LLM inference.
 
-**Minimum bar**: a tiny transformer trains and converges on the Vulkan backend without CPU fallback.
+**Minimum bar**: `mx.compile()` successfully generates a fused GLSL shader, compiles it dynamically to SPIR-V, and evaluates the pipeline without CPU fallback on the Vulkan backend.
 
 ### Current Truth
 
@@ -123,6 +123,8 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [ ] CPU-fallback linalg correctness still fails on real AMD Vulkan:
       `qr`, `svd`, `cholesky`, `eigh`, and `inv` currently return zeros or fail in the discrete-GPU fallback path.
 - [x] LoRA / small-LLM fine-tuning path is locally proven via a dedicated short smoke test.
+- [x] End-to-End LLM Inference passes on real AMD Vulkan:
+      `Qwen3.5-2B-5bit` quantified model successfully generated text natively through `mlx-lm` without crashing.
 
 ### Functional Success Criteria
 
@@ -226,8 +228,9 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 
 ### Immediate Next Steps
 
-1. Re-open real-AMD linalg validation on the current tree.
-2. Begin real NVIDIA validation using the same compatibility ladder.
+1. Architect `mlx/backend/vulkan/compiled.cpp` based on the Metal JIT pattern.
+2. Introduce a mechanism to dynamically generate GLSL shaders from `mx.compile()` graphs.
+3. Test a simple compiled `mx.compile(lambda x: x + x)` graph natively on Vulkan.
 
 ---
 
