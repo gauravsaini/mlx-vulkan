@@ -8,6 +8,10 @@
     - Standardized the canonical remote validation directory at `/home/gsai/mlx-vulkan`.
     - Added `scripts/local_amd_sync.sh`, `scripts/local_amd_build.sh`, and `scripts/local_amd_profile_compile.sh`.
     - Updated `PLAN.md` with the exact remote directory layout and the expected three-step workflow so future AMD validation runs are reproducible.
+- **2026-03-15**: Validated the compile-profile path on the local RX 580 and found the next blocker.
+    - The new compile-logging smoke now reaches dynamic GLSL generation on AMD through the scripted remote workflow.
+    - Fixed two shader-generation gaps uncovered by that smoke: `Broadcast` now lowers as an identity op, and constant/scalar inputs are materialized into `tmp_*` values correctly.
+    - Current blocker: the simple compiled smoke still segfaults during Vulkan pipeline execution on the RX 580 after JIT compilation succeeds, so the remaining work moved from shader text generation to runtime execution/debugging.
 - **2026-03-15**: Pivoted to compile-coverage profiling for real LLM generation.
     - Confirmed `mlx-lm` already exercises internal `mx.compile` sites, so the next blocker is visibility into which fused primitive mixes are actually hitting the Vulkan compiled path.
     - Added an explicit profiling task: log unique fused kernels plus an aggregated primitive summary during normal generation runs.

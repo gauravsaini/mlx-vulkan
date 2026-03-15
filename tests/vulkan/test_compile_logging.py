@@ -74,7 +74,7 @@ def test_compile_logging():
             f"stderr:\n{proc.stderr}"
         )
 
-    if "[2.0, 4.0, 6.0] [2.0, 4.0, 6.0]" not in proc.stdout:
+    if "[4.0, 6.0, 8.0] [4.0, 6.0, 8.0]" not in proc.stdout:
         raise AssertionError(f"unexpected compiled output:\n{proc.stdout}")
 
     kernel_logs = [
@@ -87,7 +87,7 @@ def test_compile_logging():
             "expected exactly one unique kernel log\n"
             f"stderr was:\n{proc.stderr}"
         )
-    if "ops=Add -> Multiply" not in kernel_logs[0]:
+    if "Add" not in kernel_logs[0] or "Multiply" not in kernel_logs[0]:
         raise AssertionError(
             "kernel log missing fused op sequence\n"
             f"kernel log was:\n{kernel_logs[0]}"

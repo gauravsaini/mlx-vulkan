@@ -72,6 +72,7 @@ bash scripts/local_amd_profile_compile.sh
 - ✅ **Stage 25 bring-up passes on real AMD** — import, GPU detect, core ops, autograd, optimizers, tiny MLP, Python bridge, and CPU-fallback outputs
 - ✅ **Transformer-critical ops audit passes on real AMD** — embeddings, causal attention forward, batched `Linear` / matmul, LayerNorm forward/backward, RoPE, RMSNorm, optimizer update, and uncompiled standard encoder layer
 - ✅ **Tiny transformer and TinyGPT training now pass on real AMD** — after fixing the non-cooperative batched matmul path for `subgroup_size=64`
+- ❌ **Vulkan compiled-graph execution is not stable yet on the local RX 580** — the simple compiled smoke `mx.compile(lambda x: (x + 1.0) * 2.0)` now reaches JIT GLSL generation on AMD, but still segfaults during runtime pipeline execution after the latest Broadcast / constant-input lowering fixes.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware

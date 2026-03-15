@@ -12,6 +12,7 @@
 #include <fstream>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 
 namespace mlx::core {
@@ -257,6 +258,7 @@ std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, cons
 std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, const std::vector<std::string>& input_names) {
   if (inputs.size() == 1) {
     const auto& in0 = input_names[0];
+    if (pr == "Broadcast") return in0;
     if (pr == "Abs") return "abs(" + in0 + ")";
     if (pr == "Negative") return "-(" + in0 + ")";
     if (pr == "Sign") return "sign(" + in0 + ")";
@@ -362,9 +364,29 @@ void build_kernel(
     
     // Reading inputs
     for (int i = 0; i < inputs.size(); ++i) {
-        if(is_constant(i)) continue;
-        auto xname = namer.get_name(inputs[i]);
-        os += fmt::format("  {} tmp_{} = {}[index];\n", get_type_string(inputs[i].dtype()), xname, xname);
+        auto& x = inputs[i];
+        auto xname = namer.get_name(x);
+        if (is_constant(i)) {
+            std::ostringstream ss;
+            print_constant(ss, x);
+            os += fmt::format(
+                "  {} tmp_{} = {};\n",
+                get_type_string(x.dtype()),
+                xname,
+                ss.str());
+        } else if (is_scalar(x)) {
+            os += fmt::format(
+                "  {} tmp_{} = {}[0];\n",
+                get_type_string(x.dtype()),
+                xname,
+                xname);
+        } else {
+            os += fmt::format(
+                "  {} tmp_{} = {}[index];\n",
+                get_type_string(x.dtype()),
+                xname,
+                xname);
+        }
     }
     
     // Tape
