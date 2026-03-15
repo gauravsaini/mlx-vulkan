@@ -1,26 +1,36 @@
 // Copyright © 2025 Apple Inc.
 #include <fmt/format.h>
-#include <sstream>
 
 #include "mlx/backend/common/compiled.h"
-#include "mlx/backend/common/utils.h"
 #include "mlx/backend/vulkan/allocator.h"
 #include "mlx/backend/vulkan/device.h"
-#include "mlx/backend/vulkan/utils.h"
 #include "mlx/graph_utils.h"
 #include "mlx/primitives.h"
-#include "mlx/utils.h"
 
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
+#include <unordered_map>
 
 namespace mlx::core {
 
 namespace {
 
-// Helper to compile dynamic GLSL to SPIR-V
+// In-memory SPIR-V cache to avoid re-invoking glslc for identical kernels
+std::mutex spirv_cache_mutex_;
+std::unordered_map<std::string, std::vector<uint32_t>> spirv_cache_;
+
+// Helper to compile dynamic GLSL to SPIR-V (with caching)
 std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, const std::string& glsl_source) {
+  {
+    std::lock_guard<std::mutex> lk(spirv_cache_mutex_);
+    auto it = spirv_cache_.find(kernel_name);
+    if (it != spirv_cache_.end()) {
+      return it->second;
+    }
+  }
+
   std::string tmp_dir = "/tmp/mlx_vulkan_jit/";
   std::filesystem::create_directories(tmp_dir);
   std::string comp_path = tmp_dir + kernel_name + ".comp";
@@ -43,8 +53,15 @@ std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, cons
   spv_in.seekg(0);
   std::vector<uint32_t> code(size / sizeof(uint32_t));
   spv_in.read(reinterpret_cast<char*>(code.data()), size);
+
+  {
+    std::lock_guard<std::mutex> lk(spirv_cache_mutex_);
+    spirv_cache_[kernel_name] = code;
+  }
+
   return code;
 }
+
 
 std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, const std::vector<std::string>& input_names) {
   if (inputs.size() == 1) {
