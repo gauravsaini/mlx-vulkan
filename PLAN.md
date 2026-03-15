@@ -74,8 +74,9 @@ bash scripts/local_amd_profile_compile.sh
 - ✅ **Tiny transformer and TinyGPT training now pass on real AMD** — after fixing the non-cooperative batched matmul path for `subgroup_size=64`
 - [x] **Vulkan compiled-graph execution now survives real RX 580 profiling without crashing**:
       the compiled smoke passes on AMD, contiguous float-like compiled kernels (`Sigmoid -> Multiply`, `Sigmoid -> Multiply -> Multiply`) execute through Vulkan, and the earlier `copy_gpu` / `SmallVector` abort was removed by routing the float32 cast bridge through contiguous vector copies.
-- [ ] **Broadcasted / strided compiled kernels still fall back during real RX 580 LLM generation**:
-      current compile profiling shows fused hot kernels like `Broadcast -> Multiply`, `Subtract -> Broadcast -> Multiply`, and the `LogAddExp` softmax-style kernel now fail explicitly with `"[Compiled::eval_gpu] Strided or broadcasted Vulkan compiled inputs are not implemented yet."` instead of crashing.
+- [~] **Broadcast / stride coverage is partially live on the RX 580 compiled path**:
+      real `mlx-lm` profiling now keeps the previously hot fused kernels `Broadcast -> Multiply`, `Subtract -> Broadcast -> Multiply`, `Broadcast -> Broadcast -> Multiply -> Add -> Broadcast -> Multiply`, and the `LogAddExp` softmax-style kernel on Vulkan after adding generic stride metadata and descriptor-offset support.
+      Remaining work is still in Phase 6.2, but the blocker has moved from "no broadcast/strided support" to "finish broader view/shape coverage and then re-profile for the next missing primitive or reduction."
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -273,7 +274,7 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 #### 6.2 Broadcasting & Strided Access
 - [ ] Support non-contiguous inputs in `build_kernel` (strided index computation).
 - [ ] Handle broadcasting rules (scalar expansion, dimension alignment).
-      Current AMD profiling confirms this is the primary blocker: the hot fused attention / softmax kernels now fall back cleanly instead of aborting.
+      Current AMD profiling is partially green here: collapsed broadcast-stride metadata and descriptor-buffer offsets now keep the main hot fused attention / softmax kernels on Vulkan, but broader view coverage and re-profiling are still pending.
 
 #### 6.3 Missing Primitive Coverage
 - [x] Audit which primitives LLM inference actually hits (profile a generation run).
@@ -290,10 +291,10 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 
 ### Immediate Next Steps
 
-1. Implement broadcast + strided indexing in `build_kernel` so the currently hot fused LLM kernels stop falling back on RX 580.
-2. Keep profiling one-token `mlx-lm generate` runs on the local AMD box after each broadcast/stride increment.
+1. Re-profile one-token `mlx-lm generate` on the local AMD box and identify the next blocker now that the main broadcast/offset kernels stay on Vulkan.
+2. Finish remaining view/shape coverage in the compiled stride path if the new profile still exposes unsupported cases.
 3. Implement reduction support (Sum first, then others).
-4. Benchmark tokens/sec only after the broadcast-heavy hot path is predominantly on Vulkan.
+4. Benchmark tokens/sec only after the updated profile shows the hot path is predominantly on Vulkan.
 
 ---
 

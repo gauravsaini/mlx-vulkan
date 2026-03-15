@@ -10,6 +10,16 @@
     - Used a local AMD gdb repro to root-cause the remaining abort to `copy_gpu` metadata setup (`dispatch_copy_shader`) triggered by `CopyType::General` on the cast bridge.
     - Fixed that abort by selecting `CopyType::Vector` for contiguous same-shape cast copies and by rejecting unsupported strided / broadcasted compiled inputs up front.
     - Result on the RX 580: the one-token `mlx-lm` compile-profile run no longer aborts; contiguous compiled kernels execute on Vulkan, while broadcast-heavy fused kernels now fall back explicitly with a clear `"Strided or broadcasted Vulkan compiled inputs are not implemented yet."` reason.
+- **2026-03-15**: Brought the main broadcast-heavy compiled LLM kernels onto Vulkan on the RX 580.
+    - Reused `compiled_collapse_contiguous_dims(...)` at Vulkan runtime and added a generic metadata-buffer path carrying collapsed output shape plus per-input broadcast strides into the JIT GLSL kernel.
+    - Extended descriptor binding to respect `array.offset()` so view-backed compiled inputs no longer fall back just because their base pointer is shifted inside the buffer.
+    - Revalidated through the local scripted AMD workflow: the previously hot kernels
+      - `Broadcast -> Multiply`
+      - `Subtract -> Broadcast -> Multiply`
+      - `Broadcast -> Broadcast -> Multiply -> Add -> Broadcast -> Multiply`
+      - `Exp -> Negative -> Broadcast -> Add -> Broadcast -> LogAddExp -> ...`
+      now all reach the Vulkan compiled path during real `mlx-lm` profiling.
+    - Remaining work is no longer the original broadcast/stride crash/fallback wall; the next step is to re-profile from this new baseline and find the next true hot-path blocker.
 - **2026-03-15**: Added a reusable local-RX-580 sync/build/profile workflow.
     - Standardized the canonical remote validation directory at `/home/gsai/mlx-vulkan`.
     - Added `scripts/local_amd_sync.sh`, `scripts/local_amd_build.sh`, and `scripts/local_amd_profile_compile.sh`.

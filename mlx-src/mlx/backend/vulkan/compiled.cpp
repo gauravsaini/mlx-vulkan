@@ -10,6 +10,7 @@
 #include "mlx/primitives.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <mutex>
@@ -357,7 +358,12 @@ void build_kernel(
     bool dynamic_dims,
     bool use_big_index = false,
     int work_per_thread = 1) {
-    
+    (void)kernel_name;
+    (void)ndim;
+    (void)dynamic_dims;
+    (void)use_big_index;
+    (void)work_per_thread;
+
     NodeNamer namer;
     os += "#version 450\n";
     os += "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n";
@@ -374,6 +380,13 @@ void build_kernel(
         os += fmt::format("layout(set = 0, binding = {}) readonly buffer In{} {{ {} {}[]; }};\n",
                       binding++, i, compiled_glsl_type(x.dtype()), xname);
     }
+
+    bool add_meta = !contiguous;
+    if (add_meta) {
+        os += fmt::format(
+            "layout(set = 0, binding = {}) readonly buffer Meta {{ int meta[]; }} meta_buf;\n",
+            binding++);
+    }
     
     // Outputs
     std::vector<std::string> out_names;
@@ -388,6 +401,7 @@ void build_kernel(
     // Push constants
     os += "layout(push_constant) uniform PushConstants {\n";
     os += "  uint size;\n";
+    os += "  uint ndim;\n";
     os += "} pc;\n";
     
     os += "void main() {\n";
@@ -395,6 +409,7 @@ void build_kernel(
     os += "  if (index >= pc.size) return;\n";
     
     // Reading inputs
+    int meta_block = 1;
     for (int i = 0; i < inputs.size(); ++i) {
         auto& x = inputs[i];
         auto xname = namer.get_name(x);
@@ -412,6 +427,25 @@ void build_kernel(
                 compiled_glsl_type(x.dtype()),
                 xname,
                 xname);
+        } else if (!contiguous) {
+            os += fmt::format("  uint rem_{0} = index;\n", xname);
+            os += fmt::format("  int idx_{0} = 0;\n", xname);
+            os += "  for (int d = int(pc.ndim) - 1; d >= 0; --d) {\n";
+            os += "    uint dim = uint(meta_buf.meta[d]);\n";
+            os += "    uint coord = rem_" + xname + " % dim;\n";
+            os += "    rem_" + xname + " /= dim;\n";
+            os += fmt::format(
+                "    idx_{0} += int(coord) * meta_buf.meta[int(pc.ndim) * {1} + d];\n",
+                xname,
+                meta_block);
+            os += "  }\n";
+            os += fmt::format(
+                "  {} tmp_{} = {}[idx_{}];\n",
+                compiled_glsl_type(x.dtype()),
+                xname,
+                xname,
+                xname);
+            meta_block++;
         } else {
             os += fmt::format(
                 "  {} tmp_{} = {}[index];\n",
@@ -469,17 +503,6 @@ void Compiled::eval_gpu(
     if (!outputs[0].flags().contiguous) {
       throw std::runtime_error("[Compiled::eval_gpu] Strided Vulkan compilation not implemented yet.");
     }
-    for (size_t i = 0; i < inputs.size(); ++i) {
-      if (is_constant_(i) || is_scalar(inputs[i])) {
-        continue;
-      }
-      if (!inputs[i].flags().row_contiguous || inputs[i].offset() != 0 ||
-          inputs[i].shape() != outputs[0].shape()) {
-        throw std::runtime_error(
-            "[Compiled::eval_gpu] Strided or broadcasted Vulkan compiled inputs are not implemented yet.");
-      }
-    }
-    
     auto& s = stream();
     auto& d = vulkan::device(s.device);
     auto& compute_encoder = d.get_command_encoder(s);
@@ -518,6 +541,11 @@ void Compiled::eval_gpu(
     for (int i = 0; i < shader_inputs.size(); i++) {
       if (!is_constant_(i)) num_bindings++;
     }
+    auto [contiguous, shape, strides] =
+        compiled_collapse_contiguous_dims(shader_inputs, shader_outputs[0], is_constant_);
+    if (!contiguous) {
+      num_bindings++;
+    }
     num_bindings += shader_outputs.size();
     
     std::string glsl;
@@ -528,9 +556,9 @@ void Compiled::eval_gpu(
         outputs_,
         tape_,
         is_constant_,
-        true, // contiguous
-        0,
-        false,
+        contiguous,
+        static_cast<int>(shape.size()),
+        !contiguous,
         false,
         1
     );
@@ -543,7 +571,7 @@ void Compiled::eval_gpu(
             layout,
             ds_layout,
             num_bindings,
-            sizeof(uint32_t) // push constant size
+            sizeof(uint32_t) * 2 // push constant size
         );
     
     if (pipeline == VK_NULL_HANDLE) {
@@ -560,9 +588,23 @@ void Compiled::eval_gpu(
     
     auto bind_arr = [&](const array& arr) {
       buf_infos[bind_idx].buffer = vulkan::get_buffer(arr);
-      buf_infos[bind_idx].offset = 0;
+      buf_infos[bind_idx].offset = static_cast<VkDeviceSize>(arr.offset());
       buf_infos[bind_idx].range = VK_WHOLE_SIZE;
       
+      writes[bind_idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[bind_idx].dstSet = ds;
+      writes[bind_idx].dstBinding = bind_idx;
+      writes[bind_idx].descriptorCount = 1;
+      writes[bind_idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[bind_idx].pBufferInfo = &buf_infos[bind_idx];
+      bind_idx++;
+    };
+
+    auto bind_buffer = [&](VkBuffer buf) {
+      buf_infos[bind_idx].buffer = buf;
+      buf_infos[bind_idx].offset = 0;
+      buf_infos[bind_idx].range = VK_WHOLE_SIZE;
+
       writes[bind_idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[bind_idx].dstSet = ds;
       writes[bind_idx].dstBinding = bind_idx;
@@ -577,9 +619,32 @@ void Compiled::eval_gpu(
         bind_arr(shader_inputs[i]);
       }
     }
+
+    if (!contiguous) {
+      std::vector<int32_t> meta_data;
+      meta_data.reserve(shape.size() * (strides.size()));
+      for (auto dim : shape) {
+        meta_data.push_back(static_cast<int32_t>(dim));
+      }
+      for (size_t i = 1; i < strides.size(); ++i) {
+        for (auto stride : strides[i]) {
+          meta_data.push_back(static_cast<int32_t>(stride));
+        }
+      }
+      auto* staging =
+          vulkan::allocator().alloc_staging(meta_data.size() * sizeof(int32_t));
+      std::memcpy(
+          staging->mapped_ptr,
+          meta_data.data(),
+          meta_data.size() * sizeof(int32_t));
+      d.add_completed_handler(
+          s, [staging]() { vulkan::allocator().free_staging(staging); });
+      bind_buffer(staging->buffer);
+    }
     
     // allocate outputs
-    compiled_allocate_outputs(shader_inputs, shader_outputs, is_constant_, true);
+    compiled_allocate_outputs(
+        shader_inputs, shader_outputs, is_constant_, contiguous);
     
     for (auto& out : shader_outputs) {
        bind_arr(out);
@@ -602,17 +667,23 @@ void Compiled::eval_gpu(
           nullptr);
           
     // Push constants
-    uint32_t size = shader_outputs[0].data_size();
+    struct PushConstants {
+      uint32_t size;
+      uint32_t ndim;
+    } pc{
+        static_cast<uint32_t>(shader_outputs[0].size()),
+        static_cast<uint32_t>(shape.size()),
+    };
     vkCmdPushConstants(
         compute_encoder.cmd,
         layout,
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
-        sizeof(uint32_t),
-        &size);
+        sizeof(PushConstants),
+        &pc);
         
     // Dispatch
-    uint32_t nblock = (size + 255) / 256;
+    uint32_t nblock = (pc.size + 255) / 256;
     vkCmdDispatch(compute_encoder.cmd, nblock, 1, 1);
     
     compute_encoder.op_count++;
