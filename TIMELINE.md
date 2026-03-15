@@ -4,6 +4,18 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Removed the hidden affine QMM CPU detour from the RX 580 LLM path and unblocked first-token generation.
+    - Replaced the Vulkan affine `QuantizedMatmul::eval_gpu(...)` CPU reference path with the intended two-pass GPU flow: on-device affine dequantization into a float32 matrix followed by Vulkan matmul.
+    - Extended `mlx/backend/vulkan/kernels/quantized.comp` to unpack affine 2/3/4/5/6/8-bit weights correctly, including the odd-bit 5-bit packing used by the real Qwen3.5-2B-5bit model, and to read float16 / bfloat16 / float32 scale-bias tensors.
+    - Added a strict Vulkan regression at `tests/vulkan/test_quantized_gpu.py` covering both the real `transpose=True` 5-bit path and the non-transposed 4-bit path under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+    - AMD validation through the local scripted workflow now shows:
+      - `bash scripts/local_amd_probe_quantized.sh` passes on the RX 580,
+      - the strict one-token `generate_step` benchmark now reaches first yield in about `7.28s` (`7.13s` warm rerun) instead of timing out at `180s`,
+      - and the old `~15-17s` linear-layer wall has collapsed to about `0.05s` per later linear layer.
+    - Refreshed AMD profiling now points at the next real bottlenecks:
+      - tied `lm_head` is about `1.19s` on the 5-token prompt profile,
+      - `layer0_linear` still pays about `0.85s` of one-time warmup,
+      - a matching CPU one-token baseline is about `7.09s`, so the hidden CPU path is gone but GPU throughput still needs another pass.
 - **2026-03-15**: Cleared the next LLM correctness blockers on the RX 580 and moved Phase 6 to a throughput problem.
     - Added a native Vulkan grouped `Conv1d` path in `mlx/backend/vulkan/primitives.cpp` plus a new `kernels/conv1d.comp` shader, with a float32 shader-IO bridge so the Qwen depthwise float16 conv block can run on-device.
     - Fixed eager Python indexing in `python/src/indexing.cpp` so plain slice / int access no longer forces non-tracer arrays through `materialize_array_read(...)`; this removed the cache-tail `conv_input[:, -3:]` CPU round-trip.

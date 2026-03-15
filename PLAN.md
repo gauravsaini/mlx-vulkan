@@ -91,6 +91,13 @@ bash scripts/local_amd_profile_compile.sh
       - eager Python indexing no longer materializes plain slice / int access to CPU, so cache-tail views like `conv_input[:, -3:]` stay on-device.
       - broadcasted bool `where(...)` now materializes strided / broadcasted operands into dense GPU temporaries inside `Select::eval_gpu`, which keeps the grouped-query SDPA causal-mask path on Vulkan.
       The guarded one-token RX 580 benchmark still times out after 180s with no first yield, but the strict run now reaches that timeout without a fallback error, so the remaining blocker is throughput / scheduling rather than another missing primitive.
+- [~] **Affine quantized matmul is now genuinely on Vulkan for the RX 580 LLM path**:
+      `QuantizedMatmul::eval_gpu(...)` no longer hides the affine path behind a synchronized CPU reference call.
+      The Vulkan backend now dequantizes affine weights on-device, including the real `transpose=True` 5-bit Qwen projection path and the non-transposed 4-bit path, and the new strict smoke `tests/vulkan/test_quantized_gpu.py` passes on AMD with `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+      End-to-end impact: the guarded one-token `generate_step` benchmark moved from a 180s timeout with no yield to a successful first token in about `7.28s` on GPU.
+- [~] **The next RX 580 throughput hotspot is no longer decoder linear attention; it is the logits path plus first-layer warmup**:
+      refreshed AMD profiling now shows 5-token prompt prefill at about `3.23s` total in a fresh process, with decoder layers accounting for about `2.03s`, the tied `lm_head` projection about `1.19s`, and the largest single decoder cost being the first linear layer at about `0.85s`.
+      The old `~15-17s` per-linear-layer wall is gone; most later linear layers are now about `0.05s` each and full-attention layers are about `0.055-0.058s`.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -306,14 +313,16 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
       Preliminary lower-bound timing on the local RX 580 shows model load is about 3.6s for both GPU and CPU runs, while one-token generation still did not complete within the short benchmark windows (>120s GPU, >60s CPU) and needs better first-token / streaming instrumentation before we treat it as a real throughput number.
       Latest RX 580 benchmark after compiled `Sum` fusion: model load is about 3.71s on GPU, one-token `generate_step` still timed out after 180s with no first yield, and the live stack now points at `KVCache.update_and_fetch(...)` / `qwen3_next.py` rather than the earlier `gated_delta` reduction loop.
       Latest strict RX 580 benchmark after the `Conv1d`, eager-indexing, and broadcasted-`where` fixes: model load is about 3.59s on GPU, the run still times out after 180s with no first yield, but it no longer trips `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`. Layer-by-layer AMD probes now show the first full-attention block, including grouped-query SDPA decomposition, completing on Vulkan; the next job is reducing latency rather than removing another correctness fallback.
+      Latest strict RX 580 benchmark after the affine Vulkan QMM path landed: model load is about `5.67s` on the first cold run and about `3.58s` on the warm rerun; guarded one-token `generate_step` now succeeds with first yield in about `7.28s` (`7.13s` warm rerun) instead of timing out. A matching CPU baseline on the same box is about `7.09s`, so the catastrophic hidden CPU detour is gone but steady-state GPU throughput still needs work.
+      Latest refreshed AMD layer profile: 5-token prompt prefill is about `3.23s`, decoder layers are about `2.03s`, tied `lm_head` is about `1.19s`, and the first linear layer still pays about `0.85s` of one-time warmup overhead while later linear layers stay near `0.05s`.
 
 ### Immediate Next Steps
 
-1. Profile and optimize the RX 580 KV-cache update path now that terminal compiled `Sum` is live and the benchmark stack has moved to `KVCache.update_and_fetch(...)`.
-2. Profile prompt-prefill throughput now that strict fallback no longer trips in the first full-attention block; focus on the cache-update / SDPA scheduling boundary rather than primitive coverage.
-3. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
-4. Re-run one-token AMD generation and capture a real first-token latency once the throughput hotspot is understood.
-5. Benchmark tokens/sec only after the updated profile shows the hot path is predominantly on Vulkan.
+1. Optimize the RX 580 logits path now that affine QMM is on Vulkan; the tied `lm_head` projection is now the single largest measured steady-state block at about `1.19s` for the 5-token prompt profile.
+2. Investigate the first-layer warmup cost (`layer0_linear` about `0.85s`) and separate one-time JIT / pipeline setup from steady-state decoder execution.
+3. Re-run longer AMD generation benchmarks (`max_tokens > 1`) and capture warm steady-state tokens/sec now that first yield is unblocked.
+4. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
+5. Profile GPU utilization only after the updated logits / warmup hotspots are better understood.
 
 ---
 

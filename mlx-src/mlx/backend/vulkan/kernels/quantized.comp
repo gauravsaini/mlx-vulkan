@@ -1,99 +1,166 @@
 #version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
 
-// quantized.comp — quantize / dequantize affine
+#include "bf16.glsl"
+
+// quantized.comp — affine dequantize helper for Vulkan qmm.
 //
 // Op codes
 #define QUANT_AFFINE         0
 #define DEQUANT_AFFINE       1
-#define DEQUANT_AFFINE_TRANS 2   // dequant + transpose: src is [N, K_packed], dst is [K, N]
+#define DEQUANT_AFFINE_TRANS 2
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-// Bindings:
-//   0: src (readonly uint) — packed weights for DEQUANT, float input for QUANT
-//   1: scales (readonly float)
-//   2: biases (readonly float)
-//   3: dst (uint, read-write) — packed output for QUANT, float-as-uint for DEQUANT
-
-layout(set = 0, binding = 0) readonly buffer SrcBuf   { uint  src_data[];   };
-layout(set = 0, binding = 1) readonly buffer ScaleBuf { float scale_data[]; };
-layout(set = 0, binding = 2) readonly buffer BiasBuf  { float bias_data[];  };
-layout(set = 0, binding = 3) buffer          DstBuf   { uint  dst_data[];   };
+layout(set = 0, binding = 0) readonly buffer SrcBuf   { uint src_data[]; };
+layout(set = 0, binding = 1) readonly buffer ScaleBuf { uint scale_data[]; };
+layout(set = 0, binding = 2) readonly buffer BiasBuf  { uint bias_data[]; };
+layout(set = 0, binding = 3) writeonly buffer DstBuf  { uint dst_data[]; };
 
 layout(push_constant) uniform Params {
-    uint n;          // total number of output (dequantized) elements = K * N
-    uint op;         // 0=QUANT_AFFINE, 1=DEQUANT_AFFINE, 2=DEQUANT_AFFINE_TRANS
+    uint n;
+    uint op;
     uint group_size;
     uint bits;
-    uint N_dim;      // used by DEQUANT_AFFINE_TRANS: N_out dimension
-    uint K_dim;      // used by DEQUANT_AFFINE_TRANS: K_in dimension
+    uint N_dim;
+    uint K_dim;
+    uint elem_bytes;
 } params;
+
+uint get_src_byte(uint byte_index) {
+    uint word = src_data[byte_index >> 2u];
+    uint shift = (byte_index & 3u) * 8u;
+    return (word >> shift) & 0xFFu;
+}
+
+float read_scale(uint raw_index, uint elem_bytes) {
+    if (elem_bytes == 4u) {
+        return uintBitsToFloat(scale_data[raw_index]);
+    }
+    uint word = scale_data[raw_index >> 1u];
+    uint half_val = ((raw_index & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    if (elem_bytes == 2u) {
+        return unpackHalf2x16(half_val).x;
+    }
+    return unpackBfloat2x16(half_val).x;
+}
+
+float read_bias(uint raw_index, uint elem_bytes) {
+    if (elem_bytes == 4u) {
+        return uintBitsToFloat(bias_data[raw_index]);
+    }
+    uint word = bias_data[raw_index >> 1u];
+    uint half_val = ((raw_index & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    if (elem_bytes == 2u) {
+        return unpackHalf2x16(half_val).x;
+    }
+    return unpackBfloat2x16(half_val).x;
+}
+
+uint packed_value_at(uint byte_base, uint elem_index, uint bits) {
+    if (bits == 2u) {
+        uint byte0 = get_src_byte(byte_base);
+        return (byte0 >> (elem_index * 2u)) & 0x3u;
+    }
+    if (bits == 3u) {
+        uint b0 = get_src_byte(byte_base + 0u);
+        uint b1 = get_src_byte(byte_base + 1u);
+        uint b2 = get_src_byte(byte_base + 2u);
+        if (elem_index == 0u) return b0 & 0x7u;
+        if (elem_index == 1u) return (b0 >> 3u) & 0x7u;
+        if (elem_index == 2u) return ((b0 >> 6u) & 0x3u) + ((b1 & 0x1u) << 2u);
+        if (elem_index == 3u) return (b1 >> 1u) & 0x7u;
+        if (elem_index == 4u) return (b1 >> 4u) & 0x7u;
+        if (elem_index == 5u) return ((b1 >> 7u) & 0x1u) + ((b2 & 0x3u) << 1u);
+        if (elem_index == 6u) return (b2 >> 2u) & 0x7u;
+        return (b2 >> 5u) & 0x7u;
+    }
+    if (bits == 4u) {
+        uint byte0 = get_src_byte(byte_base);
+        return (elem_index == 0u) ? (byte0 & 0xFu) : ((byte0 >> 4u) & 0xFu);
+    }
+    if (bits == 5u) {
+        uint b0 = get_src_byte(byte_base + 0u);
+        uint b1 = get_src_byte(byte_base + 1u);
+        uint b2 = get_src_byte(byte_base + 2u);
+        uint b3 = get_src_byte(byte_base + 3u);
+        uint b4 = get_src_byte(byte_base + 4u);
+        if (elem_index == 0u) return b0 & 0x1Fu;
+        if (elem_index == 1u) return ((b0 >> 5u) & 0x7u) + ((b1 & 0x3u) << 3u);
+        if (elem_index == 2u) return (b1 >> 2u) & 0x1Fu;
+        if (elem_index == 3u) return ((b1 >> 7u) & 0x1u) + ((b2 & 0xFu) << 1u);
+        if (elem_index == 4u) return ((b2 >> 4u) & 0xFu) + ((b3 & 0x1u) << 4u);
+        if (elem_index == 5u) return (b3 >> 1u) & 0x1Fu;
+        if (elem_index == 6u) return ((b3 >> 6u) & 0x3u) + ((b4 & 0x7u) << 2u);
+        return (b4 >> 3u) & 0x1Fu;
+    }
+    if (bits == 6u) {
+        uint b0 = get_src_byte(byte_base + 0u);
+        uint b1 = get_src_byte(byte_base + 1u);
+        uint b2 = get_src_byte(byte_base + 2u);
+        if (elem_index == 0u) return b0 & 0x3Fu;
+        if (elem_index == 1u) return ((b0 >> 6u) & 0x3u) + ((b1 & 0xFu) << 2u);
+        if (elem_index == 2u) return ((b1 >> 4u) & 0xFu) + ((b2 & 0x3u) << 4u);
+        return (b2 >> 2u) & 0x3Fu;
+    }
+    return get_src_byte(byte_base);
+}
+
+uint pack_factor(uint bits) {
+    if (bits == 3u || bits == 5u) return 8u;
+    if (bits == 6u) return 4u;
+    return 8u / bits;
+}
+
+uint bytes_per_pack(uint bits) {
+    if (bits == 5u) return 5u;
+    if (bits == 3u) return 3u;
+    if (bits == 6u) return 3u;
+    return 1u;
+}
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= params.n) return;
+    if (idx >= params.n || params.op == QUANT_AFFINE) {
+        return;
+    }
+
+    uint pf = pack_factor(params.bits);
+    uint bpp = bytes_per_pack(params.bits);
+    uint K = params.K_dim;
+    uint N = params.N_dim;
+
+    uint k;
+    uint n;
+    uint scale_index;
+    uint byte_base;
+    uint elem_in_pack;
 
     if (params.op == DEQUANT_AFFINE) {
-        // src[idx / elems_per_word] is the packed word containing element idx
-        // Output layout: same flat order as input — [N, K] or [K, N] depending
-        // on how the caller set up the shapes. group_size groups across the
-        // LAST logical dimension, so group = idx / group_size.
-        uint elems_per_word = 32u / params.bits;
-        uint packed = src_data[idx / elems_per_word];
-        uint shift  = (idx % elems_per_word) * params.bits;
-        uint mask   = (1u << params.bits) - 1u;
-        uint q      = (packed >> shift) & mask;
-        uint group  = idx / params.group_size;
-        float scale = scale_data[group];
-        float bias  = bias_data[group];
-        float val   = float(q) * scale + bias;
-        dst_data[idx] = floatBitsToUint(val);
-
-    } else if (params.op == DEQUANT_AFFINE_TRANS) {
-        // src layout: [N_out, K_packed]   (quantize groups along K)
-        // dst layout: [K, N_out]          (transposed, for matmul B = dq_T)
-        //
-        // idx iterates over K*N elements of the OUTPUT (K, N) matrix.
-        // Output element idx -> dst[k, n] where k = idx / N, n = idx % N
-        // Source element (n, k) -> packed at src[n * K_packed + k / epw], bit pos k%epw
-        // Scale for (n, k): scales[n * K_groups + k / group_size]
-        uint N    = params.N_dim;
-        uint K    = params.K_dim;
-        uint epw  = 32u / params.bits;      // elements per packed word
-        uint k    = idx / N;
-        uint n    = idx % N;
-        uint Kpacked = (K + epw - 1u) / epw;
-        uint word_idx = n * Kpacked + k / epw;
-        uint shift    = (k % epw) * params.bits;
-        uint mask     = (1u << params.bits) - 1u;
-        uint packed   = src_data[word_idx];
-        uint q        = (packed >> shift) & mask;
-        uint K_groups = (K + params.group_size - 1u) / params.group_size;
-        uint scale_idx = n * K_groups + k / params.group_size;
-        float scale = scale_data[scale_idx];
-        float bias  = bias_data[scale_idx];
-        float val   = float(q) * scale + bias;
-        // Write to dst[idx] = dst[k * N + n] (row-major [K, N])
-        dst_data[idx] = floatBitsToUint(val);
-
+        k = idx / N;
+        n = idx % N;
+        uint n_group = n / params.group_size;
+        uint packs_per_row = N / pf;
+        uint pack_index = n / pf;
+        elem_in_pack = n % pf;
+        byte_base = (k * packs_per_row * bpp) + (pack_index * bpp);
+        uint n_groups = N / params.group_size;
+        scale_index = k * n_groups + n_group;
     } else {
-        // QUANT_AFFINE: quantize float input to packed integer
-        float val     = uintBitsToFloat(src_data[idx]);
-        uint group    = idx / params.group_size;
-        float scale   = scale_data[group];
-        float bias    = bias_data[group];
-        float q_float = (val - bias) / max(scale, 1e-8);
-        uint max_val  = (1u << params.bits) - 1u;
-        uint q        = clamp(uint(round(q_float)), 0u, max_val);
-        if (params.bits == 8u) {
-            dst_data[idx] = q;
-        } else {
-            // 4-bit nibble packing (read-modify-write)
-            uint word_idx = idx / 8u;
-            uint nibble   = idx % 8u;
-            uint shift    = nibble * 4u;
-            uint wmask    = ~(0xFu << shift);
-            dst_data[word_idx] = (dst_data[word_idx] & wmask) | ((q & 0xFu) << shift);
-        }
+        k = idx / N;
+        n = idx % N;
+        uint k_group = k / params.group_size;
+        uint packs_per_row = K / pf;
+        uint pack_index = k / pf;
+        elem_in_pack = k % pf;
+        byte_base = (n * packs_per_row * bpp) + (pack_index * bpp);
+        uint k_groups = K / params.group_size;
+        scale_index = n * k_groups + k_group;
     }
+
+    float scale = read_scale(scale_index, params.elem_bytes);
+    float bias = read_bias(scale_index, params.elem_bytes);
+    float value = float(packed_value_at(byte_base, elem_in_pack, params.bits)) * scale + bias;
+    dst_data[idx] = floatBitsToUint(value);
 }
