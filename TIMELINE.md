@@ -31,6 +31,35 @@
       - baseline strict `generate_step`, `max_tokens=16`: about `30.29s`, `0.528 tok/s`, first yield about `4.53s`
       - same run with the dequant cache enabled: timed out at `180s`, only `14/16` yields, first yield about `19.74s`
     - Result: the useful output of this pass is the stronger diagnosis, not the cache prototype. The next candidate must target medium decoder QMM access/computation more directly rather than persisting the full float32 expansion.
+- **2026-03-16**: Added a narrow Vulkan medium-decoder affine QMV path and re-benchmarked RX 580 decode.
+    - Added `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp`, a second direct affine transpose QMM shader aimed at the repeated decoder projections rather than the giant-vocab tied logits case.
+    - Wired it into `QuantizedMatmul::eval_gpu(...)` behind a tight gate:
+      - `transpose=True`
+      - `M == 1`
+      - `group_size == 64`
+      - `bits in {4, 5}`
+      - `K in {2048, 6144}`
+      - `512 <= N <= 6144`, `N % 8 == 0`
+    - Expanded `tests/vulkan/test_quantized_gpu.py` so the strict AMD smoke now covers the three hottest decoder-shape classes:
+      - `1 x 2048 -> 512`
+      - `1 x 2048 -> 6144`
+      - `1 x 6144 -> 2048`
+    - AMD validation through the local scripts shows the new gate is active on the decoder-shape smoke and the expanded quantized smoke passes under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+    - The representative layer-13 decode profile improved materially on the expensive projections:
+      - `in_proj_qkv`: about `0.0066s` instead of the earlier `~0.010s`
+      - `mlp_gate_proj`, `mlp_up_proj`, `mlp_down_proj`: about `0.0061-0.0063s` instead of the earlier `~0.010s`
+      - `in_proj_z`: about `0.00245s` instead of the earlier `~0.0035s`
+      - but `out_proj (2048 -> 2048)` regressed to about `0.00935s`, so the new path still needs shape-specific tuning
+    - End-to-end RX 580 result:
+      - strict warmed `generate_step`, `max_tokens=16`: about `24.52s`, `0.653 tok/s`, first yield about `3.92s`
+      - previous measured baseline: about `30.29s`, `0.528 tok/s`, first yield about `4.53s`
+      - matching CPU rerun: about `24.62s`, `0.650 tok/s`, first yield about `3.99s`
+    - Warmed utilization also moved in the right direction:
+      - about `0.649 tok/s`
+      - first yield about `3.93s`
+      - then a steady `~1.38s` per token cadence
+      - average `gpu_busy_percent` still only about `18.3%`
+    - Result: RX 580 decode is no longer clearly behind CPU on this benchmark, but the next gain still needs to come from better medium-QMM handling, especially the `2048 -> 2048` case, because overall GPU utilization remains low.
 - **2026-03-16**: Added a native Vulkan RoPE path for the scalar-offset decode case and remeasured the RX 580 attention block.
     - Replaced Vulkan `RoPE::eval_gpu(...)`'s unconditional fallback-graph materialization with a native shader path for the actual rotary case being exercised by Qwen on the RX 580:
       - forward only

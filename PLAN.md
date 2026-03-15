@@ -118,6 +118,25 @@ bash scripts/local_amd_profile_compile.sh
       - `conv1d + cache slice + concat` about `0.0012s` combined
       - norms / residual / pointwise work mostly at or below `~0.0012s`
       Result: the next real decoder optimization must target these repeated medium affine transpose QMMs directly. Cache-update semantics, grouped attention, and RoPE are no longer the dominant path in the representative linear decoder block.
+- [~] **A native Vulkan medium-decoder QMV specialization now improves the repeated `2048/6144` transpose QMM set on RX 580**:
+      Vulkan now has a second direct affine transpose QMM shader for the real decoder regime, separate from the giant-vocab tied-logits kernel.
+      The current gate is intentionally narrow:
+      - `transpose=True`
+      - `M == 1`
+      - `group_size == 64`
+      - `bits in {4, 5}`
+      - `K in {2048, 6144}`
+      - `512 <= N <= 6144`, `N % 8 == 0`
+      Real RX 580 validation shows:
+      - the strict quantized smoke now covers `1 x 2048 -> 512`, `1 x 2048 -> 6144`, and `1 x 6144 -> 2048`, and all pass under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`
+      - the representative layer-13 decode block improves on the expensive projections:
+        - `in_proj_qkv` down to about `0.0066s`
+        - `mlp_gate_proj`, `mlp_up_proj`, `mlp_down_proj` down to about `0.0061-0.0063s`
+        - `in_proj_z` down to about `0.00245s`
+      - but `out_proj (2048 -> 2048)` regresses to about `0.00935s`, so the medium path is not yet uniformly good across all decoder projections
+      - strict warmed `generate_step`, `max_tokens=16` improves from about `30.29s`, `0.528 tok/s`, first yield `4.53s` to about `24.52s`, `0.653 tok/s`, first yield `3.92s`
+      - the matching CPU rerun is about `24.62s`, `0.650 tok/s`, first yield `3.99s`
+      Result: the RX 580 GPU has moved from clearly behind CPU to rough parity or slightly ahead on the measured 16-token decode run, but there is still headroom because the `2048 -> 2048` transpose case remains a weak spot and utilization is still low.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
 - [x] **A persistent dequant-buffer cache for medium transpose QMMs was tested on the RX 580 and rejected**:
