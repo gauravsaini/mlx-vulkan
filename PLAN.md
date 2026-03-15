@@ -195,6 +195,10 @@ bash scripts/local_amd_profile_compile.sh
 - [~] **Vulkan compiled JIT kernels now persist SPIR-V across processes, removing the pathological cold-start cliff on RX 580**:
       `mlx/backend/vulkan/compiled.cpp` no longer relies on an in-memory-only SPIR-V cache. The generated GLSL source and compiled `.spv` are now reused from `~/.cache/mlx_vulkan_jit` when the on-disk GLSL text matches the current kernel source, so identical `mx.compile` kernels do not re-run `glslc` for every new Python process.
       Real RX 580 validation shows the cross-process cold-start wall collapsed: a fresh-process first token that had ballooned to about `54.35s` in the same-process warm probe now drops to about `5.57s` on the first post-build run, and a second fresh process reaches about `4.69s`, matching the warmed steady-state path.
+- [~] **Linux Vulkan pipeline creation no longer pays the MoltenVK warmup penalty on the RX 580**:
+      `mlx/backend/vulkan/device.cpp` now limits the dummy-dispatch + `vkQueueWaitIdle()` pipeline warmup path to `__APPLE__`, matching the original comment that this is a MoltenVK workaround rather than a Linux requirement.
+      Real RX 580 validation shows a clean fresh-process one-token warm probe improving to about `4.01s` for `cold_in_process` and about `3.81s` for `warm_in_process`, while the strict warmed 16-token `generate_step` benchmark stays essentially unchanged at about `24.56s` / `0.651 tok/s` with first yield about `3.93s`.
+      Conclusion: this removes avoidable first-use queue-idle overhead on Linux, but the remaining steady-state decoder wall is still in the logits / medium-QMM path rather than Vulkan pipeline creation.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware

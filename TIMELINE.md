@@ -4,6 +4,15 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Removed the MoltenVK-only pipeline warmup penalty from Linux Vulkan and revalidated on the RX 580.
+    - Limited the dummy-dispatch pipeline warmup path in `mlx/backend/vulkan/device.cpp` to `__APPLE__`, matching the existing comment that the workaround is for newly created `MTLComputePipelineState` objects on Apple Silicon rather than Linux Vulkan drivers.
+    - Rebuilt and revalidated on the local AMD box using the scripted workflow only.
+    - Clean fresh-process RX 580 warm-probe results now land at:
+      - `cold_in_process`: about `4.01s`
+      - `warm_in_process`: about `3.81s`
+    - The strict warmed 16-token `generate_step` benchmark remains effectively flat:
+      - GPU: about `24.56s`, `0.651 tok/s`, first yield about `3.93s`
+    - Result: the Linux backend no longer burns a full `vkQueueWaitIdle()` on every newly created pipeline, which helps first-use latency, but the remaining steady-state decode wall is still elsewhere, most likely the tied `lm_head` path and the remaining medium decoder QMM family.
 - **2026-03-16**: Tightened the RX 580 decoder diagnosis around eager cache writes and medium-size affine QMMs.
     - Confirmed from the current `python/src/indexing.cpp` path that eager Python `__setitem__` on concrete Vulkan-backed arrays already bypasses the functional `slice_update(...)` result path and dispatches `copy_gpu_inplace(...)` directly for static slices, which is the same shape used by `KVCache.update_and_fetch(...)`.
     - Fixed a separate Linux build-system regression uncovered during this investigation: `python/src/CMakeLists.txt` now links the Python `core` extension against `Vulkan::Vulkan` when `MLX_BUILD_VULKAN=ON`, so rebuilding `python/src/indexing.cpp` on the RX 580 box no longer fails with missing `<vulkan/vulkan.h>`.

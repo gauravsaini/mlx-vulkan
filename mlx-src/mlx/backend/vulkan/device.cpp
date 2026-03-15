@@ -906,11 +906,10 @@ VkPipeline Device::get_pipeline_from_spirv(
         name.c_str());
     pipeline = VK_NULL_HANDLE;
   } else {
-    // MOLTENVK BUG WORKAROUND: The very first VkCommandBuffer that utilizes a
-    // newly compiled MTLComputePipelineState will be silently dropped by the
-    // Apple Silicon driver. To absorb this fault, we immediately allocate a
-    // transient command buffer, bind the new pipeline, dispatch a single
-    // workgroup, and submit it.
+#if defined(__APPLE__)
+    // MoltenVK workaround: the first dispatch against a newly compiled
+    // MTLComputePipelineState can be dropped on Apple Silicon, so eagerly warm
+    // the pipeline there. Linux drivers do not need this queue-idle penalty.
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -1020,6 +1019,7 @@ VkPipeline Device::get_pipeline_from_spirv(
       }
       vkDestroyCommandPool(device_, pool, nullptr);
     }
+#endif
   }
 
   pipeline_map_[name] = {pipeline, layout, ds_layout};
