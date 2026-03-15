@@ -4323,6 +4323,129 @@ void SegmentedMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 //                   matmul: x[M,K] @ dq[K,N] -> out[M,N]
 // ─────────────────────────────────────────────────────────────────────────────
 
+void dispatch_affine_qmv_transpose(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const array& biases,
+    array& out,
+    int group_size,
+    int bits,
+    const Stream& s) {
+  auto& dev = vulkan::device(s.device);
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline = dev.get_pipeline(
+      "quantized_qmv",
+      layout,
+      ds_layout,
+      5,
+      28,
+      vulkan::get_default_specialization_info(dev));
+  if (pipeline == VK_NULL_HANDLE) {
+    throw std::runtime_error(
+        "[QuantizedMatmul::eval_gpu] Missing Vulkan quantized_qmv pipeline.");
+  }
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
+  VkDescriptorBufferInfo x_info{
+      vulkan::get_buffer(x),
+      static_cast<VkDeviceSize>(x.offset() * x.itemsize()),
+      VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo w_info{
+      vulkan::get_buffer(w),
+      static_cast<VkDeviceSize>(w.offset() * w.itemsize()),
+      VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo scale_info{
+      vulkan::get_buffer(scales),
+      static_cast<VkDeviceSize>(scales.offset() * scales.itemsize()),
+      VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo bias_info{
+      vulkan::get_buffer(biases),
+      static_cast<VkDeviceSize>(biases.offset() * biases.itemsize()),
+      VK_WHOLE_SIZE};
+  VkDescriptorBufferInfo out_info{
+      vulkan::get_buffer(out),
+      0,
+      VK_WHOLE_SIZE};
+
+  VkWriteDescriptorSet writes[5]{};
+  for (int i = 0; i < 5; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  }
+  writes[0].pBufferInfo = &x_info;
+  writes[1].pBufferInfo = &w_info;
+  writes[2].pBufferInfo = &scale_info;
+  writes[3].pBufferInfo = &bias_info;
+  writes[4].pBufferInfo = &out_info;
+  vkUpdateDescriptorSets(dev.vk_device(), 5, writes, 0, nullptr);
+
+  uint32_t K = static_cast<uint32_t>(x.shape(-1));
+  uint32_t M = static_cast<uint32_t>(x.size() / K);
+  uint32_t N = static_cast<uint32_t>(out.shape(-1));
+  if (debug_vulkan_qmm()) {
+    std::fprintf(
+        stderr,
+        "[qmm] affine gpu direct_qmv=1 transpose=1 bits=%d group_size=%d x_ndim=%zu w_ndim=%zu out_ndim=%zu M=%u K=%u N=%u\n",
+        bits,
+        group_size,
+        x.ndim(),
+        w.ndim(),
+        out.ndim(),
+        M,
+        K,
+        N);
+    std::fflush(stderr);
+  }
+
+  struct PushConst {
+    uint32_t M;
+    uint32_t N;
+    uint32_t K;
+    uint32_t group_size;
+    uint32_t bits;
+    uint32_t x_elem_bytes;
+    uint32_t sb_elem_bytes;
+  } pc{
+      M,
+      N,
+      K,
+      static_cast<uint32_t>(group_size),
+      static_cast<uint32_t>(bits),
+      vulkan_float_elem_bytes(x.dtype()),
+      vulkan_float_elem_bytes(scales.dtype())};
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  vkCmdDispatch(cmd, vulkan::div_ceil(M * N, 256u), 1, 1);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+}
+
 void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (mode_ != QuantizationMode::Affine) {
     auto w = mlx::core::dequantize(
@@ -4426,7 +4549,32 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   uint32_t K = static_cast<uint32_t>(x.shape(-1));
   uint32_t N = static_cast<uint32_t>(out.shape(-1));
+  uint32_t M = static_cast<uint32_t>(x.size() / K);
   uint32_t n = K * N;
+
+  constexpr uint32_t kDirectQmvMaxM = 8u;
+  constexpr uint32_t kDirectQmvMinN = 8192u;
+  bool use_direct_qmv =
+      transpose_ && w.ndim() == 2 && M <= kDirectQmvMaxM && N >= kDirectQmvMinN;
+  if (use_direct_qmv) {
+    std::optional<array> temp_out;
+    array* kernel_out = &out;
+    if (out.dtype() != float32) {
+      temp_out = array(out.shape(), float32, nullptr, {});
+      temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+      dev.add_temporary(s, *temp_out);
+      kernel_out = &(*temp_out);
+    } else {
+      out.set_data(allocator::malloc(out.nbytes()));
+    }
+    dispatch_affine_qmv_transpose(
+        x, w, scales, biases, *kernel_out, group_size_, bits_, s);
+    if (temp_out) {
+      out.set_data(allocator::malloc(out.nbytes()));
+      copy_gpu(*temp_out, out, CopyType::General, s);
+    }
+    return;
+  }
 
   array dq({static_cast<int>(K), static_cast<int>(N)}, float32, nullptr, {});
   dq.set_data(allocator::malloc(dq.nbytes()));

@@ -35,10 +35,24 @@ def to_numpy(x):
     return np.array(x.tolist(), dtype=np.float32)
 
 
-def run_case(mx, name, x_np, w_np, transpose, group_size, bits, atol, rtol):
+def run_case(
+    mx,
+    name,
+    x_np,
+    w_np,
+    transpose,
+    group_size,
+    bits,
+    atol,
+    rtol,
+    *,
+    x_dtype=None,
+    w_dtype=None,
+):
     with mx.stream(mx.cpu):
+        w_arr = mx.array(w_np, dtype=w_dtype) if w_dtype is not None else mx.array(w_np)
         w_q, scales, biases = mx.quantize(
-            mx.array(w_np),
+            w_arr,
             group_size=group_size,
             bits=bits,
             mode="affine",
@@ -53,7 +67,7 @@ def run_case(mx, name, x_np, w_np, transpose, group_size, bits, atol, rtol):
         )
         mx.eval(w_q, scales, biases, w_dq)
 
-    x = mx.array(x_np)
+    x = mx.array(x_np, dtype=x_dtype) if x_dtype is not None else mx.array(x_np)
     y = mx.quantized_matmul(
         x,
         w_q,
@@ -112,6 +126,20 @@ def main():
             bits=4,
             atol=1e-3,
             rtol=1e-3,
+        )
+
+        run_case(
+            mx,
+            "qmm_affine_transpose_5bit_large_vocab_bfloat16",
+            (np.arange(1, 1 + 256, dtype=np.float32).reshape(1, 256) / 64.0),
+            (np.arange(1, 1 + 8192 * 256, dtype=np.float32).reshape(8192, 256) / 256.0),
+            transpose=True,
+            group_size=64,
+            bits=5,
+            atol=1.5e-1,
+            rtol=1.5e-1,
+            x_dtype=mx.bfloat16,
+            w_dtype=mx.bfloat16,
         )
     finally:
         if prev_fail is None:

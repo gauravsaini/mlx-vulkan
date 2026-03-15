@@ -1,0 +1,162 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_GOOGLE_include_directive : enable
+
+#include "bf16.glsl"
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer XBuf     { uint x_data[]; };
+layout(set = 0, binding = 1) readonly buffer WeightBuf{ uint w_data[]; };
+layout(set = 0, binding = 2) readonly buffer ScaleBuf { uint scale_data[]; };
+layout(set = 0, binding = 3) readonly buffer BiasBuf  { uint bias_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf  { uint out_data[]; };
+
+layout(push_constant) uniform Params {
+    uint M;
+    uint N;
+    uint K;
+    uint group_size;
+    uint bits;
+    uint x_elem_bytes;
+    uint sb_elem_bytes;
+} params;
+
+float read_x(uint raw_index) {
+    if (params.x_elem_bytes == 4u) {
+        return uintBitsToFloat(x_data[raw_index]);
+    }
+    uint word = x_data[raw_index >> 1u];
+    uint half_val = ((raw_index & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    if (params.x_elem_bytes == 2u) {
+        return unpackHalf2x16(half_val).x;
+    }
+    return unpackBfloat2x16(half_val).x;
+}
+
+float read_scale(uint raw_index) {
+    if (params.sb_elem_bytes == 4u) {
+        return uintBitsToFloat(scale_data[raw_index]);
+    }
+    uint word = scale_data[raw_index >> 1u];
+    uint half_val = ((raw_index & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    if (params.sb_elem_bytes == 2u) {
+        return unpackHalf2x16(half_val).x;
+    }
+    return unpackBfloat2x16(half_val).x;
+}
+
+float read_bias(uint raw_index) {
+    if (params.sb_elem_bytes == 4u) {
+        return uintBitsToFloat(bias_data[raw_index]);
+    }
+    uint word = bias_data[raw_index >> 1u];
+    uint half_val = ((raw_index & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    if (params.sb_elem_bytes == 2u) {
+        return unpackHalf2x16(half_val).x;
+    }
+    return unpackBfloat2x16(half_val).x;
+}
+
+uint get_w_byte(uint byte_index) {
+    uint word = w_data[byte_index >> 2u];
+    uint shift = (byte_index & 3u) * 8u;
+    return (word >> shift) & 0xFFu;
+}
+
+uint pack_factor(uint bits) {
+    if (bits == 3u || bits == 5u) return 8u;
+    if (bits == 6u) return 4u;
+    return 8u / bits;
+}
+
+uint bytes_per_pack(uint bits) {
+    if (bits == 5u) return 5u;
+    if (bits == 3u) return 3u;
+    if (bits == 6u) return 3u;
+    return 1u;
+}
+
+uint packed_value_at(uint byte_base, uint elem_index, uint bits) {
+    if (bits == 2u) {
+        uint byte0 = get_w_byte(byte_base);
+        return (byte0 >> (elem_index * 2u)) & 0x3u;
+    }
+    if (bits == 3u) {
+        uint b0 = get_w_byte(byte_base + 0u);
+        uint b1 = get_w_byte(byte_base + 1u);
+        uint b2 = get_w_byte(byte_base + 2u);
+        if (elem_index == 0u) return b0 & 0x7u;
+        if (elem_index == 1u) return (b0 >> 3u) & 0x7u;
+        if (elem_index == 2u) return ((b0 >> 6u) & 0x3u) + ((b1 & 0x1u) << 2u);
+        if (elem_index == 3u) return (b1 >> 1u) & 0x7u;
+        if (elem_index == 4u) return (b1 >> 4u) & 0x7u;
+        if (elem_index == 5u) return ((b1 >> 7u) & 0x1u) + ((b2 & 0x3u) << 1u);
+        if (elem_index == 6u) return (b2 >> 2u) & 0x7u;
+        return (b2 >> 5u) & 0x7u;
+    }
+    if (bits == 4u) {
+        uint byte0 = get_w_byte(byte_base);
+        return (elem_index == 0u) ? (byte0 & 0xFu) : ((byte0 >> 4u) & 0xFu);
+    }
+    if (bits == 5u) {
+        uint b0 = get_w_byte(byte_base + 0u);
+        uint b1 = get_w_byte(byte_base + 1u);
+        uint b2 = get_w_byte(byte_base + 2u);
+        uint b3 = get_w_byte(byte_base + 3u);
+        uint b4 = get_w_byte(byte_base + 4u);
+        if (elem_index == 0u) return b0 & 0x1Fu;
+        if (elem_index == 1u) return ((b0 >> 5u) & 0x7u) + ((b1 & 0x3u) << 3u);
+        if (elem_index == 2u) return (b1 >> 2u) & 0x1Fu;
+        if (elem_index == 3u) return ((b1 >> 7u) & 0x1u) + ((b2 & 0xFu) << 1u);
+        if (elem_index == 4u) return ((b2 >> 4u) & 0xFu) + ((b3 & 0x1u) << 4u);
+        if (elem_index == 5u) return (b3 >> 1u) & 0x1Fu;
+        if (elem_index == 6u) return ((b3 >> 6u) & 0x3u) + ((b4 & 0x7u) << 2u);
+        return (b4 >> 3u) & 0x1Fu;
+    }
+    if (bits == 6u) {
+        uint b0 = get_w_byte(byte_base + 0u);
+        uint b1 = get_w_byte(byte_base + 1u);
+        uint b2 = get_w_byte(byte_base + 2u);
+        if (elem_index == 0u) return b0 & 0x3Fu;
+        if (elem_index == 1u) return ((b0 >> 6u) & 0x3u) + ((b1 & 0xFu) << 2u);
+        if (elem_index == 2u) return ((b1 >> 4u) & 0xFu) + ((b2 & 0x3u) << 4u);
+        return (b2 >> 2u) & 0x3Fu;
+    }
+    return get_w_byte(byte_base);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint total = params.M * params.N;
+    if (idx >= total) {
+        return;
+    }
+
+    uint m = idx / params.N;
+    uint n = idx % params.N;
+    uint pf = pack_factor(params.bits);
+    uint bpp = bytes_per_pack(params.bits);
+    uint packs_per_row = params.K / pf;
+    uint groups_per_row = params.K / params.group_size;
+    uint w_row_base = n * packs_per_row * bpp;
+    uint sb_row_base = n * groups_per_row;
+    uint x_row_base = m * params.K;
+
+    float acc = 0.0;
+    for (uint k_base = 0u; k_base < params.K; k_base += params.group_size) {
+        uint group_index = k_base / params.group_size;
+        float scale = read_scale(sb_row_base + group_index);
+        float bias = read_bias(sb_row_base + group_index);
+        uint k_end = min(k_base + params.group_size, params.K);
+        for (uint k = k_base; k < k_end; ++k) {
+            uint pack_index = k / pf;
+            uint elem_in_pack = k % pf;
+            uint byte_base = w_row_base + pack_index * bpp;
+            float wv = float(packed_value_at(byte_base, elem_in_pack, params.bits)) * scale + bias;
+            acc += read_x(x_row_base + k) * wv;
+        }
+    }
+
+    out_data[idx] = floatBitsToUint(acc);
+}

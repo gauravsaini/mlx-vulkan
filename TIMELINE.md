@@ -4,6 +4,15 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Added a selective direct affine QMM logits path for the RX 580 tied-vocab projection.
+    - Added `mlx/backend/vulkan/kernels/quantized_qmv.comp`, a fused transpose affine quantized-matmul shader that reads packed weights, scales, and biases directly and accumulates logits without first materializing the full dequantized `[K, N]` matrix.
+    - Wired that shader into `mlx/backend/vulkan/primitives.cpp` behind a deliberately narrow gate: `transpose=True`, 2D packed weights, `M <= 8`, and `N >= 8192`, so the optimization targets the giant-vocab Qwen `lm_head` path without regressing the regular decoder projections that were already near `0.05s`.
+    - Extended `tests/vulkan/test_quantized_gpu.py` with a strict large-vocab bfloat16 regression that forces the new path under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+    - AMD validation through the local scripted workflow now shows:
+      - `bash scripts/local_amd_probe_quantized.sh` passes on the RX 580, including the new large-vocab regression,
+      - a focused tied-`lm_head` probe confirms `direct_qmv=1` on the real `N=248320`, `K=2048` Qwen projection,
+      - and the strict one-token `generate_step` benchmark improves from about `7.18s` to about `5.44s`, which is now faster than the matching CPU baseline (`~7.08s`).
+    - Result: the tied-vocab logits projection is no longer the dominant end-to-end wall for first-token generation; the next target is first-use warmup plus the remaining decoder prefill latency.
 - **2026-03-15**: Removed the hidden affine QMM CPU detour from the RX 580 LLM path and unblocked first-token generation.
     - Replaced the Vulkan affine `QuantizedMatmul::eval_gpu(...)` CPU reference path with the intended two-pass GPU flow: on-device affine dequantization into a float32 matrix followed by Vulkan matmul.
     - Extended `mlx/backend/vulkan/kernels/quantized.comp` to unpack affine 2/3/4/5/6/8-bit weights correctly, including the odd-bit 5-bit packing used by the real Qwen3.5-2B-5bit model, and to read float16 / bfloat16 / float32 scale-bias tensors.
