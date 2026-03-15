@@ -7,6 +7,7 @@ __pycache__/
 *.safe
 *.safetensors
 run_local*
+local_amd*
 # Metal libraries
 *.metallib
 

@@ -35,6 +35,23 @@ Host gsai-box
     IdentityFile ~/.ssh/id_ed25519_remote
 ```
 
+**Canonical remote workspace:**
+
+- Workspace root: `/home/gsai/mlx-vulkan`
+- MLX source tree: `/home/gsai/mlx-vulkan/mlx-src`
+- Linux Vulkan build dir: `/home/gsai/mlx-vulkan/build_vulkan_linux`
+- Compile logging smoke: `/home/gsai/mlx-vulkan/tests/vulkan/test_compile_logging.py`
+
+**Canonical remote workflow (from the local workstation):**
+
+```bash
+bash scripts/local_amd_sync.sh
+bash scripts/local_amd_build.sh
+bash scripts/local_amd_profile_compile.sh
+```
+
+**Working rule:** treat `/home/gsai/mlx-vulkan` as the source of truth for remote AMD validation. Do not rely on ad hoc edits under older remote directories when validating the current workspace.
+
 ---
 
 ## Current Priority (as of 2026-03-15)

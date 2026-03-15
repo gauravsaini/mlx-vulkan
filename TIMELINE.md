@@ -4,6 +4,10 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Added a reusable local-RX-580 sync/build/profile workflow.
+    - Standardized the canonical remote validation directory at `/home/gsai/mlx-vulkan`.
+    - Added `scripts/local_amd_sync.sh`, `scripts/local_amd_build.sh`, and `scripts/local_amd_profile_compile.sh`.
+    - Updated `PLAN.md` with the exact remote directory layout and the expected three-step workflow so future AMD validation runs are reproducible.
 - **2026-03-15**: Pivoted to compile-coverage profiling for real LLM generation.
     - Confirmed `mlx-lm` already exercises internal `mx.compile` sites, so the next blocker is visibility into which fused primitive mixes are actually hitting the Vulkan compiled path.
     - Added an explicit profiling task: log unique fused kernels plus an aggregated primitive summary during normal generation runs.
