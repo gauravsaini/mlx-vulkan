@@ -4,6 +4,28 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Re-profiled the post-`4b378b9` RX 580 baseline and rejected a subgroup-reduction rewrite for the medium decoder kernel.
+    - Re-ran the strict warmed 16-token `generate_step` benchmark from the pushed medium-decoder baseline and confirmed the new steady-state band is real:
+      - `23.13s`, `0.692 tok/s`, first yield `3.82s`
+      - `23.17s`, `0.691 tok/s`, first yield `3.81s`
+    - Re-ran the warmed utilization profile and confirmed decode is still bursty despite the throughput gains:
+      - average `gpu_busy_percent` about `16.1%`
+      - median `gpu_busy_percent` `0%`
+      - per-token cadence after first yield about `1.29-1.30s`
+    - Re-profiled the warmed layer stack on the RX 580:
+      - `lm_head_tied` remains the single biggest block at about `0.532s`
+      - linear layers total about `0.896s`
+      - full-attention layers total about `0.307s`
+      - only `layer0_linear` still sticks out modestly at about `0.067s`
+    - Added a focused decode micro-profile of the first full-attention block and found the hottest pieces are now:
+      - `mlp_up_proj` about `0.00582s`
+      - `mlp_gate_proj` / `mlp_down_proj` about `0.00555-0.00560s`
+      - `q_proj` about `0.00473s`
+      - `queries_split` about `0.00388s`
+      - `o_proj` about `0.00202s`
+      while the native SDPA pieces are all sub-millisecond.
+    - Also tested a subgroup-based reduction path in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the RX 580's 64-wide wavefront. It improved the medium-QMM micro-profile, but two clean end-to-end runs stayed effectively flat in the same `~23.13-23.17s` band, so the change was reverted and not kept.
+    - Result: the next steady-state decode target has shifted again. It is no longer the medium-kernel reduction tree; it is now the tied `lm_head` plus the attention-layer front-end (`q_proj` / `queries_split`) and the remaining per-layer QMM family.
 - **2026-03-16**: Specialized the medium decoder Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and pushed RX 580 decode forward again.
     - Kept the existing medium decoder direct-QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the actual repeated decoder format:
       - affine `5-bit`

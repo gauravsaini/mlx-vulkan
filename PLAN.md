@@ -148,6 +148,25 @@ bash scripts/local_amd_profile_compile.sh
       - strict warmed `generate_step`, `max_tokens=16` now improves further from the recent `23.60-23.63s`, `0.677-0.678 tok/s`, first yield `3.81-3.89s` checkpoint to about `23.17s`, `0.691 tok/s`, first yield `3.81s`
       - the last matching clean CPU rerun remains about `23.93s`, `0.669 tok/s`, first yield `4.02s`
       Result: the RX 580 GPU now has a clearer lead over CPU on the current strict warmed decode benchmark, and the medium decoder QMM family is materially healthier than before. The next remaining wall is no longer a single obviously bad `2048 -> 2048` case; it is the broader steady-state decode utilization gap after these QMM wins.
+- [~] **Post-`4b378b9` RX 580 profiling shows the next steady-state decode wall is the tied logits path plus the attention-layer QMM / reshape front-end, not the medium-kernel reduction tree**:
+      refreshed strict `generate_step`, `max_tokens=16` reruns now land in the same narrow band:
+      - `23.13s`, `0.692 tok/s`, first yield `3.82s`
+      - `23.17s`, `0.691 tok/s`, first yield `3.81s`
+      and the matching warmed utilization run still shows only about `16.1%` average `gpu_busy_percent` with a `0%` median.
+      Refreshed warm layer profiling shows:
+      - `lm_head_tied` is still the single biggest isolated block at about `0.532s`
+      - linear layers sum to about `0.896s`
+      - full-attention layers sum to about `0.307s`
+      - only `layer0_linear` still stands out modestly at about `0.067s`; the rest of the layer stack is mostly in the `~0.048-0.051s` band.
+      A decode micro-profile of the first full-attention block now shows its hottest pieces are:
+      - `mlp_up_proj` about `0.00582s`
+      - `mlp_gate_proj` / `mlp_down_proj` about `0.00555-0.00560s`
+      - `q_proj` about `0.00473s`
+      - `queries_split` about `0.00388s`
+      - `o_proj` about `0.00202s`
+      while the native SDPA pieces are each sub-millisecond.
+      A follow-up subgroup-reduction experiment in `quantized_qmv_medium.comp` improved the medium-QMM layer micro-profile slightly, but two clean end-to-end runs stayed flat in the same `~23.13-23.17s` band, so it was explicitly reverted.
+      Result: the next likely win is no longer another medium-kernel reduction tweak. It is either another tied-`lm_head` optimization or a reduction in attention-layer front-end overhead around `q_proj` / `queries_split` and the remaining per-layer QMM family.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
 - [x] **A persistent dequant-buffer cache for medium transpose QMMs was tested on the RX 580 and rejected**:
