@@ -4,6 +4,12 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Fixed the Vulkan compiled-path dtype bridge on the local RX 580 and converted a crash into an explicit Phase-6 blocker.
+    - Added `Sigmoid` and `LogAddExp` lowering to `mlx/backend/vulkan/compiled.cpp`.
+    - Switched float16 / bfloat16 compiled execution to a float32 shader-IO bridge, using Vulkan `copy_gpu` casts for pre/post materialization instead of building MLX graph ops inside backend evaluation.
+    - Used a local AMD gdb repro to root-cause the remaining abort to `copy_gpu` metadata setup (`dispatch_copy_shader`) triggered by `CopyType::General` on the cast bridge.
+    - Fixed that abort by selecting `CopyType::Vector` for contiguous same-shape cast copies and by rejecting unsupported strided / broadcasted compiled inputs up front.
+    - Result on the RX 580: the one-token `mlx-lm` compile-profile run no longer aborts; contiguous compiled kernels execute on Vulkan, while broadcast-heavy fused kernels now fall back explicitly with a clear `"Strided or broadcasted Vulkan compiled inputs are not implemented yet."` reason.
 - **2026-03-15**: Added a reusable local-RX-580 sync/build/profile workflow.
     - Standardized the canonical remote validation directory at `/home/gsai/mlx-vulkan`.
     - Added `scripts/local_amd_sync.sh`, `scripts/local_amd_build.sh`, and `scripts/local_amd_profile_compile.sh`.
@@ -11,7 +17,7 @@
 - **2026-03-15**: Validated the compile-profile path on the local RX 580 and found the next blocker.
     - The new compile-logging smoke now reaches dynamic GLSL generation on AMD through the scripted remote workflow.
     - Fixed two shader-generation gaps uncovered by that smoke: `Broadcast` now lowers as an identity op, and constant/scalar inputs are materialized into `tmp_*` values correctly.
-    - Current blocker: the simple compiled smoke still segfaults during Vulkan pipeline execution on the RX 580 after JIT compilation succeeds, so the remaining work moved from shader text generation to runtime execution/debugging.
+    - This first blocker was later removed by the float32 cast-bridge / vector-copy fix above; the next real blocker is broadcast + strided compiled input support for LLM hot kernels.
 - **2026-03-15**: Pivoted to compile-coverage profiling for real LLM generation.
     - Confirmed `mlx-lm` already exercises internal `mx.compile` sites, so the next blocker is visibility into which fused primitive mixes are actually hitting the Vulkan compiled path.
     - Added an explicit profiling task: log unique fused kernels plus an aggregated primitive summary during normal generation runs.

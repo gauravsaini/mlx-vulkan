@@ -5,6 +5,7 @@
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/vulkan/allocator.h"
 #include "mlx/backend/vulkan/device.h"
+#include "mlx/backend/gpu/copy.h"
 #include "mlx/graph_utils.h"
 #include "mlx/primitives.h"
 
@@ -37,6 +38,31 @@ std::unordered_map<std::string, KernelProfile> compile_profiles_;
 bool compile_profile_enabled() {
   static bool enabled = (std::getenv("MLX_LOG_COMPILE_TAPE") != nullptr);
   return enabled;
+}
+
+bool compile_profile_cpu_fallback_enabled() {
+  static bool enabled =
+      (std::getenv("MLX_VULKAN_PROFILE_COMPILE_FALLBACK") != nullptr);
+  return enabled;
+}
+
+bool is_compiled_float_dtype(Dtype d) {
+  return d == float32 || d == float16 || d == bfloat16;
+}
+
+CopyType compiled_copy_type(const array& src, const array& dst) {
+  if (src.shape() == dst.shape() && src.flags().row_contiguous &&
+      dst.flags().row_contiguous) {
+    return CopyType::Vector;
+  }
+  return CopyType::General;
+}
+
+std::string compiled_glsl_type(Dtype d) {
+  if (is_compiled_float_dtype(d)) {
+    return "float";
+  }
+  return get_type_string(d);
 }
 
 std::string shape_to_string(const Shape& shape) {
@@ -267,6 +293,7 @@ std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, 
     if (pr == "Ceil") return "ceil(" + in0 + ")";
     if (pr == "Exp") return "exp(" + in0 + ")";
     if (pr == "Expm1") return "(exp(" + in0 + ") - 1.0)";
+    if (pr == "Sigmoid") return "(1.0 / (1.0 + exp(-(" + in0 + "))))";
     if (pr == "Log") return "log(" + in0 + ")";
     if (pr == "Log1p") return "log(1.0 + " + in0 + ")";
     if (pr == "Sin") return "sin(" + in0 + ")";
@@ -291,6 +318,11 @@ std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, 
     if (pr == "Divide") return in0 + " / " + in1;
     if (pr == "Maximum") return "max(" + in0 + ", " + in1 + ")";
     if (pr == "Minimum") return "min(" + in0 + ", " + in1 + ")";
+    if (pr == "LogAddExp") {
+      return "(max(" + in0 + ", " + in1 + ") + log(exp(" + in0 +
+          " - max(" + in0 + ", " + in1 + ")) + exp(" + in1 + " - max(" +
+          in0 + ", " + in1 + "))))";
+    }
     if (pr == "Power") return "pow(" + in0 + ", " + in1 + ")";
     if (pr == "Remainder") return "mod(" + in0 + ", " + in1 + ")";
     if (pr == "Equal") return "(" + in0 + " == " + in1 + " ? 1 : 0)";
@@ -340,7 +372,7 @@ void build_kernel(
         std::string xname = namer.get_name(x);
         in_names.push_back(xname);
         os += fmt::format("layout(set = 0, binding = {}) readonly buffer In{} {{ {} {}[]; }};\n",
-                      binding++, i, get_type_string(x.dtype()), xname);
+                      binding++, i, compiled_glsl_type(x.dtype()), xname);
     }
     
     // Outputs
@@ -350,7 +382,7 @@ void build_kernel(
         std::string xname = namer.get_name(x);
         out_names.push_back(xname);
         os += fmt::format("layout(set = 0, binding = {}) writeonly buffer Out{} {{ {} {}[]; }};\n",
-                      binding++, i, get_type_string(x.dtype()), xname);
+                      binding++, i, compiled_glsl_type(x.dtype()), xname);
     }
     
     // Push constants
@@ -371,19 +403,19 @@ void build_kernel(
             print_constant(ss, x);
             os += fmt::format(
                 "  {} tmp_{} = {};\n",
-                get_type_string(x.dtype()),
+                compiled_glsl_type(x.dtype()),
                 xname,
                 ss.str());
         } else if (is_scalar(x)) {
             os += fmt::format(
                 "  {} tmp_{} = {}[0];\n",
-                get_type_string(x.dtype()),
+                compiled_glsl_type(x.dtype()),
                 xname,
                 xname);
         } else {
             os += fmt::format(
                 "  {} tmp_{} = {}[index];\n",
-                get_type_string(x.dtype()),
+                compiled_glsl_type(x.dtype()),
                 xname,
                 xname);
         }
@@ -391,7 +423,7 @@ void build_kernel(
     
     // Tape
     for (auto& x : tape) {
-        std::string out_type = get_type_string(x.dtype());
+        std::string out_type = compiled_glsl_type(x.dtype());
         std::string out_name = namer.get_name(x);
         
         std::vector<std::string> inps;
@@ -423,123 +455,191 @@ void Compiled::eval_gpu(
     std::vector<array>& outputs) {
   maybe_log_compile_profile(kernel_lib_, inputs, outputs, tape_);
 
-  if (!outputs[0].flags().contiguous) {
-    throw std::runtime_error("[Compiled::eval_gpu] Strided Vulkan compilation not implemented yet.");
-  }
-  
-  auto& s = stream();
-  auto& d = vulkan::device(s.device);
-  auto& compute_encoder = d.get_command_encoder(s);
-  
-  std::string kernel_name = kernel_lib_ + "_vulkan_contig";
-  
-  // Pipeline layout out
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout ds_layout;
-  
-  int num_bindings = 0;
-  for (int i = 0; i < inputs.size(); i++) {
-    if (!is_constant_(i)) num_bindings++;
-  }
-  num_bindings += outputs.size();
-  
-  std::string glsl;
-  build_kernel(
-      glsl,
-      kernel_name,
-      inputs_,
-      outputs_,
-      tape_,
-      is_constant_,
-      true, // contiguous
-      0,
-      false,
-      false,
-      1
-  );
-  
-  std::vector<uint32_t> spv = compile_glsl_to_spirv(kernel_name, glsl);
-  
-  VkPipeline pipeline = d.get_pipeline_from_spirv(
-          kernel_name,
-          spv,
-          layout,
-          ds_layout,
-          num_bindings,
-          sizeof(uint32_t) // push constant size
-      );
-  
-  if (pipeline == VK_NULL_HANDLE) {
-     throw std::runtime_error("[Compiled::eval_gpu] Vulkan pipeline creation failed");
-  }
-
-  // Allocate descriptor set
-  VkDescriptorSet ds = d.alloc_descriptor_set(s, ds_layout);
-  
-  // Update Descriptor sets
-  std::vector<VkDescriptorBufferInfo> buf_infos(num_bindings);
-  std::vector<VkWriteDescriptorSet> writes(num_bindings);
-  int bind_idx = 0;
-  
-  auto bind_arr = [&](const array& arr) {
-    allocator::Buffer buf(const_cast<void*>(arr.data<void>()));
-    buf_infos[bind_idx].buffer = vulkan::allocator().vk_buffer(buf);
-    buf_infos[bind_idx].offset = 0;
-    buf_infos[bind_idx].range = VK_WHOLE_SIZE;
-    
-    writes[bind_idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[bind_idx].dstSet = ds;
-    writes[bind_idx].dstBinding = bind_idx;
-    writes[bind_idx].descriptorCount = 1;
-    writes[bind_idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[bind_idx].pBufferInfo = &buf_infos[bind_idx];
-    bind_idx++;
-  };
-  
-  for (int i=0; i<inputs.size(); i++) {
-    if(!is_constant_(i)) {
-      bind_arr(inputs[i]);
+  try {
+    auto is_supported_array = [&](const array& arr) {
+      return is_compiled_float_dtype(arr.dtype());
+    };
+    if (!std::all_of(inputs.begin(), inputs.end(), is_supported_array) ||
+        !std::all_of(outputs.begin(), outputs.end(), is_supported_array) ||
+        !std::all_of(tape_.begin(), tape_.end(), is_supported_array)) {
+      throw std::runtime_error(
+          "[Compiled::eval_gpu] Only float32/float16/bfloat16 compiled kernels are supported.");
     }
-  }
-  
-  // allocate outputs
-  compiled_allocate_outputs(inputs, outputs, is_constant_, true);
-  
-  for (auto& out : outputs) {
-     bind_arr(out);
-  }
-  
-  vkUpdateDescriptorSets(d.vk_device(), num_bindings, writes.data(), 0, nullptr);
-  
-  // Bind pipeline
-  vkCmdBindPipeline(compute_encoder.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
-  // Bind DS
-  vkCmdBindDescriptorSets(
-        compute_encoder.cmd,
-        VK_PIPELINE_BIND_POINT_COMPUTE,
-        layout,
+    if (!outputs[0].flags().contiguous) {
+      throw std::runtime_error("[Compiled::eval_gpu] Strided Vulkan compilation not implemented yet.");
+    }
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      if (is_constant_(i) || is_scalar(inputs[i])) {
+        continue;
+      }
+      if (!inputs[i].flags().row_contiguous || inputs[i].offset() != 0 ||
+          inputs[i].shape() != outputs[0].shape()) {
+        throw std::runtime_error(
+            "[Compiled::eval_gpu] Strided or broadcasted Vulkan compiled inputs are not implemented yet.");
+      }
+    }
+    
+    auto& s = stream();
+    auto& d = vulkan::device(s.device);
+    auto& compute_encoder = d.get_command_encoder(s);
+    std::vector<array> shader_inputs = inputs;
+    for (size_t i = 0; i < shader_inputs.size(); ++i) {
+      if (is_constant_(i)) {
+        continue;
+      }
+      if (shader_inputs[i].dtype() != float32) {
+        array cast_input(shader_inputs[i].shape(), float32, nullptr, {});
+        copy_gpu(
+            shader_inputs[i],
+            cast_input,
+            compiled_copy_type(shader_inputs[i], cast_input),
+            s);
+        shader_inputs[i] = cast_input;
+        d.add_temporary(s, shader_inputs[i]);
+      }
+    }
+    std::vector<array> shader_outputs = outputs;
+    std::vector<bool> output_needs_cast(outputs.size(), false);
+    for (size_t i = 0; i < outputs.size(); ++i) {
+      if (outputs[i].dtype() != float32) {
+        shader_outputs[i] = array(outputs[i].shape(), float32, nullptr, {});
+        output_needs_cast[i] = true;
+      }
+    }
+    
+    std::string kernel_name = kernel_lib_ + "_vulkan_contig";
+    
+    // Pipeline layout out
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout ds_layout;
+    
+    int num_bindings = 0;
+    for (int i = 0; i < shader_inputs.size(); i++) {
+      if (!is_constant_(i)) num_bindings++;
+    }
+    num_bindings += shader_outputs.size();
+    
+    std::string glsl;
+    build_kernel(
+        glsl,
+        kernel_name,
+        inputs_,
+        outputs_,
+        tape_,
+        is_constant_,
+        true, // contiguous
         0,
-        1,
-        &ds,
-        0,
-        nullptr);
-        
-  // Push constants
-  uint32_t size = outputs[0].data_size();
-  vkCmdPushConstants(
-      compute_encoder.cmd,
-      layout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(uint32_t),
-      &size);
+        false,
+        false,
+        1
+    );
+    
+    std::vector<uint32_t> spv = compile_glsl_to_spirv(kernel_name, glsl);
+    
+    VkPipeline pipeline = d.get_pipeline_from_spirv(
+            kernel_name,
+            spv,
+            layout,
+            ds_layout,
+            num_bindings,
+            sizeof(uint32_t) // push constant size
+        );
+    
+    if (pipeline == VK_NULL_HANDLE) {
+       throw std::runtime_error("[Compiled::eval_gpu] Vulkan pipeline creation failed");
+    }
+
+    // Allocate descriptor set
+    VkDescriptorSet ds = d.alloc_descriptor_set(s, ds_layout);
+    
+    // Update Descriptor sets
+    std::vector<VkDescriptorBufferInfo> buf_infos(num_bindings);
+    std::vector<VkWriteDescriptorSet> writes(num_bindings);
+    int bind_idx = 0;
+    
+    auto bind_arr = [&](const array& arr) {
+      buf_infos[bind_idx].buffer = vulkan::get_buffer(arr);
+      buf_infos[bind_idx].offset = 0;
+      buf_infos[bind_idx].range = VK_WHOLE_SIZE;
       
-  // Dispatch
-  uint32_t nblock = (size + 255) / 256;
-  vkCmdDispatch(compute_encoder.cmd, nblock, 1, 1);
-  
-  compute_encoder.op_count++;
+      writes[bind_idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[bind_idx].dstSet = ds;
+      writes[bind_idx].dstBinding = bind_idx;
+      writes[bind_idx].descriptorCount = 1;
+      writes[bind_idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[bind_idx].pBufferInfo = &buf_infos[bind_idx];
+      bind_idx++;
+    };
+    
+    for (int i=0; i<shader_inputs.size(); i++) {
+      if(!is_constant_(i)) {
+        bind_arr(shader_inputs[i]);
+      }
+    }
+    
+    // allocate outputs
+    compiled_allocate_outputs(shader_inputs, shader_outputs, is_constant_, true);
+    
+    for (auto& out : shader_outputs) {
+       bind_arr(out);
+    }
+    
+    vkUpdateDescriptorSets(d.vk_device(), num_bindings, writes.data(), 0, nullptr);
+    
+    // Bind pipeline
+    vkCmdBindPipeline(compute_encoder.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+
+    // Bind DS
+    vkCmdBindDescriptorSets(
+          compute_encoder.cmd,
+          VK_PIPELINE_BIND_POINT_COMPUTE,
+          layout,
+          0,
+          1,
+          &ds,
+          0,
+          nullptr);
+          
+    // Push constants
+    uint32_t size = shader_outputs[0].data_size();
+    vkCmdPushConstants(
+        compute_encoder.cmd,
+        layout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(uint32_t),
+        &size);
+        
+    // Dispatch
+    uint32_t nblock = (size + 255) / 256;
+    vkCmdDispatch(compute_encoder.cmd, nblock, 1, 1);
+    
+    compute_encoder.op_count++;
+
+    for (size_t i = 0; i < shader_outputs.size(); ++i) {
+      if (!output_needs_cast[i]) {
+        continue;
+      }
+      d.add_temporary(s, shader_outputs[i]);
+      copy_gpu(
+          shader_outputs[i],
+          outputs[i],
+          compiled_copy_type(shader_outputs[i], outputs[i]),
+          s);
+    }
+  } catch (const std::exception& e) {
+    if (!compile_profile_cpu_fallback_enabled()) {
+      throw;
+    }
+    std::fprintf(
+        stderr,
+        "[MLX Vulkan][compile profile] CPU fallback kernel=%s reason=%s\n",
+        kernel_lib_.c_str(),
+        e.what());
+    std::fflush(stderr);
+    eval_cpu(inputs, outputs);
+  }
 }
 
 } // namespace mlx::core

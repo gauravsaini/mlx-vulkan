@@ -72,7 +72,10 @@ bash scripts/local_amd_profile_compile.sh
 - ✅ **Stage 25 bring-up passes on real AMD** — import, GPU detect, core ops, autograd, optimizers, tiny MLP, Python bridge, and CPU-fallback outputs
 - ✅ **Transformer-critical ops audit passes on real AMD** — embeddings, causal attention forward, batched `Linear` / matmul, LayerNorm forward/backward, RoPE, RMSNorm, optimizer update, and uncompiled standard encoder layer
 - ✅ **Tiny transformer and TinyGPT training now pass on real AMD** — after fixing the non-cooperative batched matmul path for `subgroup_size=64`
-- ❌ **Vulkan compiled-graph execution is not stable yet on the local RX 580** — the simple compiled smoke `mx.compile(lambda x: (x + 1.0) * 2.0)` now reaches JIT GLSL generation on AMD, but still segfaults during runtime pipeline execution after the latest Broadcast / constant-input lowering fixes.
+- [x] **Vulkan compiled-graph execution now survives real RX 580 profiling without crashing**:
+      the compiled smoke passes on AMD, contiguous float-like compiled kernels (`Sigmoid -> Multiply`, `Sigmoid -> Multiply -> Multiply`) execute through Vulkan, and the earlier `copy_gpu` / `SmallVector` abort was removed by routing the float32 cast bridge through contiguous vector copies.
+- [ ] **Broadcasted / strided compiled kernels still fall back during real RX 580 LLM generation**:
+      current compile profiling shows fused hot kernels like `Broadcast -> Multiply`, `Subtract -> Broadcast -> Multiply`, and the `LogAddExp` softmax-style kernel now fail explicitly with `"[Compiled::eval_gpu] Strided or broadcasted Vulkan compiled inputs are not implemented yet."` instead of crashing.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -253,6 +256,8 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Expand `to_glsl_op` with comprehensive unary/binary ops (sin, cos, exp, tanh, sqrt, max, min, comparisons, etc.).
 - [x] Verify expanded ops on native AMD GPU (RX 580 via RADV).
 - [x] Implement in-memory SPIR-V caching (avoid re-invoking `glslc` for identical kernels).
+- [x] Add compile-coverage logging for fused Vulkan kernels and summarize primitive frequency from real generation runs.
+- [x] Audit which primitives LLM inference actually hits (profile a generation run).
 - [ ] Support complex ops (reduction, broadcasting) in the GLSL generator.
 - [ ] Validate performance on AMD GPUs with LLM inference.
 
@@ -268,12 +273,15 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 #### 6.2 Broadcasting & Strided Access
 - [ ] Support non-contiguous inputs in `build_kernel` (strided index computation).
 - [ ] Handle broadcasting rules (scalar expansion, dimension alignment).
+      Current AMD profiling confirms this is the primary blocker: the hot fused attention / softmax kernels now fall back cleanly instead of aborting.
 
 #### 6.3 Missing Primitive Coverage
-- [ ] Audit which primitives LLM inference actually hits (profile a generation run).
-- [ ] Add compile-coverage logging for fused Vulkan kernels and summarize primitive frequency from real generation runs.
-- [ ] Add any missing ops to `to_glsl_op` (e.g., `Erf`, `Sigmoid`, `Softmax` components).
+- [x] Audit which primitives LLM inference actually hits (profile a generation run).
+- [x] Add compile-coverage logging for fused Vulkan kernels and summarize primitive frequency from real generation runs.
+- [ ] Add any missing ops to `to_glsl_op` (e.g., `Erf`, `Softmax` components).
+      `Sigmoid` and `LogAddExp` are now lowered in the Vulkan GLSL path.
 - [ ] Handle `AsType` / static casts between dtypes in GLSL.
+      Current stopgap: float16 / bfloat16 compiled kernels are bridged through float32 shader IO plus Vulkan copy-based casts.
 
 #### 6.4 End-to-End LLM Benchmarking
 - [ ] Run `mlx-lm generate` on AMD RX 580 with `mx.compile` active.
@@ -282,10 +290,10 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 
 ### Immediate Next Steps
 
-1. Profile an LLM generation run to identify which primitives are needed.
-2. Add compile-coverage logging that makes fused primitive mixes and repeat counts visible during generation.
+1. Implement broadcast + strided indexing in `build_kernel` so the currently hot fused LLM kernels stop falling back on RX 580.
+2. Keep profiling one-token `mlx-lm generate` runs on the local AMD box after each broadcast/stride increment.
 3. Implement reduction support (Sum first, then others).
-4. Add broadcasting/strided access to `build_kernel`.
+4. Benchmark tokens/sec only after the broadcast-heavy hot path is predominantly on Vulkan.
 
 ---
 
