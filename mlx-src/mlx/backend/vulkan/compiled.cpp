@@ -26,6 +26,39 @@ namespace {
 std::mutex spirv_cache_mutex_;
 std::unordered_map<std::string, std::vector<uint32_t>> spirv_cache_;
 
+std::string jit_cache_dir() {
+  const char* home = std::getenv("HOME");
+  if (home != nullptr && home[0] != '\0') {
+    return std::string(home) + "/.cache/mlx_vulkan_jit";
+  }
+  return "/tmp/mlx_vulkan_jit";
+}
+
+std::optional<std::string> read_text_file(const std::string& path) {
+  std::ifstream in(path);
+  if (!in) {
+    return std::nullopt;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+std::optional<std::vector<uint32_t>> read_spirv_file(const std::string& path) {
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in) {
+    return std::nullopt;
+  }
+  size_t size = in.tellg();
+  in.seekg(0);
+  std::vector<uint32_t> code(size / sizeof(uint32_t));
+  in.read(reinterpret_cast<char*>(code.data()), size);
+  if (!in) {
+    return std::nullopt;
+  }
+  return code;
+}
+
 struct KernelProfile {
   size_t executions{0};
   size_t tape_size{0};
@@ -251,10 +284,20 @@ std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, cons
     }
   }
 
-  std::string tmp_dir = "/tmp/mlx_vulkan_jit/";
-  std::filesystem::create_directories(tmp_dir);
-  std::string comp_path = tmp_dir + kernel_name + ".comp";
-  std::string spv_path = tmp_dir + kernel_name + ".spv";
+  std::string cache_dir = jit_cache_dir();
+  std::filesystem::create_directories(cache_dir);
+  std::string comp_path = cache_dir + "/" + kernel_name + ".comp";
+  std::string spv_path = cache_dir + "/" + kernel_name + ".spv";
+
+  auto cached_glsl = read_text_file(comp_path);
+  if (cached_glsl && *cached_glsl == glsl_source) {
+    auto cached_spv = read_spirv_file(spv_path);
+    if (cached_spv) {
+      std::lock_guard<std::mutex> lk(spirv_cache_mutex_);
+      spirv_cache_[kernel_name] = *cached_spv;
+      return *cached_spv;
+    }
+  }
   
   std::ofstream out(comp_path);
   out << glsl_source;
@@ -265,14 +308,11 @@ std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, cons
     throw std::runtime_error("[Compiled::eval_gpu] Failed to compile dynamic kernel with glslc.");
   }
   
-  std::ifstream spv_in(spv_path, std::ios::binary | std::ios::ate);
-  if (!spv_in) {
+  auto cached_spv = read_spirv_file(spv_path);
+  if (!cached_spv) {
     throw std::runtime_error("[Compiled::eval_gpu] Failed to read compiled SPIR-V.");
   }
-  size_t size = spv_in.tellg();
-  spv_in.seekg(0);
-  std::vector<uint32_t> code(size / sizeof(uint32_t));
-  spv_in.read(reinterpret_cast<char*>(code.data()), size);
+  auto code = std::move(*cached_spv);
 
   {
     std::lock_guard<std::mutex> lk(spirv_cache_mutex_);

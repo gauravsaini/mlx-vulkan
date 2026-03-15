@@ -4,6 +4,15 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Added persistent Vulkan compiled SPIR-V caching and removed the pathological fresh-process cold-start cliff on the RX 580.
+    - Extended `mlx/backend/vulkan/compiled.cpp` so the Vulkan JIT path reuses generated GLSL and compiled `.spv` blobs from `~/.cache/mlx_vulkan_jit` when the cached GLSL source matches the current kernel text, instead of relying only on the existing in-memory cache.
+    - This keeps correctness simple: if the generated GLSL changes, the cached source text no longer matches and `glslc` is invoked again to refresh the `.spv`.
+    - AMD validation through the local scripted workflow now shows:
+      - a first fresh-process warm-probe run at about `5.57s` for `cold_in_process`,
+      - a second fresh process at about `4.69s` for `cold_in_process`,
+      - the in-process warm token staying near `4.70s`,
+      - and the strict one-token `generate_step` benchmark reaching first yield in about `4.69s`.
+    - Most importantly, this removes the earlier pathological behavior where the first token in a fresh process had drifted to about `54.35s` while the second token in the same process was only about `4.90s`.
 - **2026-03-15**: Added a selective direct affine QMM logits path for the RX 580 tied-vocab projection.
     - Added `mlx/backend/vulkan/kernels/quantized_qmv.comp`, a fused transpose affine quantized-matmul shader that reads packed weights, scales, and biases directly and accumulates logits without first materializing the full dequantized `[K, N]` matrix.
     - Wired that shader into `mlx/backend/vulkan/primitives.cpp` behind a deliberately narrow gate: `transpose=True`, 2D packed weights, `M <= 8`, and `N >= 8192`, so the optimization targets the giant-vocab Qwen `lm_head` path without regressing the regular decoder projections that were already near `0.05s`.

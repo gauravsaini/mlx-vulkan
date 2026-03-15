@@ -102,6 +102,9 @@ bash scripts/local_amd_profile_compile.sh
       Vulkan now uses a dedicated transpose affine QMM shader for the giant-vocab, small-`M` case instead of materializing a full dequantized `[K, N]` matrix before matmul. The gate is intentionally narrow: `transpose=True`, 2D packed weights, `M <= 8`, and `N >= 8192`, which keeps normal decoder projections on the proven two-pass path while targeting the Qwen tied `lm_head`.
       The strict AMD smoke `tests/vulkan/test_quantized_gpu.py` now includes a large-vocab bfloat16 regression for this path, and the guarded one-token `generate_step` benchmark on the RX 580 improved from about `7.18s` to about `5.44s`, now beating the matching CPU baseline (`~7.08s`).
       Follow-up probing shows the next meaningful latency target is first-layer / first-use warmup plus the remaining decoder prefill cost rather than the tied logits projection itself.
+- [~] **Vulkan compiled JIT kernels now persist SPIR-V across processes, removing the pathological cold-start cliff on RX 580**:
+      `mlx/backend/vulkan/compiled.cpp` no longer relies on an in-memory-only SPIR-V cache. The generated GLSL source and compiled `.spv` are now reused from `~/.cache/mlx_vulkan_jit` when the on-disk GLSL text matches the current kernel source, so identical `mx.compile` kernels do not re-run `glslc` for every new Python process.
+      Real RX 580 validation shows the cross-process cold-start wall collapsed: a fresh-process first token that had ballooned to about `54.35s` in the same-process warm probe now drops to about `5.57s` on the first post-build run, and a second fresh process reaches about `4.69s`, matching the warmed steady-state path.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -320,12 +323,13 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
       Latest strict RX 580 benchmark after the affine Vulkan QMM path landed: model load is about `5.67s` on the first cold run and about `3.58s` on the warm rerun; guarded one-token `generate_step` now succeeds with first yield in about `7.28s` (`7.13s` warm rerun) instead of timing out. A matching CPU baseline on the same box is about `7.09s`, so the catastrophic hidden CPU detour is gone but steady-state GPU throughput still needs work.
       Latest refreshed AMD layer profile: 5-token prompt prefill is about `3.23s`, decoder layers are about `2.03s`, tied `lm_head` is about `1.19s`, and the first linear layer still pays about `0.85s` of one-time warmup overhead while later linear layers stay near `0.05s`.
       Latest strict RX 580 benchmark after the selective direct large-vocab QMM path landed: model load is about `3.56s`, guarded one-token `generate_step` reaches first yield in about `5.44s`, and the GPU is now ahead of the matching CPU baseline (`~7.08s`). A focused tied-`lm_head` probe confirms the new direct path is active for the real `N=248320`, `K=2048` Qwen projection.
+      Latest strict RX 580 benchmark after persistent compiled SPIR-V caching landed: model load is about `4.63s`, guarded one-token `generate_step` reaches first yield in about `4.69s`, and fresh-process warm-probe runs now show `cold_in_process` about `5.57s` on the first run and about `4.69s` on the next fresh process instead of the earlier `~54s` cold-start cliff.
 
 ### Immediate Next Steps
 
-1. Profile the post-logits-fix first-token path on the RX 580 so we separate true backend work from one-time warmup; the old full-prompt `lm_head_tied` microprofile is no longer representative of strict `generate_step`.
-2. Investigate the first-layer warmup cost (`layer0_linear` about `0.85s`) and separate one-time JIT / pipeline setup from steady-state decoder execution.
-3. Re-run longer AMD generation benchmarks (`max_tokens > 1`) and capture warm steady-state tokens/sec from the new `~5.44s` first-yield baseline.
+1. Re-profile the RX 580 decoder after the persistent JIT-cache fix; the old `~54s` cold-start behavior is gone, so the remaining first-use costs need to be measured from the new `~4.69s` fresh-process baseline.
+2. Re-run longer AMD generation benchmarks (`max_tokens > 1`) and capture warm steady-state tokens/sec from the new baseline.
+3. Investigate any remaining non-JIT warmup in early decoder layers, but only after confirming it still matters once the disk-backed compiled cache is warm.
 4. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
 5. Profile GPU utilization only after the updated warmup / prefill hotspots are better understood.
 
