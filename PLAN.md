@@ -230,15 +230,17 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [x] Architect `mlx/backend/vulkan/compiled.cpp` based on the Metal JIT pattern.
 - [x] Introduce a mechanism to dynamically generate GLSL shaders from `mx.compile()` graphs.
 - [x] Test a simple compiled `mx.compile(lambda x: x + x)` graph natively on Vulkan.
+- [x] Expand `to_glsl_op` with comprehensive unary/binary ops (sin, cos, exp, tanh, sqrt, max, min, comparisons, etc.).
+- [x] Verify expanded ops on native AMD GPU (RX 580 via RADV).
 - [ ] Support complex ops (reduction, broadcasting) in the GLSL generator.
 - [ ] Implement robust `glslc` error handling and SPIR-V caching.
 - [ ] Validate performance on AMD GPUs with LLM inference.
 
 ### Immediate Next Steps
 
-1. Verify the `mx.compile` logic on the remote AMD node.
-2. Expand `to_glsl_op` to support more primitives (Subtract, Multiply, Divide, etc.).
-3. Implement reduction support in `compiled.cpp`.
+1. Implement SPIR-V caching (avoid recompiling identical kernels).
+2. Add reduction support (sum, prod, max, min across axes).
+3. Re-attempt LLM inference on AMD node with compiled execution.
 
 ---
 
