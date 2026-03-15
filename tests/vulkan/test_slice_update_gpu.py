@@ -77,6 +77,26 @@ def main():
                 f"non-contiguous slice update mismatch\nexpected:\n{expected_nc}\nactual:\n{got_nc}"
             )
         print(f"  PASS kv_cache_slice_update_noncontig: shape={got_nc.shape}")
+
+        cache_seq = mx.zeros((1, 2, 8, 16), dtype=mx.float16)
+        expected_seq = np.zeros((1, 2, 8, 16), dtype=np.float32)
+        for token_idx in range(4):
+            update_seq_np = (
+                np.arange(1, 1 + 1 * 2 * 1 * 16, dtype=np.float32).reshape(1, 2, 1, 16)
+                + token_idx * 100.0
+            ).astype(np.float16)
+            cache_seq[..., token_idx : token_idx + 1, :] = mx.array(update_seq_np)
+            expected_seq[..., token_idx : token_idx + 1, :] = update_seq_np.astype(
+                np.float32
+            )
+
+        mx.eval(cache_seq)
+        got_seq = np.array(cache_seq.tolist(), dtype=np.float32)
+        if not np.allclose(got_seq, expected_seq, atol=1e-3, rtol=1e-3):
+            raise AssertionError(
+                f"repeated slice update mismatch\nexpected:\n{expected_seq}\nactual:\n{got_seq}"
+            )
+        print(f"  PASS kv_cache_slice_update_sequence: shape={got_seq.shape}")
     finally:
         if prev_fail is None:
             os.environ.pop("MLX_VULKAN_FAIL_ON_CPU_FALLBACK", None)

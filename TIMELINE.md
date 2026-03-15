@@ -1595,3 +1595,17 @@ Post-build workflow must copy **both** `core.cpython-311-darwin.so` and `libmlx.
    - All standard transformer blocks are now formally proven mathematically capable on Vulkan geometry.
 
 2. **Tests**: Added `RMSNorm`, `RoPE`, `SiLU (uncompiled)`, and `TransformerEncoderLayer (uncompiled)` to the strict `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1` test suite. All pass.
+
+---
+
+## UPDATED ON : 2026-03-16
+
+### perf (2026-03-16) — Eager Vulkan cache-write path
+
+1. Added a Vulkan-only eager `__setitem__` fast path in `mlx-src/python/src/indexing.cpp` for static slice updates on concrete Vulkan-backed arrays. The goal is to cut the Python KV-cache mutation overhead without changing the functional `slice_update(...)` API.
+2. Tightened `materialize_array_update(...)` so already-concrete eager arrays stop paying a redundant `eval()+detach()` path.
+3. Strengthened `tests/vulkan/test_slice_update_gpu.py` with a repeated token-write regression that better matches `cache[..., prev:offset, :] = update`.
+4. Local validation:
+   - `cmake --build mlx-src/build_vulkan -j4` passes.
+   - Local runtime import of the rebuilt extension is still blocked here by `vkCreateInstance (VkResult=-9)`.
+   - RX 580 validation is still pending from this shell because the local AMD wrapper scripts currently fail at the SSH connection step with `Operation not permitted`.

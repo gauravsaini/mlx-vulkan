@@ -1625,3 +1625,25 @@ These items must be completed before the Vulkan backend can be considered "Prod 
 - [ ] **Package Signing & Linking:** Simplify dynamic linkage patterns such that Python extensions load reliably via standardized `pip` / `uv` packaging workflows without `macOS` `.so` conflicts.
 | 7 | Equivalence test suite | Prevents regressions |
 | 8 | Workgroup tuning | Performance on AMD/NVIDIA |
+
+---
+
+## UPDATED ON : 2026-03-16
+
+### perf (2026-03-16) — Eager Vulkan slice-update fast path for KV-cache style writes
+
+1. **Python eager setitem fast path** (`mlx-src/python/src/indexing.cpp`):
+   - Added a Vulkan-only eager mutation path for static slice updates on concrete Vulkan-backed arrays.
+   - This bypasses the functional `slice_update(...)` result path for Python `__setitem__` when we already intend to mutate in place, which is the shape used by `KVCache.update_and_fetch(...)`.
+   - The fast path normalizes the slice, materializes the broadcasted update once, dispatches `copy_gpu_inplace(...)` directly into the cache buffer, and tracks completion with a GPU event instead of rebuilding a full functional result array.
+
+2. **Materialization tightening** (`mlx-src/python/src/indexing.cpp`):
+   - `materialize_array_update(...)` now short-circuits already-concrete eager arrays instead of forcing an unnecessary `eval()+detach()` cycle.
+
+3. **Regression coverage** (`tests/vulkan/test_slice_update_gpu.py`):
+   - Added a repeated KV-cache style slice-update sequence test so consecutive token writes are covered instead of only single writes.
+
+4. **Validation status**:
+   - `cmake --build mlx-src/build_vulkan -j4` passes locally.
+   - Local runtime validation is blocked on this machine because importing the rebuilt extension still fails immediately with `vkCreateInstance (VkResult=-9)`.
+   - AMD validation is still pending from this shell because the local AMD scripts currently fail to open their SSH leg here (`Operation not permitted`), so the next check is to rerun the standard RX 580 script suite once that path is available again.

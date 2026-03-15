@@ -3,6 +3,10 @@
 #include <optional>
 #include <sstream>
 
+#include "mlx/backend/common/slicing.h"
+#include "mlx/backend/gpu/copy.h"
+#include "mlx/device.h"
+#include "mlx/event.h"
 #include "python/src/convert.h"
 #include "python/src/indexing.h"
 
@@ -10,15 +14,87 @@
 #include "mlx/primitives.h"
 
 namespace {
+constexpr uint64_t kVulkanBufferMagic = 0x4d4c58564b425546ULL;
+
 mx::array materialize_array_read(const mx::array& value);
 
 mx::array materialize_array_update(const mx::array& value) {
+  if (
+      !value.has_primitive() &&
+      value.data_shared_ptr() != nullptr &&
+      value.status() != mx::array::Status::unscheduled) {
+    auto concrete = value;
+    concrete.wait();
+    return concrete;
+  }
+  if (
+      !value.has_primitive() &&
+      value.status() == mx::array::Status::unscheduled &&
+      value.data_shared_ptr() != nullptr) {
+    return value;
+  }
+
   // Eager updates need a concrete array, but forcing a host round-trip here is
   // catastrophic for GPU-backed state updates such as KV-cache writes.
   auto concrete = value;
   concrete.eval();
   concrete.detach();
   return concrete;
+}
+
+std::pair<bool, mx::Shape> normalize_slice_for_update(
+    const mx::Shape& shape,
+    mx::Shape& start,
+    mx::Shape stop,
+    mx::Shape& strides) {
+  mx::Shape out_shape(shape.size());
+  bool has_neg_strides = false;
+
+  for (int i = 0; i < shape.size(); ++i) {
+    auto n = shape[i];
+    auto s = start[i];
+    s = s < 0 ? s + n : s;
+    auto e = stop[i];
+    e = e < 0 ? e + n : e;
+
+    if (strides[i] < 0) {
+      has_neg_strides = true;
+
+      auto st = std::min(s, n - 1);
+      auto ed = e > -1 ? e : -1;
+
+      start[i] = st;
+      ed = ed > st ? st : ed;
+
+      auto str = -strides[i];
+      out_shape[i] = (start[i] - ed + str - 1) / str;
+    } else {
+      auto st = std::max(static_cast<mx::ShapeElem>(0), std::min(s, n));
+      auto ed = std::max(static_cast<mx::ShapeElem>(0), std::min(e, n));
+
+      start[i] = st;
+      ed = ed < st ? st : ed;
+
+      out_shape[i] = (ed - start[i] + strides[i] - 1) / strides[i];
+    }
+
+    if (out_shape[i] == 1) {
+      strides[i] = 1;
+    }
+  }
+
+  return std::make_pair(has_neg_strides, out_shape);
+}
+
+bool is_vulkan_backed_concrete_array(const mx::array& value) {
+  if (value.has_primitive() || value.data_shared_ptr() == nullptr) {
+    return false;
+  }
+  if (value.buffer().ptr() == nullptr || value.buffer_size() < sizeof(uint64_t)) {
+    return false;
+  }
+  auto magic = *reinterpret_cast<const uint64_t*>(value.buffer().ptr());
+  return magic == kVulkanBufferMagic;
 }
 
 mx::array materialize_array_read(const mx::array& value) {
@@ -952,6 +1028,134 @@ auto mlx_slice_update(
   return std::make_pair(true, out);
 }
 
+bool try_vulkan_slice_update_inplace(
+    mx::array& src,
+    const nb::object& obj,
+    const ScalarOrArray& v) {
+  if (!is_vulkan_backed_concrete_array(src)) {
+    return false;
+  }
+  if (src.ndim() == 0 || nb::isinstance<nb::bool_>(obj) ||
+      (!nb::isinstance<nb::slice>(obj) && !nb::isinstance<nb::tuple>(obj) &&
+       !nb::isinstance<nb::int_>(obj))) {
+    return false;
+  }
+  if (nb::isinstance<nb::tuple>(obj)) {
+    for (auto idx : nb::cast<nb::tuple>(obj)) {
+      if (nb::isinstance<mx::array>(idx) || nb::isinstance<nb::list>(idx)) {
+        return false;
+      }
+    }
+  }
+
+  auto upd = to_array(v, src.dtype());
+
+  int s = 0;
+  for (; s < static_cast<int>(upd.ndim()) - 1 && upd.shape(s) == 1 &&
+       (upd.ndim() - s) > src.ndim();
+       s++) {
+  }
+  auto squeeze_axes = std::vector<int>(s);
+  std::iota(squeeze_axes.begin(), squeeze_axes.end(), 0);
+  auto up = mx::squeeze(upd, squeeze_axes);
+
+  mx::Shape starts(src.ndim(), 0);
+  mx::Shape stops = src.shape();
+  mx::Shape strides(src.ndim(), 1);
+
+  if (nb::isinstance<nb::int_>(obj)) {
+    auto idx = nb::cast<int>(obj);
+    idx = idx < 0 ? idx + stops[0] : idx;
+    starts[0] = idx;
+    stops[0] = idx + 1;
+  } else if (nb::isinstance<nb::slice>(obj)) {
+    get_slice_params(
+        starts[0],
+        stops[0],
+        strides[0],
+        nb::cast<nb::slice>(obj),
+        src.shape(0));
+  } else {
+    auto entries = nb::cast<nb::tuple>(obj);
+    auto [non_none_indices, indices] = mlx_expand_ellipsis(src.shape(), entries);
+    if (non_none_indices > src.ndim()) {
+      std::ostringstream msg;
+      msg << "Too many indices for array with " << src.ndim() << " dimensions.";
+      throw std::invalid_argument(msg.str());
+    }
+    if (non_none_indices == 0) {
+      up = mx::broadcast_to(up, src.shape());
+    } else {
+      int unspecified = src.ndim() - non_none_indices;
+      std::vector<int> squeeze_dims;
+      std::vector<int> expand_dims;
+      for (int i = indices.size() - 1,
+               ax = non_none_indices - 1,
+               upd_ax = upd.ndim() - unspecified - 1;
+           i >= 0;
+           --i) {
+        auto& pyidx = indices[i];
+        if (nb::isinstance<nb::slice>(pyidx)) {
+          get_slice_params(
+              starts[ax],
+              stops[ax],
+              strides[ax],
+              nb::cast<nb::slice>(pyidx),
+              src.shape(ax));
+          ax--;
+          upd_ax--;
+        } else if (nb::isinstance<nb::int_>(pyidx)) {
+          int st = nb::cast<int>(pyidx);
+          st = (st < 0) ? st + src.shape(i) : st;
+          starts[ax] = st;
+          stops[ax] = st + 1;
+          if (upd_ax >= 0) {
+            expand_dims.push_back(i - indices.size() - unspecified);
+          }
+          ax--;
+        } else if (pyidx.is_none()) {
+          if (upd_ax-- >= 0) {
+            squeeze_dims.push_back(i - indices.size() - unspecified);
+          }
+        }
+      }
+      up = mx::squeeze(
+          mx::expand_dims(up, std::move(expand_dims)), std::move(squeeze_dims));
+    }
+  }
+
+  auto norm_starts = starts;
+  auto norm_strides = strides;
+  auto [has_neg_strides, upd_shape] =
+      normalize_slice_for_update(src.shape(), norm_starts, stops, norm_strides);
+  if (has_neg_strides) {
+    return false;
+  }
+
+  up = materialize_array_update(mx::broadcast_to(up, upd_shape));
+
+  auto [data_offset, out_strides] =
+      mx::prepare_slice(src, norm_starts, norm_strides);
+  auto stream = mx::default_stream(mx::Device::gpu);
+  mx::copy_gpu_inplace(
+      up,
+      src,
+      up.shape(),
+      up.strides(),
+      out_strides,
+      0,
+      data_offset,
+      mx::CopyType::GeneralGeneral,
+      stream);
+
+  auto event = mx::Event{stream};
+  event.set_value(1);
+  event.signal(stream);
+  src.attach_event(event);
+  src.set_status(mx::array::Status::evaluated);
+  return true;
+}
+
 std::optional<mx::array> extract_boolean_mask(const nb::object& obj) {
   using NDArray = nb::ndarray<nb::ro, nb::c_contig, nb::device::cpu>;
   if (nb::isinstance<nb::bool_>(obj)) {
@@ -1002,6 +1206,10 @@ void mlx_set_item(
   } else if (!src.is_tracer()) {
     staged_value =
         materialize_array_update(to_array(staged_value, update_src.dtype()));
+  }
+
+  if (!src.is_tracer() && try_vulkan_slice_update_inplace(src, obj, staged_value)) {
+    return;
   }
 
   auto [success, out] = mlx_slice_update(update_src, obj, staged_value);
