@@ -4,6 +4,23 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Specialized the medium decoder Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and pushed RX 580 decode forward again.
+    - Kept the existing medium decoder direct-QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the actual repeated decoder format:
+      - affine `5-bit`
+      - `group_size=64`
+      - `values_per_thread == 16`
+    - Instead of paying the generic `packed_value_at(...)` path for every multiply inside the hottest decoder projections, the new fast path decodes the two packed 5-byte groups handled by each lane and reuses one scale/bias pair for that lane's 16 values.
+    - AMD validation through the local scripts shows:
+      - strict quantized smoke still passes on the RX 580, including the `1 x 2048 -> 2048` decoder-square regression,
+      - the representative layer-13 decode block now improves across the expensive medium-QMM family:
+        - `in_proj_qkv` about `0.00621s`
+        - `in_proj_z` about `0.00219s`
+        - `out_proj` about `0.00205s`
+        - `mlp_gate_proj` about `0.00628s`
+        - `mlp_up_proj` about `0.00608s`
+        - `mlp_down_proj` about `0.00615s`
+      - strict 16-token GPU `generate_step` improves from the recent `23.60-23.63s` / `0.677-0.678 tok/s` checkpoint to about `23.17s` / `0.691 tok/s`, with first yield about `3.81s`.
+    - Result: this is another real end-to-end win, not just a layer micro-benchmark. The medium decoder QMM family is now much healthier on the RX 580, and the next remaining wall is the broader steady-state decode utilization gap rather than one obviously bad transpose projection shape.
 - **2026-03-16**: Specialized the tied-logits Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and moved RX 580 decode forward again.
     - Kept the existing direct large-vocab QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv.comp` for the actual Qwen tied-`lm_head` format:
       - affine `5-bit`

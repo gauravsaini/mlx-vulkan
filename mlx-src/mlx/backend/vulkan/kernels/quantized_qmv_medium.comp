@@ -171,29 +171,53 @@ void main() {
 
             uint row_pack_base = n * packs_per_row * bpp;
             uint row_scale_base = n * groups_per_row;
-            uint cached_group = 0xFFFFFFFFu;
-            float scale = 0.0;
-            float bias = 0.0;
+            if (params.bits == 5u && params.group_size == 64u && values_per_thread == 16u) {
+                uint group_index = lane_k_base / 64u;
+                float scale = read_scale(row_scale_base + group_index);
+                float bias = read_bias(row_scale_base + group_index);
+                uint pack_index_base = lane_k_base / 8u;
+                for (uint pack = 0u; pack < 2u; ++pack) {
+                    uint byte_base = row_pack_base + (pack_index_base + pack) * 5u;
+                    uint b0 = get_w_byte(byte_base + 0u);
+                    uint b1 = get_w_byte(byte_base + 1u);
+                    uint b2 = get_w_byte(byte_base + 2u);
+                    uint b3 = get_w_byte(byte_base + 3u);
+                    uint b4 = get_w_byte(byte_base + 4u);
+                    uint x_base = pack * 8u;
+                    acc[out_idx] += x_regs[x_base + 0u] * (float(b0 & 0x1Fu) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 1u] * (float(((b0 >> 5u) & 0x7u) + ((b1 & 0x3u) << 3u)) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 2u] * (float((b1 >> 2u) & 0x1Fu) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 3u] * (float(((b1 >> 7u) & 0x1u) + ((b2 & 0xFu) << 1u)) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 4u] * (float(((b2 >> 4u) & 0xFu) + ((b3 & 0x1u) << 4u)) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 5u] * (float((b3 >> 1u) & 0x1Fu) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 6u] * (float(((b3 >> 6u) & 0x3u) + ((b4 & 0x7u) << 2u)) * scale + bias);
+                    acc[out_idx] += x_regs[x_base + 7u] * (float((b4 >> 3u) & 0x1Fu) * scale + bias);
+                }
+            } else {
+                uint cached_group = 0xFFFFFFFFu;
+                float scale = 0.0;
+                float bias = 0.0;
 
-            for (uint i = 0u; i < MAX_VALUES_PER_THREAD; ++i) {
-                if (i >= values_per_thread) {
-                    break;
+                for (uint i = 0u; i < MAX_VALUES_PER_THREAD; ++i) {
+                    if (i >= values_per_thread) {
+                        break;
+                    }
+                    uint k = lane_k_base + i;
+                    if (k >= params.K) {
+                        break;
+                    }
+                    uint group_index = k / params.group_size;
+                    if (group_index != cached_group) {
+                        scale = read_scale(row_scale_base + group_index);
+                        bias = read_bias(row_scale_base + group_index);
+                        cached_group = group_index;
+                    }
+                    uint pack_index = k / pf;
+                    uint elem_in_pack = k % pf;
+                    uint byte_base = row_pack_base + pack_index * bpp;
+                    float wv = float(packed_value_at(byte_base, elem_in_pack, params.bits)) * scale + bias;
+                    acc[out_idx] += x_regs[i] * wv;
                 }
-                uint k = lane_k_base + i;
-                if (k >= params.K) {
-                    break;
-                }
-                uint group_index = k / params.group_size;
-                if (group_index != cached_group) {
-                    scale = read_scale(row_scale_base + group_index);
-                    bias = read_bias(row_scale_base + group_index);
-                    cached_group = group_index;
-                }
-                uint pack_index = k / pf;
-                uint elem_in_pack = k % pf;
-                uint byte_base = row_pack_base + pack_index * bpp;
-                float wv = float(packed_value_at(byte_base, elem_in_pack, params.bits)) * scale + bias;
-                acc[out_idx] += x_regs[i] * wv;
             }
         }
     }
