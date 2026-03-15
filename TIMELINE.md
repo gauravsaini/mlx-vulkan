@@ -4,6 +4,25 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Added a native Vulkan RoPE path for the scalar-offset decode case and remeasured the RX 580 attention block.
+    - Replaced Vulkan `RoPE::eval_gpu(...)`'s unconditional fallback-graph materialization with a native shader path for the actual rotary case being exercised by Qwen on the RX 580:
+      - forward only
+      - nontraditional layout
+      - scalar offset
+      - no custom `freqs`
+      - float32 / float16 / bfloat16 inputs via a small float32 bridge
+    - Tightened `tests/vulkan/test_rope_gpu.py` so it now checks numerical agreement against an explicit CPU-side reference for:
+      - the existing transposed prefill-style tensor
+      - a decode-style scalar-offset `[1, 8, 1, 256]` tensor
+    - AMD validation through the local scripts shows:
+      - the stricter RoPE smoke passes on the RX 580,
+      - the full Qwen key/cache probe still passes under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`,
+      - average prefill full-attention layer time drops from about `0.0596s` to about `0.0521s`,
+      - average decode full-attention layer time drops from about `0.0540s` to about `0.0512s`.
+    - Whole-run impact is smaller than the per-layer win:
+      - refreshed strict 16-token GPU `generate_step` lands around `28.71s` / `0.557 tok/s` with first yield about `4.36s`
+      - that keeps end-to-end decode in roughly the same band as the SDPA-only checkpoint rather than unlocking a new class of throughput
+    - Result: native RoPE is still the right cleanup for the live Qwen path, but the next major throughput wall is still more likely KV-cache / orchestration overhead than rotary math itself.
 - **2026-03-16**: Added a native Vulkan decode-time grouped-query SDPA fast path and re-benchmarked real Qwen generation on the RX 580.
     - Added `mlx/backend/vulkan/kernels/sdpa_vector.comp`, a dedicated decode-only SDPA shader that consumes the original `q/k/v` tensors and performs grouped-query attention with an online softmax update in one dispatch.
     - Wired that path into `mlx/backend/vulkan/primitives.cpp` behind a deliberately narrow gate:

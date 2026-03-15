@@ -5222,6 +5222,46 @@ namespace fast {
 
 namespace {
 
+array prepare_vulkan_contiguous_copy(
+    const array& src,
+    Dtype target_dtype,
+    const Stream& s,
+    std::optional<array>& uploaded,
+    std::optional<array>& prepared) {
+  array current = src;
+  if (!is_vulkan_backed_array(current)) {
+    uploaded = upload_explicit_vulkan_input(current, s);
+    current = *uploaded;
+  }
+  if (current.dtype() != target_dtype || current.offset() != 0 ||
+      !current.flags().row_contiguous) {
+    prepared = array(current.shape(), target_dtype, nullptr, {});
+    prepared->set_data(allocator::malloc(prepared->nbytes()));
+    copy_gpu(current, *prepared, CopyType::General, s);
+    current = *prepared;
+  }
+  return current;
+}
+
+bool supports_vulkan_rope(
+    const std::vector<array>& inputs,
+    const array& in,
+    int dims,
+    bool traditional,
+    float base,
+    bool forward) {
+  (void)base;
+  if (!forward || traditional || inputs.size() != 2 || in.ndim() < 2 ||
+      dims <= 0 || (dims % 2) != 0 || dims > in.shape(-1) || dims > 256) {
+    return false;
+  }
+  if (inputs[1].size() != 1) {
+    return false;
+  }
+  auto dt = in.dtype();
+  return dt == float16 || dt == bfloat16 || dt == float32;
+}
+
 bool supports_vulkan_decode_sdpa(
     const array& q,
     const array& k,
@@ -5628,9 +5668,132 @@ bool RoPE::use_fallback(Stream s) {
 void RoPE::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // The fast primitive carries [x, offset, optional freqs]; reuse the
-  // fallback graph until a Vulkan-specialized path is added for those inputs.
-  materialize_fallback_outputs(fallback_(inputs), outputs);
+  auto& in = inputs[0];
+  if (!supports_vulkan_rope(inputs, in, dims_, traditional_, base_, forward_)) {
+    materialize_fallback_outputs(fallback_(inputs), outputs);
+    return;
+  }
+
+  auto& s = stream();
+  auto& dev = vulkan::device(s.device);
+  auto& out = outputs[0];
+
+  std::optional<array> in_uploaded;
+  std::optional<array> in_prepared;
+  std::optional<array> offset_uploaded;
+  std::optional<array> offset_prepared;
+  array shader_in = prepare_vulkan_contiguous_copy(
+      in, float32, s, in_uploaded, in_prepared);
+  array shader_offset = prepare_vulkan_contiguous_copy(
+      inputs[1], int32, s, offset_uploaded, offset_prepared);
+
+  bool use_temp_out = out.dtype() != float32;
+  std::optional<array> temp_out;
+  array shader_out = out;
+
+  out.set_data(allocator::malloc(out.nbytes()));
+  if (out.size() == 0) {
+    return;
+  }
+
+  if (use_temp_out) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+    shader_out = *temp_out;
+  }
+
+  if (dims_ < in.shape(-1)) {
+    copy_gpu(shader_in, shader_out, CopyType::Vector, s);
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  VkPipelineLayout layout;
+  VkDescriptorSetLayout ds_layout;
+  VkPipeline pipeline =
+      dev.get_pipeline("rope", layout, ds_layout, 3, 24, nullptr);
+  if (pipeline == VK_NULL_HANDLE) {
+    materialize_fallback_outputs(fallback_(inputs), outputs);
+    return;
+  }
+
+  VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
+  VkDescriptorBufferInfo infos[3]{
+      {vulkan::get_buffer(shader_in), 0, VK_WHOLE_SIZE},
+      {vulkan::get_buffer(shader_offset), 0, VK_WHOLE_SIZE},
+      {vulkan::get_buffer(shader_out), 0, VK_WHOLE_SIZE},
+  };
+  VkWriteDescriptorSet writes[3]{};
+  for (int i = 0; i < 3; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = ds;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+  }
+  vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
+
+  struct PushConst {
+    uint32_t total_rows;
+    uint32_t T;
+    uint32_t D;
+    uint32_t half_dims;
+    float scale;
+    float log_base_over_half;
+  } pc{
+      static_cast<uint32_t>(shader_in.size() / shader_in.shape(-1)),
+      static_cast<uint32_t>(shader_in.shape(-2)),
+      static_cast<uint32_t>(shader_in.shape(-1)),
+      static_cast<uint32_t>(dims_ / 2),
+      scale_,
+      std::log(base_) / static_cast<float>(dims_ / 2),
+  };
+
+  VkCommandBuffer cmd = encoder.cmd;
+  vkCmdPushConstants(
+      cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(
+      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+  vkCmdDispatch(
+      cmd,
+      vulkan::div_ceil(pc.total_rows * pc.half_dims, 256u),
+      1,
+      1);
+
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      1,
+      &barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  if (use_temp_out) {
+    copy_gpu(*temp_out, out, CopyType::General, s);
+    dev.add_temporary(s, *temp_out);
+  }
+  if (in_uploaded.has_value()) {
+    dev.add_temporary(s, *in_uploaded);
+  }
+  if (in_prepared.has_value()) {
+    dev.add_temporary(s, *in_prepared);
+  }
+  if (offset_uploaded.has_value()) {
+    dev.add_temporary(s, *offset_uploaded);
+  }
+  if (offset_prepared.has_value()) {
+    dev.add_temporary(s, *offset_prepared);
+  }
 }
 void ScaledDotProductAttention::eval_gpu(
     const std::vector<array>& inputs,

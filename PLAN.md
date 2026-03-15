@@ -118,6 +118,14 @@ bash scripts/local_amd_profile_compile.sh
       - GPU run 2: `28.24s`, `0.566 tok/s`, first yield `4.23s`
       - matching CPU rerun: `27.91s`, `0.573 tok/s`, first yield `4.24s`
       So the new SDPA path clearly improved the GPU decode baseline (older warmed GPU result was about `31.85s` / `0.502 tok/s`), but the RX 580 is still only at rough CPU parity rather than decisively ahead.
+- [~] **A native Vulkan RoPE path is now live for the scalar-offset Qwen decode case, but it is a local win rather than a full throughput unlock**:
+      `RoPE::eval_gpu(...)` no longer always materializes the fallback graph. Vulkan now has a native forward path for the actual LLM rotary case we are exercising on RX 580: no custom `freqs`, nontraditional layout, scalar offset, and float32/float16/bfloat16 inputs.
+      The stricter `tests/vulkan/test_rope_gpu.py` now checks CPU-reference numerical agreement for both a transposed prefill-style tensor and a decode-style scalar-offset `[1, 8, 1, 256]` tensor under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`, and it passes on the RX 580.
+      Real AMD profiling shows that this RoPE path improves the attention block itself:
+      - average prefill full-attention layer time moved from about `0.0596s` to about `0.0521s`
+      - average decode full-attention layer time moved from about `0.0540s` to about `0.0512s`
+      But the refreshed strict 16-token GPU benchmark is still only about `28.71s` / `0.557 tok/s` with first yield about `4.36s`, which keeps whole-run decode in the same near-parity band as the SDPA-only checkpoint.
+      Conclusion: native RoPE is worth keeping because it removes repeated fallback-graph overhead in the real path, but the next major wall is still outside RoPE itself, likely KV-cache maintenance and/or host-submit gaps.
 - [~] **Even after the SDPA fast path, the RX 580 is still mostly idle during warmed decode**:
       the refreshed utilization profile after the SDPA change shows:
       - first yield about `4.38s`
