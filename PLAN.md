@@ -135,6 +135,15 @@ bash scripts/local_amd_profile_compile.sh
       - `gpu_busy_p95` about `98.95%`
       - memory busy average only about `3.12%`
       The card is still seeing short bursts of useful work separated by long idle gaps, so the next throughput target remains eager decode orchestration rather than another blind compiled-op expansion.
+- [~] **The eager KV-cache write path is already using a Vulkan in-place slice update, so the next decoder wall is the medium-size transpose QMM set rather than cache mutation semantics**:
+      `python/src/indexing.cpp` already has a Vulkan-only eager `__setitem__` fast path for static slices on concrete Vulkan-backed arrays, and that is the shape used by `KVCache.update_and_fetch(...)`.
+      The latest RX 580 QMM debug pass during real `generate_step` confirms the repeated decoder projection shapes are mostly transpose affine 5-bit QMMs with:
+      - `K=2048`, `N` in `{16, 512, 2048, 4096, 6144}`
+      - `K=6144`, `N=2048`
+      - plus the already-special-cased tied logits path `K=2048`, `N=248320`
+      A broader direct-QMV experiment for the smaller decode projections was tested and rejected on real AMD hardware because it made prompt prefill and whole-run throughput worse, so the next QMM optimization needs to target these medium decoder shapes directly instead of widening the existing `lm_head` kernel.
+- [x] **The Linux RX 580 Python extension build now explicitly inherits Vulkan usage requirements**:
+      `python/src/CMakeLists.txt` now links the `core` extension target against `Vulkan::Vulkan` when `MLX_BUILD_VULKAN=ON`, which fixes the AMD-box rebuild failure where `python/src/indexing.cpp` could not find `<vulkan/vulkan.h>` despite the backend library itself building successfully.
 - [~] **The direct tied-logits kernel still has headroom, but the latest RX 580 rewrite is only partially validated so far**:
       `mlx/backend/vulkan/kernels/quantized_qmv.comp` now tiles the activation vector through shared memory across output columns instead of having every invocation re-read the same `x` row independently.
       Real AMD validation so far is promising but incomplete:
