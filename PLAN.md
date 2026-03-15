@@ -226,11 +226,19 @@ Default policy: CPU fallback is **allowed** for early bring-up gates only when e
 - [ ] No segfaults, teardown crashes, or unbounded memory growth in the targeted training path.
 - [ ] Cross-vendor validation exists on both AMD and NVIDIA hardware.
 
+### Phase 5: Graph Compilation (Vulkan)
+- [x] Architect `mlx/backend/vulkan/compiled.cpp` based on the Metal JIT pattern.
+- [x] Introduce a mechanism to dynamically generate GLSL shaders from `mx.compile()` graphs.
+- [x] Test a simple compiled `mx.compile(lambda x: x + x)` graph natively on Vulkan.
+- [ ] Support complex ops (reduction, broadcasting) in the GLSL generator.
+- [ ] Implement robust `glslc` error handling and SPIR-V caching.
+- [ ] Validate performance on AMD GPUs with LLM inference.
+
 ### Immediate Next Steps
 
-1. Architect `mlx/backend/vulkan/compiled.cpp` based on the Metal JIT pattern.
-2. Introduce a mechanism to dynamically generate GLSL shaders from `mx.compile()` graphs.
-3. Test a simple compiled `mx.compile(lambda x: x + x)` graph natively on Vulkan.
+1. Verify the `mx.compile` logic on the remote AMD node.
+2. Expand `to_glsl_op` to support more primitives (Subtract, Multiply, Divide, etc.).
+3. Implement reduction support in `compiled.cpp`.
 
 ---
 

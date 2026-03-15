@@ -4,6 +4,11 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Implemented Vulkan `Compile` primitive.
+    - Created `mlx/backend/vulkan/compiled.cpp` for AST-to-GLSL generation.
+    - Added `Device::get_pipeline_from_spirv` for JIT shader loading.
+    - Verified fused `x + y` execution on macOS Vulkan (M1).
+    - Synced code and started validation on the remote AMD node.
 1. **Massive Architecture Task Started**:
    - The user noticed eager text generation is too slow due to CPU kernel dispatch overhead.
    - We are pivoting from compatibility tests to fully implementing the `Compile` primitive (`mx.compile()`) natively for Vulkan.

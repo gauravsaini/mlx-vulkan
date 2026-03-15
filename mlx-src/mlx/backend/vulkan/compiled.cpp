@@ -46,19 +46,61 @@ std::vector<uint32_t> compile_glsl_to_spirv(const std::string& kernel_name, cons
   return code;
 }
 
-// Minimal AST to GLSL builtins mappings
 std::string to_glsl_op(const std::string& pr, const std::vector<array>& inputs, const std::vector<std::string>& input_names) {
-  if (pr == "Add") {
-    return input_names[0] + " + " + input_names[1];
-  } else if (pr == "Subtract") {
-    return input_names[0] + " - " + input_names[1];
-  } else if (pr == "Multiply") {
-    return input_names[0] + " * " + input_names[1];
-  } else if (pr == "Divide") {
-    return input_names[0] + " / " + input_names[1];
+  if (inputs.size() == 1) {
+    const auto& in0 = input_names[0];
+    if (pr == "Abs") return "abs(" + in0 + ")";
+    if (pr == "Negative") return "-(" + in0 + ")";
+    if (pr == "Sign") return "sign(" + in0 + ")";
+    if (pr == "Round") return "round(" + in0 + ")";
+    if (pr == "Floor") return "floor(" + in0 + ")";
+    if (pr == "Ceil") return "ceil(" + in0 + ")";
+    if (pr == "Exp") return "exp(" + in0 + ")";
+    if (pr == "Expm1") return "(exp(" + in0 + ") - 1.0)";
+    if (pr == "Log") return "log(" + in0 + ")";
+    if (pr == "Log1p") return "log(1.0 + " + in0 + ")";
+    if (pr == "Sin") return "sin(" + in0 + ")";
+    if (pr == "Cos") return "cos(" + in0 + ")";
+    if (pr == "Tan") return "tan(" + in0 + ")";
+    if (pr == "ArcSin") return "asin(" + in0 + ")";
+    if (pr == "ArcCos") return "acos(" + in0 + ")";
+    if (pr == "ArcTan") return "atan(" + in0 + ")";
+    if (pr == "Sinh") return "sinh(" + in0 + ")";
+    if (pr == "Cosh") return "cosh(" + in0 + ")";
+    if (pr == "Tanh") return "tanh(" + in0 + ")";
+    if (pr == "Sqrt") return "sqrt(" + in0 + ")";
+    if (pr == "Rsqrt") return "inversesqrt(" + in0 + ")";
+    if (pr == "LogicalNot") return "(" + in0 + " == 0 ? 1 : 0)";
+    if (pr == "Square") return "((" + in0 + ") * (" + in0 + "))";
+  } else if (inputs.size() == 2) {
+    const auto& in0 = input_names[0];
+    const auto& in1 = input_names[1];
+    if (pr == "Add") return in0 + " + " + in1;
+    if (pr == "Subtract") return in0 + " - " + in1;
+    if (pr == "Multiply") return in0 + " * " + in1;
+    if (pr == "Divide") return in0 + " / " + in1;
+    if (pr == "Maximum") return "max(" + in0 + ", " + in1 + ")";
+    if (pr == "Minimum") return "min(" + in0 + ", " + in1 + ")";
+    if (pr == "Power") return "pow(" + in0 + ", " + in1 + ")";
+    if (pr == "Remainder") return "mod(" + in0 + ", " + in1 + ")";
+    if (pr == "Equal") return "(" + in0 + " == " + in1 + " ? 1 : 0)";
+    if (pr == "NotEqual") return "(" + in0 + " != " + in1 + " ? 1 : 0)";
+    if (pr == "Greater") return "(" + in0 + " > " + in1 + " ? 1 : 0)";
+    if (pr == "GreaterEqual") return "(" + in0 + " >= " + in1 + " ? 1 : 0)";
+    if (pr == "Less") return "(" + in0 + " < " + in1 + " ? 1 : 0)";
+    if (pr == "LessEqual") return "(" + in0 + " <= " + in1 + " ? 1 : 0)";
+    if (pr == "LogicalAnd") return "((" + in0 + " != 0) && (" + in1 + " != 0) ? 1 : 0)";
+    if (pr == "LogicalOr") return "((" + in0 + " != 0) || (" + in1 + " != 0) ? 1 : 0)";
+  } else if (inputs.size() == 3) {
+    const auto& in0 = input_names[0];
+    const auto& in1 = input_names[1];
+    const auto& in2 = input_names[2];
+    if (pr == "Select") {
+      return "(" + in0 + " != 0 ? " + in1 + " : " + in2 + ")";
+    }
   }
-  // TODO: Expand
-  throw std::runtime_error("Unsupported primitive in MLX Vulkan Compiled backend: " + pr);
+
+  throw std::runtime_error("[Compiled::eval_gpu] AST to GLSL unhandled primitive: " + pr);
 }
 
 void build_kernel(
