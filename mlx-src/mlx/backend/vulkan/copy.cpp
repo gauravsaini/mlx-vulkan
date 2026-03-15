@@ -16,6 +16,84 @@
 
 namespace mlx::core {
 
+static bool dispatch_vector_buffer_copy(
+    const array& in,
+    array& out,
+    const Shape& data_shape,
+    int64_t i_offset,
+    int64_t o_offset,
+    const Stream& s) {
+  if (in.dtype() != out.dtype()) {
+    return false;
+  }
+
+  size_t n = 1;
+  for (auto d : data_shape) {
+    n *= d;
+  }
+  if (n == 0) {
+    return true;
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
+  VkBuffer src_buf = vulkan::get_buffer(in);
+  VkBuffer dst_buf = vulkan::get_buffer(out);
+  if (src_buf == VK_NULL_HANDLE || dst_buf == VK_NULL_HANDLE) {
+    return true;
+  }
+
+  auto elem_size = static_cast<VkDeviceSize>(in.itemsize());
+  VkDeviceSize src_offset =
+      static_cast<VkDeviceSize>(in.offset()) +
+      static_cast<VkDeviceSize>(i_offset) * elem_size;
+  VkDeviceSize dst_offset =
+      static_cast<VkDeviceSize>(out.offset()) +
+      static_cast<VkDeviceSize>(o_offset) * elem_size;
+  VkDeviceSize size = static_cast<VkDeviceSize>(n) * elem_size;
+
+  VkCommandBuffer cmd = encoder.cmd;
+
+  VkMemoryBarrier pre_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  pre_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT |
+      VK_ACCESS_TRANSFER_WRITE_BIT;
+  pre_barrier.dstAccessMask =
+      VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT,
+      0,
+      1,
+      &pre_barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+
+  VkBufferCopy region{src_offset, dst_offset, size};
+  vkCmdCopyBuffer(cmd, src_buf, dst_buf, 1, &region);
+
+  VkMemoryBarrier post_barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  post_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  post_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+      VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+      VK_ACCESS_TRANSFER_WRITE_BIT;
+  vkCmdPipelineBarrier(
+      cmd,
+      VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+      0,
+      1,
+      &post_barrier,
+      0,
+      nullptr,
+      0,
+      nullptr);
+  return true;
+}
+
 static void dispatch_copy_shader(
     const array& in,
     array& out,
@@ -251,6 +329,11 @@ void copy_gpu_inplace(
     vulkan::copy_to_host(
         *dynamic_o_offset, &host_offset, sizeof(host_offset), s);
     o_offset += static_cast<int64_t>(host_offset);
+  }
+  if (ctype == CopyType::Vector &&
+      dispatch_vector_buffer_copy(
+          in, out, data_shape, i_offset, o_offset, s)) {
+    return;
   }
   dispatch_copy_shader(
       in, out, data_shape, i_strides, o_strides, i_offset, o_offset, ctype, s);

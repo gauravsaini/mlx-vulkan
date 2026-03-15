@@ -84,6 +84,13 @@ bash scripts/local_amd_profile_compile.sh
       This is intentionally first-pass only: it is limited to terminal, keepdims, last-axis `Sum` reductions and does not yet cover multi-axis/general reductions or `Prod` / `Max` / `Min`.
 - [~] **The next end-to-end LLM bottleneck has moved beyond compiled reduction fusion**:
       after the `Sum` kernel landed, the guarded one-token RX 580 benchmark still timed out after 180s with no first token, but the live Python stack is now in `mlx_lm.models.cache.KVCache.update_and_fetch(...)` / `qwen3_next.py` rather than the earlier `gated_delta` reduction path.
+- [~] **Phase 6 correctness blockers have moved from cache-path fallbacks to a throughput wall**:
+      the RX 580 now runs the previously failing LLM correctness path under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1` without tripping a CPU fallback before the 180s timeout.
+      Concretely:
+      - Vulkan now has a native grouped `Conv1d` path with a float32 shader-IO bridge, and strict AMD probes cover both dense and depthwise float16 cases.
+      - eager Python indexing no longer materializes plain slice / int access to CPU, so cache-tail views like `conv_input[:, -3:]` stay on-device.
+      - broadcasted bool `where(...)` now materializes strided / broadcasted operands into dense GPU temporaries inside `Select::eval_gpu`, which keeps the grouped-query SDPA causal-mask path on Vulkan.
+      The guarded one-token RX 580 benchmark still times out after 180s with no first yield, but the strict run now reaches that timeout without a fallback error, so the remaining blocker is throughput / scheduling rather than another missing primitive.
 - ❌ **CPU-fallback linalg correctness broken on real AMD** — `qr`, `svd`, `cholesky`, `eigh`, `inv` return zeros.
   *Update (2026-03-10)*: Isolated a critical memory erasure bug where CPU writes to `raw_ptr()` mappings are lost/zeroed between accesses.
 - ❌ **Full MLX suite compatibility not yet achieved** — historical MoltenVK pass rates (below) are not validated on real Linux hardware
@@ -298,13 +305,15 @@ The goal is to make `mlx-lm generate` run fast on the AMD GPU by ensuring all ho
 - [ ] Profile GPU utilization to identify remaining bottlenecks.
       Preliminary lower-bound timing on the local RX 580 shows model load is about 3.6s for both GPU and CPU runs, while one-token generation still did not complete within the short benchmark windows (>120s GPU, >60s CPU) and needs better first-token / streaming instrumentation before we treat it as a real throughput number.
       Latest RX 580 benchmark after compiled `Sum` fusion: model load is about 3.71s on GPU, one-token `generate_step` still timed out after 180s with no first yield, and the live stack now points at `KVCache.update_and_fetch(...)` / `qwen3_next.py` rather than the earlier `gated_delta` reduction loop.
+      Latest strict RX 580 benchmark after the `Conv1d`, eager-indexing, and broadcasted-`where` fixes: model load is about 3.59s on GPU, the run still times out after 180s with no first yield, but it no longer trips `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`. Layer-by-layer AMD probes now show the first full-attention block, including grouped-query SDPA decomposition, completing on Vulkan; the next job is reducing latency rather than removing another correctness fallback.
 
 ### Immediate Next Steps
 
 1. Profile and optimize the RX 580 KV-cache update path now that terminal compiled `Sum` is live and the benchmark stack has moved to `KVCache.update_and_fetch(...)`.
-2. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
-3. Re-run one-token AMD generation and capture a real first-token latency once the cache path stops dominating.
-4. Benchmark tokens/sec only after the updated profile shows the hot path is predominantly on Vulkan.
+2. Profile prompt-prefill throughput now that strict fallback no longer trips in the first full-attention block; focus on the cache-update / SDPA scheduling boundary rather than primitive coverage.
+3. Finish the remaining compiled reduction work: broader axis coverage plus `Prod` / `Max` / `Min`.
+4. Re-run one-token AMD generation and capture a real first-token latency once the throughput hotspot is understood.
+5. Benchmark tokens/sec only after the updated profile shows the hot path is predominantly on Vulkan.
 
 ---
 

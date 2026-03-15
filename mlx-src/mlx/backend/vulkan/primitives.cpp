@@ -1065,15 +1065,20 @@ void BitwiseBinary::eval_gpu(const std::vector<array>& inputs, array& out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
-  auto check_array = [&](const array& a) {
-    if (a.size() == 1) return true;
-    return a.flags().row_contiguous && a.size() == out.size();
+  auto materialize_operand = [&](const array& in) -> std::pair<array, bool> {
+    if (in.size() == 1) {
+      return {in, false};
+    }
+    bool needs_copy =
+        in.offset() != 0 || !in.flags().row_contiguous || in.size() != out.size();
+    if (!needs_copy) {
+      return {in, false};
+    }
+    array tmp(out.shape(), in.dtype(), nullptr, {});
+    tmp.set_data(allocator::malloc(tmp.nbytes()));
+    copy_gpu(in, tmp, CopyType::General, stream());
+    return {tmp, true};
   };
-  if (!check_array(inputs[0]) || !check_array(inputs[1]) || !check_array(inputs[2])) {
-    vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
-    return;
-  }
 
   out.set_data(allocator::malloc(out.nbytes()));
 
@@ -1081,9 +1086,13 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& dev = vulkan::device(stream().device);
   encoder.op_count++;
 
-  const array& cond = inputs[0];
-  const array& true_ = inputs[1];
-  const array& false_ = inputs[2];
+  auto [cond_dense, cond_copied] = materialize_operand(inputs[0]);
+  auto [true_dense, true_copied] = materialize_operand(inputs[1]);
+  auto [false_dense, false_copied] = materialize_operand(inputs[2]);
+
+  const array& cond = cond_dense;
+  const array& true_ = true_dense;
+  const array& false_ = false_dense;
 
   VkBuffer cond_buf = vulkan::get_buffer(cond);
   VkBuffer true_buf = vulkan::get_buffer(true_);
@@ -1189,6 +1198,16 @@ void Select::eval_gpu(const std::vector<array>& inputs, array& out) {
       nullptr,
       0,
       nullptr);
+
+  if (cond_copied) {
+    dev.add_temporary(stream(), cond_dense);
+  }
+  if (true_copied) {
+    dev.add_temporary(stream(), true_dense);
+  }
+  if (false_copied) {
+    dev.add_temporary(stream(), false_dense);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3266,6 +3285,178 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
   const array& in = inputs[0];
   const array& wt = inputs[1];
 
+  auto fallback_to_cpu = [&]() {
+    dev.synchronize(s);
+    eval_cpu(inputs, out);
+  };
+
+  auto is_supported_dtype = [](Dtype dtype) {
+    return dtype == float32 || dtype == float16 || dtype == bfloat16;
+  };
+
+  auto ensure_contiguous_float32 = [&](const array& src) -> std::pair<array, bool> {
+    bool copy_needed =
+        src.offset() != 0 || !src.flags().row_contiguous || src.dtype() != float32;
+    if (!copy_needed) {
+      return {src, false};
+    }
+    array tmp(src.shape(), float32, nullptr, {});
+    tmp.set_data(allocator::malloc(tmp.nbytes()));
+    copy_gpu(src, tmp, CopyType::General, s);
+    return {tmp, true};
+  };
+
+  if (!is_supported_dtype(in.dtype()) || !is_supported_dtype(wt.dtype()) ||
+      !is_supported_dtype(out.dtype()) || in.shape(0) != 1 || flip_) {
+    fallback_to_cpu();
+    return;
+  }
+
+  for (auto d : kernel_dilation_) {
+    if (d != 1) {
+      fallback_to_cpu();
+      return;
+    }
+  }
+  for (auto d : input_dilation_) {
+    if (d != 1) {
+      fallback_to_cpu();
+      return;
+    }
+  }
+
+  auto finalize_shader_io = [&](const array& shader_in,
+                                bool copied_in,
+                                const array& shader_wt,
+                                bool copied_wt,
+                                std::optional<array>& temp_out) {
+    if (temp_out.has_value()) {
+      copy_gpu(*temp_out, out, CopyType::General, s);
+      dev.add_temporary(s, *temp_out);
+    }
+    if (copied_in) {
+      dev.add_temporary(s, shader_in);
+    }
+    if (copied_wt) {
+      dev.add_temporary(s, shader_wt);
+    }
+  };
+
+  if (in.ndim() == 3 && wt.ndim() == 3) {
+    if (groups_ <= 0 || wt.shape(0) % groups_ != 0) {
+      fallback_to_cpu();
+      return;
+    }
+
+    auto [shader_in, copied_in] = ensure_contiguous_float32(in);
+    auto [shader_wt, copied_wt] = ensure_contiguous_float32(wt);
+
+    std::optional<array> temp_out;
+    if (out.dtype() != float32) {
+      temp_out = array(out.shape(), float32, nullptr, {});
+      temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+    }
+    out.set_data(allocator::malloc(out.nbytes()));
+    const array& shader_out = temp_out.has_value() ? *temp_out : out;
+
+    if (shader_out.size() == 0) {
+      finalize_shader_io(shader_in, copied_in, shader_wt, copied_wt, temp_out);
+      return;
+    }
+
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout ds_layout;
+    VkPipeline pipeline = dev.get_pipeline(
+        "conv1d",
+        layout,
+        ds_layout,
+        3,
+        40,
+        vulkan::get_default_specialization_info(dev));
+    if (pipeline == VK_NULL_HANDLE) {
+      fallback_to_cpu();
+      return;
+    }
+
+    auto& encoder = vulkan::get_command_encoder(s);
+    encoder.op_count++;
+
+    VkDescriptorSet ds = dev.alloc_descriptor_set(s, ds_layout);
+    VkBuffer in_buf = vulkan::get_buffer(shader_in);
+    VkBuffer wt_buf = vulkan::get_buffer(shader_wt);
+    VkBuffer out_buf = vulkan::get_buffer(shader_out);
+
+    VkDescriptorBufferInfo infos[3] = {
+        {in_buf, 0, VK_WHOLE_SIZE},
+        {wt_buf, 0, VK_WHOLE_SIZE},
+        {out_buf, 0, VK_WHOLE_SIZE}};
+
+    VkWriteDescriptorSet writes[3]{};
+    for (int i = 0; i < 3; i++) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = ds;
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
+
+    uint32_t C = static_cast<uint32_t>(shader_in.shape(2));
+    uint32_t W = static_cast<uint32_t>(shader_in.shape(1));
+    uint32_t K = static_cast<uint32_t>(shader_wt.shape(1));
+    uint32_t OW = static_cast<uint32_t>(shader_out.shape(1));
+    uint32_t OC = static_cast<uint32_t>(shader_wt.shape(0));
+    uint32_t groups = static_cast<uint32_t>(groups_);
+    uint32_t channels_per_group = static_cast<uint32_t>(shader_wt.shape(2));
+    uint32_t outputs_per_group = OC / groups;
+
+    struct PushConst {
+      uint32_t C, W, K, OW;
+      uint32_t S, P, OC, groups;
+      uint32_t C_PER_GROUP, OC_PER_GROUP;
+    } pc{
+        C,
+        W,
+        K,
+        OW,
+        static_cast<uint32_t>(kernel_strides_[0]),
+        static_cast<uint32_t>(padding_lo_[0]),
+        OC,
+        groups,
+        channels_per_group,
+        outputs_per_group};
+
+    VkCommandBuffer cmd = encoder.cmd;
+    vkCmdPushConstants(
+        cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &ds, 0, nullptr);
+
+    uint32_t grid_x = vulkan::div_ceil(OC, 256u);
+    uint32_t grid_z = OW;
+    vkCmdDispatch(cmd, grid_x, 1, grid_z);
+
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(
+        cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+
+    finalize_shader_io(shader_in, copied_in, shader_wt, copied_wt, temp_out);
+    return;
+  }
+
   // The simplified conv.comp shader currently supports basic 2D convs with:
   // - batch size = 1
   // - groups = 1
@@ -3289,14 +3480,9 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
       can_use_gpu = false;
 
   if (!can_use_gpu) {
-    vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
+    fallback_to_cpu();
     return;
   }
-
-  out.set_data(allocator::malloc(out.nbytes()));
-  auto& encoder = vulkan::get_command_encoder(s);
-  encoder.op_count++;
 
   VkPipelineLayout layout;
   VkDescriptorSetLayout ds_layout;
@@ -3308,15 +3494,31 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
       52,
       vulkan::get_default_specialization_info(dev));
   if (pipeline == VK_NULL_HANDLE) {
-    vulkan::device(stream().device).synchronize(stream());
-    eval_cpu(inputs, out);
+    fallback_to_cpu();
     return;
   }
 
+  auto [shader_in, copied_in] = ensure_contiguous_float32(in);
+  auto [shader_wt, copied_wt] = ensure_contiguous_float32(wt);
+  std::optional<array> temp_out;
+  if (out.dtype() != float32) {
+    temp_out = array(out.shape(), float32, nullptr, {});
+    temp_out->set_data(allocator::malloc(temp_out->nbytes()));
+  }
+  out.set_data(allocator::malloc(out.nbytes()));
+  const array& shader_out = temp_out.has_value() ? *temp_out : out;
+  if (shader_out.size() == 0) {
+    finalize_shader_io(shader_in, copied_in, shader_wt, copied_wt, temp_out);
+    return;
+  }
+
+  auto& encoder = vulkan::get_command_encoder(s);
+  encoder.op_count++;
+
   VkDescriptorSet ds = dev.alloc_descriptor_set(stream(), ds_layout);
-  VkBuffer in_buf = vulkan::get_buffer(in);
-  VkBuffer wt_buf = vulkan::get_buffer(wt);
-  VkBuffer out_buf = vulkan::get_buffer(out);
+  VkBuffer in_buf = vulkan::get_buffer(shader_in);
+  VkBuffer wt_buf = vulkan::get_buffer(shader_wt);
+  VkBuffer out_buf = vulkan::get_buffer(shader_out);
 
   VkDescriptorBufferInfo infos[3] = {
       {in_buf, 0, VK_WHOLE_SIZE},
@@ -3335,17 +3537,17 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
   vkUpdateDescriptorSets(dev.vk_device(), 3, writes, 0, nullptr);
 
   // Extracted shapes based on NHWC assumed layout
-  uint32_t N = in.shape(0);
-  uint32_t H = in.shape(1);
-  uint32_t W = in.shape(2);
-  uint32_t C = in.shape(3);
+  uint32_t N = static_cast<uint32_t>(shader_in.shape(0));
+  uint32_t H = static_cast<uint32_t>(shader_in.shape(1));
+  uint32_t W = static_cast<uint32_t>(shader_in.shape(2));
+  uint32_t C = static_cast<uint32_t>(shader_in.shape(3));
 
-  uint32_t OC = wt.shape(0);
-  uint32_t KH = wt.shape(1);
-  uint32_t KW = wt.shape(2);
+  uint32_t OC = static_cast<uint32_t>(shader_wt.shape(0));
+  uint32_t KH = static_cast<uint32_t>(shader_wt.shape(1));
+  uint32_t KW = static_cast<uint32_t>(shader_wt.shape(2));
 
-  uint32_t OH = out.shape(1);
-  uint32_t OW = out.shape(2);
+  uint32_t OH = static_cast<uint32_t>(shader_out.shape(1));
+  uint32_t OW = static_cast<uint32_t>(shader_out.shape(2));
 
   uint32_t SH = kernel_strides_[0];
   uint32_t SW = kernel_strides_[1];
@@ -3384,6 +3586,8 @@ void Convolution::eval_gpu(const std::vector<array>& inputs, array& out) {
       nullptr,
       0,
       nullptr);
+
+  finalize_shader_io(shader_in, copied_in, shader_wt, copied_wt, temp_out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

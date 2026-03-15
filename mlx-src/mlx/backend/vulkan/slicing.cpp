@@ -27,10 +27,6 @@ void concatenate_gpu(
   out.set_data(allocator::malloc(out.nbytes()));
 
   auto strides = out.strides();
-  auto flags = out.flags();
-  flags.row_contiguous = false;
-  flags.col_contiguous = false;
-  flags.contiguous = false;
 
   for (int i = 0; i < static_cast<int>(inputs.size()); i++) {
     // Skip empty inputs — passing a zero-size buffer to copy_gpu_inplace
@@ -40,9 +36,19 @@ void concatenate_gpu(
 
     array out_slice(inputs[i].shape(), out.dtype(), nullptr, {});
     size_t data_offset = strides[axis] * sizes[i];
+    auto [data_size, row_contiguous, col_contiguous] =
+        check_contiguity(inputs[i].shape(), strides);
+    array::Flags slice_flags{
+        data_size == inputs[i].size(), row_contiguous, col_contiguous};
     out_slice.copy_shared_buffer(
-        out, strides, flags, out_slice.size(), data_offset);
-    copy_gpu_inplace(inputs[i], out_slice, CopyType::GeneralGeneral, s);
+        out, strides, slice_flags, data_size, data_offset);
+
+    CopyType ctype = CopyType::GeneralGeneral;
+    if (inputs[i].flags().contiguous && out_slice.flags().contiguous &&
+        inputs[i].dtype() == out_slice.dtype()) {
+      ctype = CopyType::Vector;
+    }
+    copy_gpu_inplace(inputs[i], out_slice, ctype, s);
   }
 }
 

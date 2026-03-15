@@ -4,6 +4,21 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-15**: Cleared the next LLM correctness blockers on the RX 580 and moved Phase 6 to a throughput problem.
+    - Added a native Vulkan grouped `Conv1d` path in `mlx/backend/vulkan/primitives.cpp` plus a new `kernels/conv1d.comp` shader, with a float32 shader-IO bridge so the Qwen depthwise float16 conv block can run on-device.
+    - Fixed eager Python indexing in `python/src/indexing.cpp` so plain slice / int access no longer forces non-tracer arrays through `materialize_array_read(...)`; this removed the cache-tail `conv_input[:, -3:]` CPU round-trip.
+    - Extended Vulkan `Select::eval_gpu` to materialize broadcasted / strided operands into dense GPU temporaries, which keeps grouped-query SDPA's broadcasted bool causal-mask `where(...)` on Vulkan instead of falling back.
+    - Added AMD strict regressions for:
+      - grouped `Conv1d` (`tests/vulkan/test_conv1d_gpu.py`)
+      - eager slice indexing (`tests/vulkan/test_indexing_gpu.py`)
+      - KV-cache-style slice update (`tests/vulkan/test_slice_update_gpu.py`)
+      - RoPE materialization (`tests/vulkan/test_rope_gpu.py`)
+      - broadcasted bool `where(...)` (`tests/vulkan/test_where_gpu.py`)
+    - AMD diagnostics now show:
+      - the real Qwen full-attention key/value cache path passes under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`,
+      - the first full-attention block's grouped-query SDPA decomposition completes on Vulkan,
+      - and the strict one-token `generate_step` run now reaches the 180s timeout without tripping a CPU fallback.
+    - Result: the remaining Phase 6 blocker is no longer a missing correctness primitive in the early LLM path; it is throughput / scheduling in prompt prefill.
 - **2026-03-15**: Landed first-pass compiled `Sum` reduction support on the RX 580 and moved the LLM bottleneck forward.
     - Extended compile fusion in `mlx/compile.cpp` so Vulkan GPU traces can fuse terminal, shape-specialized last-axis `Reduce::Sum` roots instead of stopping at the reduction boundary.
     - Taught `mlx/backend/vulkan/compiled.cpp` to JIT a dedicated terminal reduction kernel that accumulates a fused elementwise expression across the last axis, while preserving the existing float32 shader-IO bridge and broadcast-aware descriptor-offset path.

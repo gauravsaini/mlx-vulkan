@@ -1,0 +1,49 @@
+#version 450
+
+// Grouped 1D convolution for contiguous [N, W, C] inputs with batch size 1.
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly  buffer InBuf     { float in_data[];     };
+layout(set = 0, binding = 1) readonly  buffer FilterBuf { float filter_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf    { float out_data[];    };
+
+layout(push_constant) uniform Params {
+    uint C;             // input channels
+    uint W;             // input width / sequence length
+    uint K;             // kernel width
+    uint OW;            // output width
+    uint S;             // stride
+    uint P;             // left padding
+    uint OC;            // output channels
+    uint groups;        // convolution groups
+    uint C_PER_GROUP;   // input channels per group
+    uint OC_PER_GROUP;  // output channels per group
+} params;
+
+void main() {
+    uint oc = gl_GlobalInvocationID.x;
+    uint ow = gl_GlobalInvocationID.z;
+
+    if (oc >= params.OC || ow >= params.OW) {
+        return;
+    }
+
+    uint group = oc / params.OC_PER_GROUP;
+    uint input_channel_base = group * params.C_PER_GROUP;
+
+    float sum = 0.0;
+    for (uint kw = 0; kw < params.K; kw++) {
+        int iw = int(ow * params.S) + int(kw) - int(params.P);
+        if (iw < 0 || iw >= int(params.W)) {
+            continue;
+        }
+        uint input_base = uint(iw) * params.C + input_channel_base;
+        uint filter_base =
+            (oc * params.K + kw) * params.C_PER_GROUP;
+        for (uint ic = 0; ic < params.C_PER_GROUP; ic++) {
+            sum += in_data[input_base + ic] * filter_data[filter_base + ic];
+        }
+    }
+
+    out_data[ow * params.OC + oc] = sum;
+}

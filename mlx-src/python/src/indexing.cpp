@@ -13,13 +13,9 @@ namespace {
 mx::array materialize_array_read(const mx::array& value);
 
 mx::array materialize_array_update(const mx::array& value) {
-  auto staged = materialize_array_read(value);
-  if (!mx::is_available(mx::Device::gpu)) {
-    return staged;
-  }
-  auto gpu_stream = mx::default_stream(mx::Device::gpu);
-  auto concrete = mx::copy(staged, gpu_stream);
-  concrete = mx::contiguous(concrete, false, gpu_stream);
+  // Eager updates need a concrete array, but forcing a host round-trip here is
+  // catastrophic for GPU-backed state updates such as KV-cache writes.
+  auto concrete = value;
   concrete.eval();
   concrete.detach();
   return concrete;
@@ -486,22 +482,32 @@ mx::array mlx_get_item_nd(mx::array src, const nb::tuple& entries) {
 }
 
 mx::array mlx_get_item(const mx::array& src, const nb::object& obj) {
-  auto materialized_src = src.is_tracer() ? src : materialize_array_read(src);
   if (nb::isinstance<nb::slice>(obj)) {
-    return mlx_get_item_slice(materialized_src, nb::cast<nb::slice>(obj));
+    return mlx_get_item_slice(src, nb::cast<nb::slice>(obj));
   } else if (nb::isinstance<mx::array>(obj)) {
-    return mlx_get_item_array(materialized_src, nb::cast<mx::array>(obj));
+    return mlx_get_item_array(src, nb::cast<mx::array>(obj));
   } else if (nb::isinstance<nb::int_>(obj)) {
-    return mlx_get_item_int(materialized_src, nb::cast<nb::int_>(obj));
+    return mlx_get_item_int(src, nb::cast<nb::int_>(obj));
   } else if (nb::isinstance<nb::tuple>(obj)) {
-    return mlx_get_item_nd(materialized_src, nb::cast<nb::tuple>(obj));
+    bool has_advanced_index = false;
+    for (auto entry : nb::cast<nb::tuple>(obj)) {
+      auto idx = nb::borrow<nb::object>(entry);
+      if (nb::isinstance<mx::array>(idx) || nb::isinstance<nb::list>(idx)) {
+        has_advanced_index = true;
+        break;
+      }
+    }
+    auto tuple_src =
+        (has_advanced_index && !src.is_tracer()) ? materialize_array_read(src)
+                                                 : src;
+    return mlx_get_item_nd(tuple_src, nb::cast<nb::tuple>(obj));
   } else if (nb::isinstance<nb::ellipsis>(obj)) {
-    return materialized_src;
+    return src;
   } else if (obj.is_none()) {
-    return expand_dims(materialized_src, 0);
+    return expand_dims(src, 0);
   } else if (nb::isinstance<nb::list>(obj)) {
     return mlx_get_item_array(
-        materialized_src, array_from_list(nb::cast<nb::list>(obj), {}));
+        src, array_from_list(nb::cast<nb::list>(obj), {}));
   }
   throw std::invalid_argument("Cannot index mlx array using the given type.");
 }
