@@ -182,6 +182,11 @@ bash scripts/local_amd_profile_compile.sh
       - strict warmed `generate_step`, `max_tokens=16` now lands at about `23.21s`, `0.689 tok/s`, first yield `3.85s`
       - a clean follow-up rerun lands at about `23.47s`, `0.682 tok/s`, first yield `3.89s`
       compared with the prior kept baseline of about `23.56s`, `0.679 tok/s`, first yield `3.83s`
+      Another medium-decoder follow-up also failed the bar and was explicitly reverted. A race-free direct-write path for `quantized_qmv_medium.comp` removed the float32 temp-and-cast bridge for `float16` / `bfloat16` outputs by packing adjacent reduced outputs from a single writer lane. It passed the strict quantized smoke, and the shape sweep improved several hot projections in isolation:
+      - `2048 -> 4096` average about `0.00587s`
+      - `2048 -> 6144` average about `0.00573s`
+      - `2048 -> 512` average about `0.00089s`
+      But the real RX 580 decode benchmark regressed to about `23.73s`, `0.674 tok/s`, first yield `3.86s`, so that direct medium-output path was reverted and not kept.
       Result: this smaller medium-QMM dispatch is worth keeping as the new baseline, but the remaining wall still looks like the tied `lm_head` plus the residual decoder QMM / attention front-end family rather than another large dispatch-shape change.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.

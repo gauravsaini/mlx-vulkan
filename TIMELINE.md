@@ -13,6 +13,15 @@
       - and a clean follow-up rerun lands at about `23.47s` / `0.682 tok/s`, first yield about `3.89s`.
       Those both beat the prior kept baseline of about `23.56s` / `0.679 tok/s`, first yield about `3.83s`.
     - Result: the narrower medium-QMM dispatch is a small but real win and becomes the new RX 580 baseline. The next remaining decode wall is still the tied `lm_head` plus the residual medium decoder / attention front-end path rather than another broad workgroup-shape rewrite.
+- **2026-03-16**: Rejected a race-free direct medium-QMM output path after it failed the real decoder bar.
+    - Added a medium-kernel-only direct-write experiment in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` and `mlx/backend/vulkan/primitives.cpp` that removed the float32 temp-and-cast bridge for `float16` / `bfloat16` outputs by packing adjacent reduced outputs from a single writer lane, avoiding the earlier word-sharing race.
+    - The strict quantized smoke still passed on the RX 580.
+    - The shape sweep did improve several hot medium projections in isolation:
+      - `2048 -> 4096` average about `0.00587s`
+      - `2048 -> 6144` average about `0.00573s`
+      - `2048 -> 512` average about `0.00089s`
+    - But the end-to-end strict warmed 16-token benchmark regressed to about `23.73s` / `0.674 tok/s`, first yield about `3.86s`, so the change was explicitly reverted and not kept.
+    - Result: removing the medium-QMM float32 bridge is not the next win on the RX 580, even when the packed write is made race-free. The remaining decode wall stays elsewhere.
 - **2026-03-16**: Re-profiled the post-`4b378b9` RX 580 baseline and rejected a subgroup-reduction rewrite for the medium decoder kernel.
     - Re-ran the strict warmed 16-token `generate_step` benchmark from the pushed medium-decoder baseline and confirmed the new steady-state band is real:
       - `23.13s`, `0.692 tok/s`, first yield `3.82s`
