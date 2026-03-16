@@ -4,6 +4,30 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Added a tracked merged quantized projection surface in `mlx.nn` and validated it against the Ubuntu RX 580.
+    - Added `MergedQuantizedLinear` plus the convenience helper `merge_quantized_linears(...)` in `mlx-src/python/mlx/nn/layers/quantized.py`, and exported both from `mlx-src/python/mlx/nn/layers/__init__.py`.
+    - The new module is deliberately narrow: it only accepts compatible `QuantizedLinear` layers, concatenates their packed weights / scales / quant-biases along the output axis, runs one `mx.quantized_matmul(...)`, and returns split outputs by default with an optional concatenated-output mode.
+    - Added focused coverage in `mlx-src/python/tests/test_quantized.py`:
+      - merged vs separate outputs match on CPU for mixed bias/no-bias projections,
+      - mismatched quantization configs are rejected.
+    - The first Ubuntu validation run caught a real integration bug: no-bias Qwen MLP merges were trying to delete a `bias` attribute that had never been created. Fixed that in `from_quantized_linears(...)` and reran the exact same AMD flow.
+    - Updated the local Ubuntu-only probes so they now consume the tracked `nn.merge_quantized_linears(...)` API instead of manually concatenating packed tensors.
+    - RX 580 validation through the local scripts shows the tracked surface preserves the earlier merged-MLP win:
+      - targeted merged-layer checks pass under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`
+      - focused MLP probe:
+        - `original_mlp` about `0.01681s`
+        - `merged_mlp` about `0.01251s`
+      - strict end-to-end `generate_step`, `max_tokens=16`, API-backed monkeypatch:
+        - about `18.29s`
+        - about `0.875 tok/s`
+        - first yield about `3.04s`
+      - matching current unmerged baseline in the same Ubuntu session:
+        - about `23.22s`
+        - about `0.689 tok/s`
+        - first yield about `3.78s`
+    - Also re-confirmed the current numerical caveat on the RX 580: the merged GPU path still differs noticeably from the separate GPU path (`max_abs_diff` about `0.716`, `mean_abs_diff` about `0.0476`) even though the CPU semantic check is exact and the end-to-end decode benchmark improves materially.
+    - Result: the next bottleneck is no longer “find a decode optimization that moves the needle.” The tracked merged-projection surface already does that. The next task is integrating that surface cleanly into the real Qwen / `mlx-lm` path and deciding how much additional numerical guardrailing that integration needs.
+
 - **2026-03-16**: Kept a narrower medium decoder QMM retune after validating it against the real RX 580 end-to-end benchmark.
     - Re-tuned `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` from 8 decoder outputs per workgroup down to 4, with the matching dispatch update in `mlx/backend/vulkan/primitives.cpp`.
     - The shape-level RX 580 sweep suggested the narrower dispatch helped the repeated `2048 -> 4096`, `2048 -> 6144`, and `6144 -> 2048` decoder projections enough to justify a full benchmark pass.

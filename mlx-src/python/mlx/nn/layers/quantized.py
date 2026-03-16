@@ -1,7 +1,7 @@
 # Copyright © 2023-2024 Apple Inc.
 
 import math
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Sequence, Union
 
 import mlx.core as mx
 from mlx.nn.layers.base import Module
@@ -302,6 +302,171 @@ class QuantizedLinear(Module):
         return ql
 
 
+class MergedQuantizedLinear(Module):
+    """Apply several quantized linear projections with one quantized matmul.
+
+    The projections must share the same input dimensionality and quantization
+    config. The merged layer returns one output per source projection by
+    default, but can also return the concatenated output directly.
+    """
+
+    def __init__(
+        self,
+        input_dims: int,
+        output_dims: Sequence[int],
+        bias: Union[bool, Sequence[bool]] = True,
+        group_size: int = None,
+        bits: int = None,
+        mode: str = "affine",
+    ):
+        super().__init__()
+
+        output_dims = tuple(output_dims)
+        if not output_dims:
+            raise ValueError("MergedQuantizedLinear requires at least one projection.")
+        if any(dim <= 0 for dim in output_dims):
+            raise ValueError("MergedQuantizedLinear output dimensions must be > 0.")
+
+        if isinstance(bias, bool):
+            bias_flags = (bias,) * len(output_dims)
+        else:
+            bias_flags = tuple(bias)
+            if len(bias_flags) != len(output_dims):
+                raise ValueError(
+                    "MergedQuantizedLinear bias spec must match output_dims length."
+                )
+
+        self.group_size, self.bits = _defaults_for_mode(mode, group_size, bits)
+        self.mode = mode
+
+        super().__setattr__("_input_dims", input_dims)
+        super().__setattr__("_output_dims", output_dims)
+        super().__setattr__(
+            "_split_indices",
+            tuple(accum for accum in _cumulative_sums(output_dims[:-1])),
+        )
+
+        total_output_dims = sum(output_dims)
+        scale = math.sqrt(1 / input_dims)
+        weight = mx.random.uniform(
+            low=-scale,
+            high=scale,
+            shape=(total_output_dims, input_dims),
+        )
+        self.weight, self.scales, *biases = mx.quantize(
+            weight,
+            self.group_size,
+            self.bits,
+            mode=mode,
+        )
+        self.biases = biases[0] if biases else None
+
+        if any(bias_flags):
+            self.bias = mx.zeros((total_output_dims,))
+
+        self.freeze()
+
+    @property
+    def input_dims(self) -> int:
+        return self._input_dims
+
+    @property
+    def output_dims(self) -> tuple[int, ...]:
+        return self._output_dims
+
+    def _extra_repr(self):
+        return (
+            f"input_dims={self.input_dims}, output_dims={self.output_dims}, "
+            f"bias={'bias' in self}, group_size={self.group_size}, "
+            f"bits={self.bits}, mode={self.mode}"
+        )
+
+    def __call__(self, x, *, split: bool = True):
+        x = mx.quantized_matmul(
+            x,
+            self["weight"],
+            scales=self["scales"],
+            biases=self.get("biases"),
+            transpose=True,
+            group_size=self.group_size,
+            bits=self.bits,
+            mode=self.mode,
+        )
+        if "bias" in self:
+            x = x + self["bias"]
+        if not split:
+            return x
+        if not self._split_indices:
+            return (x,)
+        return tuple(mx.split(x, list(self._split_indices), axis=-1))
+
+    @classmethod
+    def from_quantized_linears(cls, *linear_layers: QuantizedLinear):
+        if len(linear_layers) == 1 and isinstance(linear_layers[0], (list, tuple)):
+            linear_layers = tuple(linear_layers[0])
+        if not linear_layers:
+            raise ValueError("Expected at least one QuantizedLinear to merge.")
+        if not all(isinstance(layer, QuantizedLinear) for layer in linear_layers):
+            raise TypeError("MergedQuantizedLinear only supports QuantizedLinear inputs.")
+
+        ref_layer = linear_layers[0]
+        input_dims = _quantized_input_dims(ref_layer.weight, ref_layer.bits)
+        has_quant_biases = ref_layer.get("biases") is not None
+
+        for layer in linear_layers[1:]:
+            layer_input_dims = _quantized_input_dims(layer.weight, layer.bits)
+            if layer_input_dims != input_dims:
+                raise ValueError(
+                    "All merged QuantizedLinear layers must share input_dims."
+                )
+            if layer.group_size != ref_layer.group_size:
+                raise ValueError(
+                    "All merged QuantizedLinear layers must share group_size."
+                )
+            if layer.bits != ref_layer.bits:
+                raise ValueError("All merged QuantizedLinear layers must share bits.")
+            if layer.mode != ref_layer.mode:
+                raise ValueError("All merged QuantizedLinear layers must share mode.")
+            if (layer.get("biases") is not None) != has_quant_biases:
+                raise ValueError(
+                    "All merged QuantizedLinear layers must agree on quantized biases."
+                )
+
+        merged = cls(
+            input_dims,
+            [layer.weight.shape[0] for layer in linear_layers],
+            bias=["bias" in layer for layer in linear_layers],
+            group_size=ref_layer.group_size,
+            bits=ref_layer.bits,
+            mode=ref_layer.mode,
+        )
+        merged.weight = mx.concatenate([layer.weight for layer in linear_layers], axis=0)
+        merged.scales = mx.concatenate(
+            [layer.scales for layer in linear_layers],
+            axis=0,
+        )
+        if has_quant_biases:
+            merged.biases = mx.concatenate(
+                [layer.biases for layer in linear_layers],
+                axis=0,
+            )
+        else:
+            merged.biases = None
+
+        merged_bias = _merged_linear_bias(linear_layers)
+        if merged_bias is not None:
+            merged.bias = merged_bias
+        elif "bias" in merged:
+            merged.__delattr__("bias")
+
+        return merged
+
+
+def merge_quantized_linears(*linear_layers: QuantizedLinear) -> MergedQuantizedLinear:
+    """Create a :class:`MergedQuantizedLinear` from existing quantized linears."""
+    return MergedQuantizedLinear.from_quantized_linears(*linear_layers)
+
+
 class QQLinear(Module):
     """Quantizes the input and applies an affine transformation using quantized weights.
 
@@ -424,3 +589,28 @@ class QQLinear(Module):
         ql.train(linear_layer.training)
 
         return ql
+
+
+def _quantized_input_dims(weight: mx.array, bits: int) -> int:
+    return (weight.shape[1] * 32) // bits
+
+
+def _cumulative_sums(values):
+    total = 0
+    for value in values:
+        total += value
+        yield total
+
+
+def _merged_linear_bias(linear_layers):
+    ref_bias = next((layer["bias"] for layer in linear_layers if "bias" in layer), None)
+    if ref_bias is None:
+        return None
+
+    merged_bias = []
+    for layer in linear_layers:
+        if "bias" in layer:
+            merged_bias.append(layer["bias"])
+        else:
+            merged_bias.append(mx.zeros((layer.weight.shape[0],), dtype=ref_bias.dtype))
+    return mx.concatenate(merged_bias, axis=0)

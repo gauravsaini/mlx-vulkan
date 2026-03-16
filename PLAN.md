@@ -194,6 +194,16 @@ bash scripts/local_amd_profile_compile.sh
       - merged CPU output matches separate CPU outputs exactly when split back into gate/up halves
       The remaining blocker is integration, not promise: `mlx_lm` is not vendored in this repo, so realizing this win cleanly needs either a tracked integration point for merged quantized projections or a vendored / upstream `mlx-lm` patch rather than another Vulkan kernel micro-retune.
       Result: this smaller medium-QMM dispatch is worth keeping as the new baseline, but the remaining wall still looks like the tied `lm_head` plus the residual decoder QMM / attention front-end family rather than another large dispatch-shape change.
+- [~] **A tracked merged-quantized-projection surface now exists in `mlx.nn`, and it reproduces the RX 580 merged-MLP win when consumed from Ubuntu-only probes**:
+      `mlx/nn/layers/quantized.py` now exposes `MergedQuantizedLinear` plus `merge_quantized_linears(...)`, which concatenate compatible `QuantizedLinear` packed weights / scales / quant-biases once, run one `mx.quantized_matmul(...)`, and split the result back into per-projection outputs.
+      The new focused unit coverage in `python/tests/test_quantized.py` keeps the semantic contract narrow and explicit:
+      - merged vs separate outputs match on CPU for mixed bias/no-bias projections,
+      - mismatched quantization configs are rejected.
+      Real Ubuntu RX 580 validation through the local scripts now shows the tracked surface preserves the earlier Qwen3.5 merged-MLP speedup:
+      - focused MLP probe: `original_mlp` about `0.01681s`, `merged_mlp` about `0.01251s`
+      - strict end-to-end `generate_step`, `max_tokens=16`, API-backed monkeypatch: about `18.29s`, `0.875 tok/s`, first yield about `3.04s`
+      - matching current unmerged baseline in the same Ubuntu session: about `23.22s`, `0.689 tok/s`, first yield about `3.78s`
+      Caveat: merged GPU outputs still differ noticeably from the separate GPU path (`max_abs_diff` about `0.716`, `mean_abs_diff` about `0.0476`) even though the CPU semantic check is exact and the end-to-end decode benchmark improves materially. So the next work is no longer “does this help?”; it is deciding where to integrate this tracked surface into the real Qwen path cleanly and whether any tighter numerical guardrails are needed there.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
       It now also covers the real Qwen `q_proj`-class shape `1 x 2048 -> 4096`, and that stricter shape passes on the RX 580 as well.

@@ -89,8 +89,10 @@ from mlx.nn.layers.pooling import (
 from mlx.nn.layers.positional_encoding import ALiBi, RoPE, SinusoidalPositionalEncoding
 from mlx.nn.layers.quantized import (
     QQLinear,
+    MergedQuantizedLinear,
     QuantizedEmbedding,
     QuantizedLinear,
+    merge_quantized_linears,
     quantize,
 )
 from mlx.nn.layers.recurrent import GRU, LSTM, RNN

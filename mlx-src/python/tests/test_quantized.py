@@ -4,6 +4,7 @@ import unittest
 from itertools import product
 
 import mlx.core as mx
+import mlx.nn as nn
 import mlx_tests
 
 
@@ -1277,6 +1278,89 @@ class TestQuantized(mlx_tests.MLXTestCase):
         w_hat = mx.dequantize(w_q, scales, mode=mode)
         expected = mx.dequantize(w_q, mx.contiguous(scales), mode=mode)
         self.assertTrue(mx.allclose(w_hat, expected))
+
+    def test_merged_quantized_linear_matches_separate_layers(self):
+        prev_device = mx.default_device()
+        mx.set_default_device(mx.cpu)
+        try:
+            key = mx.random.key(0)
+            k1, k2, k3, k4, k5 = mx.random.split(key, 5)
+            dtype = mx.float32
+
+            x = mx.random.normal(shape=(2, 3, 128), key=k1).astype(dtype)
+
+            layers = [
+                nn.QuantizedLinear.from_linear(
+                    nn.Linear(128, 64, bias=False),
+                    group_size=64,
+                    bits=4,
+                ),
+                nn.QuantizedLinear.from_linear(
+                    nn.Linear(128, 96, bias=True),
+                    group_size=64,
+                    bits=4,
+                ),
+                nn.QuantizedLinear.from_linear(
+                    nn.Linear(128, 32, bias=False),
+                    group_size=64,
+                    bits=4,
+                ),
+            ]
+            dense_weights = [
+                mx.random.normal(shape=(64, 128), key=k2).astype(dtype),
+                mx.random.normal(shape=(96, 128), key=k3).astype(dtype),
+                mx.random.normal(shape=(32, 128), key=k4).astype(dtype),
+            ]
+            dense_bias = mx.random.normal(shape=(96,), key=k5).astype(dtype)
+
+            q0_weight, q0_scales, q0_biases = mx.quantize(dense_weights[0], 64, 4)
+            q1_weight, q1_scales, q1_biases = mx.quantize(dense_weights[1], 64, 4)
+            q2_weight, q2_scales, q2_biases = mx.quantize(dense_weights[2], 64, 4)
+
+            layers[0].weight, layers[0].scales, layers[0].biases = (
+                q0_weight,
+                q0_scales,
+                q0_biases,
+            )
+            layers[1].weight, layers[1].scales, layers[1].biases = (
+                q1_weight,
+                q1_scales,
+                q1_biases,
+            )
+            layers[2].weight, layers[2].scales, layers[2].biases = (
+                q2_weight,
+                q2_scales,
+                q2_biases,
+            )
+            layers[1].bias = dense_bias
+
+            merged = nn.merge_quantized_linears(*layers)
+
+            expected_parts = tuple(layer(x) for layer in layers)
+            actual_parts = merged(x)
+
+            self.assertEqual(len(actual_parts), len(expected_parts))
+            for actual, expected in zip(actual_parts, expected_parts):
+                self.assertEqual(actual.shape, expected.shape)
+                self.assertTrue(mx.allclose(actual, expected, atol=1e-5, rtol=1e-5))
+
+            expected_concat = mx.concatenate(expected_parts, axis=-1)
+            actual_concat = merged(x, split=False)
+            self.assertEqual(actual_concat.shape, expected_concat.shape)
+            self.assertTrue(
+                mx.allclose(actual_concat, expected_concat, atol=1e-5, rtol=1e-5)
+            )
+
+            self.assertEqual(merged.input_dims, 128)
+            self.assertEqual(merged.output_dims, (64, 96, 32))
+        finally:
+            mx.set_default_device(prev_device)
+
+    def test_merged_quantized_linear_rejects_mismatched_configs(self):
+        q0 = nn.QuantizedLinear(128, 64, group_size=64, bits=4)
+        q1 = nn.QuantizedLinear(128, 32, group_size=64, bits=8)
+        with self.assertRaises(ValueError):
+            nn.merge_quantized_linears(q0, q1)
 
 
 if __name__ == "__main__":
