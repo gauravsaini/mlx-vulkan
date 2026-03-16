@@ -4,6 +4,15 @@
 
 ### pivot (2026-03-15) — Implementing Vulkan `Compile` (Graph Compilation)
 
+- **2026-03-16**: Kept a narrower medium decoder QMM retune after validating it against the real RX 580 end-to-end benchmark.
+    - Re-tuned `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` from 8 decoder outputs per workgroup down to 4, with the matching dispatch update in `mlx/backend/vulkan/primitives.cpp`.
+    - The shape-level RX 580 sweep suggested the narrower dispatch helped the repeated `2048 -> 4096`, `2048 -> 6144`, and `6144 -> 2048` decoder projections enough to justify a full benchmark pass.
+    - AMD validation through the local scripts shows:
+      - the strict quantized smoke still passes, including the real `1 x 2048 -> 4096` decoder projection regression,
+      - strict warmed 16-token `generate_step` lands at about `23.21s` / `0.689 tok/s`, first yield about `3.85s`,
+      - and a clean follow-up rerun lands at about `23.47s` / `0.682 tok/s`, first yield about `3.89s`.
+      Those both beat the prior kept baseline of about `23.56s` / `0.679 tok/s`, first yield about `3.83s`.
+    - Result: the narrower medium-QMM dispatch is a small but real win and becomes the new RX 580 baseline. The next remaining decode wall is still the tied `lm_head` plus the residual medium decoder / attention front-end path rather than another broad workgroup-shape rewrite.
 - **2026-03-16**: Re-profiled the post-`4b378b9` RX 580 baseline and rejected a subgroup-reduction rewrite for the medium decoder kernel.
     - Re-ran the strict warmed 16-token `generate_step` benchmark from the pushed medium-decoder baseline and confirmed the new steady-state band is real:
       - `23.13s`, `0.692 tok/s`, first yield `3.82s`

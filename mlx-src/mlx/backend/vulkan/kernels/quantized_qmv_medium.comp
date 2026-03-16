@@ -23,7 +23,7 @@ layout(push_constant) uniform Params {
 } params;
 
 const uint WORKGROUP_SIZE = 64u;
-const uint OUTPUTS_PER_GROUP = 8u;
+const uint OUTPUTS_PER_GROUP = 4u;
 const uint MAX_VALUES_PER_THREAD = 16u;
 
 shared float partial_sums[OUTPUTS_PER_GROUP][WORKGROUP_SIZE];
