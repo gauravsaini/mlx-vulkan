@@ -80,6 +80,9 @@ def run_case(
     )
     mx.eval(y)
 
+    if y.dtype != x.dtype:
+        raise AssertionError(f"{name} dtype mismatch: expected {x.dtype}, got {y.dtype}")
+
     ref = x @ (mx.swapaxes(w_dq, -1, -2) if transpose else w_dq)
     mx.eval(ref)
 
@@ -164,6 +167,23 @@ def main():
 
         run_case(
             mx,
+            "qmm_affine_transpose_5bit_decoder_q_proj_float16",
+            (
+                np.arange(1, 1 + 2048, dtype=np.float32).reshape(1, 2048) / 64.0
+            ).astype(np.float16),
+            (
+                np.arange(1, 1 + 4096 * 2048, dtype=np.float32).reshape(4096, 2048)
+                / 256.0
+            ).astype(np.float16),
+            transpose=True,
+            group_size=64,
+            bits=5,
+            atol=1.5e-1,
+            rtol=1.5e-1,
+        )
+
+        run_case(
+            mx,
             "qmm_affine_transpose_5bit_decoder_square_float16",
             (
                 np.arange(1, 1 + 2048, dtype=np.float32).reshape(1, 2048) / 64.0
@@ -201,6 +221,20 @@ def main():
             "qmm_affine_transpose_5bit_large_vocab_bfloat16",
             (np.arange(1, 1 + 256, dtype=np.float32).reshape(1, 256) / 64.0),
             (np.arange(1, 1 + 8192 * 256, dtype=np.float32).reshape(8192, 256) / 256.0),
+            transpose=True,
+            group_size=64,
+            bits=5,
+            atol=1.5e-1,
+            rtol=1.5e-1,
+            x_dtype=mx.bfloat16,
+            w_dtype=mx.bfloat16,
+        )
+
+        run_case(
+            mx,
+            "qmm_affine_transpose_5bit_large_vocab_odd_bfloat16",
+            (np.arange(1, 1 + 256, dtype=np.float32).reshape(1, 256) / 64.0),
+            (np.arange(1, 1 + 8193 * 256, dtype=np.float32).reshape(8193, 256) / 256.0),
             transpose=True,
             group_size=64,
             bits=5,

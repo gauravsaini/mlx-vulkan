@@ -39,6 +39,15 @@
       - strict warmed `generate_step`, `max_tokens=16` regressed to about `23.75s` / `0.674 tok/s`, first yield about `3.76s`,
       - and the follow-up rerun regressed to about `23.81s` / `0.672 tok/s`, first yield about `3.80s`.
       That experiment was reverted and not kept.
+    - Also tested a wider medium-decoder quantized kernel:
+      - added a `quantized_qmv_medium_wide` variant to reuse the same activation row across 16 decoder outputs per workgroup for the real `2048 -> 4096/6144` Qwen shapes,
+      - verified the wider gate did fire on the RX 580 layer-3 decode profile,
+      - but the real benchmark bar collapsed to about `29.57s` / `0.541 tok/s`, first yield about `8.20s`.
+      That experiment was reverted and not kept.
+    - Also uncovered a local correctness/perf pitfall while testing direct packed-half output for `quantized_qmv` and `quantized_qmv_medium`:
+      - the first packed-store attempt raced on shared 32-bit words,
+      - and even after repairing the packed-store logic, the real decoder benchmark still failed the earlier baseline.
+      The kept state restores the prior float32 output bridge for those kernels, adds a stricter `1 x 2048 -> 4096` affine quantized smoke in `tests/vulkan/test_quantized_gpu.py`, and returns the RX 580 to a clean strict benchmark at about `23.56s` / `0.679 tok/s`, first yield about `3.83s`.
     - Result: the next steady-state decode target has shifted again. It is no longer the medium-kernel reduction tree; it is now the tied `lm_head` plus the attention-layer front-end (`q_proj` / `queries_split`) and the remaining per-layer QMM family.
 - **2026-03-16**: Specialized the medium decoder Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and pushed RX 580 decode forward again.
     - Kept the existing medium decoder direct-QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the actual repeated decoder format:

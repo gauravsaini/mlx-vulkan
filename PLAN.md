@@ -175,9 +175,12 @@ bash scripts/local_amd_profile_compile.sh
       - `queries_split` dropped from about `0.00388s` to about `0.00030s`
       - the first-pass profile also lowered `q_proj` to about `0.00417s`
       but two clean strict 16-token runs regressed to about `23.75s`, `0.674 tok/s`, first yield `3.76s` and about `23.81s`, `0.672 tok/s`, first yield `3.80s`, so the change was explicitly reverted.
+      Another medium-decoder follow-up also failed the same bar. A new `quantized_qmv_medium_wide` kernel widened the hot `5-bit`, `group_size=64` decoder path from 8 to 16 outputs per workgroup and did fire on the real `2048 -> 4096/6144` Qwen projections, but the strict 16-token RX 580 benchmark regressed badly to about `29.57s`, `0.541 tok/s`, first yield `8.20s`, so that wider dispatch was explicitly reverted as well.
+      While chasing that, a local direct packed-half / bf16 output experiment for `quantized_qmv{,_medium}` also surfaced as unsafe for this path: the first implementation had a word-sharing race, and even after fixing the packed-store logic the real decoder benchmark was still worse than the prior float32-bridge baseline. The kept state restores the earlier float32 bridge for those kernels, keeps the stricter `1 x 2048 -> 4096` regression in `tests/vulkan/test_quantized_gpu.py`, and returns the RX 580 to a clean strict baseline at about `23.56s`, `0.679 tok/s`, first yield `3.83s`.
       Result: the next likely win is no longer another medium-kernel reduction tweak. It is either another tied-`lm_head` optimization or a reduction in attention-layer front-end overhead around `q_proj` / `queries_split` and the remaining per-layer QMM family.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
+      It now also covers the real Qwen `q_proj`-class shape `1 x 2048 -> 4096`, and that stricter shape passes on the RX 580 as well.
 - [x] **A persistent dequant-buffer cache for medium transpose QMMs was tested on the RX 580 and rejected**:
       a bounded cache of dequantized float32 `[K, N]` affine weights was prototyped behind `MLX_VULKAN_QMM_DQ_CACHE_MB` and benchmarked on real hardware.
       It was not kept because it made the live decode path dramatically worse:
