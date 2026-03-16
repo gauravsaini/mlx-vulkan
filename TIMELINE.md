@@ -31,6 +31,14 @@
       - but isolated timings stayed effectively flat at about `0.597s` for `lm_head_full` and about `0.538s` for `lm_head_last`,
       - and the strict warmed 16-token benchmark stayed flat at about `23.16s` / `0.691 tok/s`, first yield about `3.81s`.
       That experiment was reverted and not kept.
+    - Also tested a split-view RMSNorm path aimed at the attention front-end:
+      - added a dedicated `rmsnorm_strided` shader to consume last-axis-contiguous split views directly instead of materializing them,
+      - validated it numerically on the RX 580 against a split-view numpy reference,
+      - and confirmed it improved the focused layer-3 attention decode profile, with `queries_split` dropping from about `0.00388s` to about `0.00030s`.
+      But the real benchmark bar did not hold:
+      - strict warmed `generate_step`, `max_tokens=16` regressed to about `23.75s` / `0.674 tok/s`, first yield about `3.76s`,
+      - and the follow-up rerun regressed to about `23.81s` / `0.672 tok/s`, first yield about `3.80s`.
+      That experiment was reverted and not kept.
     - Result: the next steady-state decode target has shifted again. It is no longer the medium-kernel reduction tree; it is now the tied `lm_head` plus the attention-layer front-end (`q_proj` / `queries_split`) and the remaining per-layer QMM family.
 - **2026-03-16**: Specialized the medium decoder Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and pushed RX 580 decode forward again.
     - Kept the existing medium decoder direct-QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the actual repeated decoder format:

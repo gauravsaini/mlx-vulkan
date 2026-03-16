@@ -171,6 +171,10 @@ bash scripts/local_amd_profile_compile.sh
       - isolated `lm_head_last` stayed about `0.538s`
       - strict warmed `generate_step`, `max_tokens=16` stayed flat at about `23.16s`, `0.691 tok/s`, first yield `3.81s`
       so that last-token-only workgroup retune was explicitly reverted as well.
+      A direct split-view RMSNorm experiment also failed the same bar. A dedicated `rmsnorm_strided` shader correctly handled last-axis-contiguous split views and made the attention-layer decode micro-profile look better:
+      - `queries_split` dropped from about `0.00388s` to about `0.00030s`
+      - the first-pass profile also lowered `q_proj` to about `0.00417s`
+      but two clean strict 16-token runs regressed to about `23.75s`, `0.674 tok/s`, first yield `3.76s` and about `23.81s`, `0.672 tok/s`, first yield `3.80s`, so the change was explicitly reverted.
       Result: the next likely win is no longer another medium-kernel reduction tweak. It is either another tied-`lm_head` optimization or a reduction in attention-layer front-end overhead around `q_proj` / `queries_split` and the remaining per-layer QMM family.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
