@@ -27,6 +27,24 @@
         - first yield about `3.78s`
     - Also re-confirmed the current numerical caveat on the RX 580: the merged GPU path still differs noticeably from the separate GPU path (`max_abs_diff` about `0.716`, `mean_abs_diff` about `0.0476`) even though the CPU semantic check is exact and the end-to-end decode benchmark improves materially.
     - Result: the next bottleneck is no longer “find a decode optimization that moves the needle.” The tracked merged-projection surface already does that. The next task is integrating that surface cleanly into the real Qwen / `mlx-lm` path and deciding how much additional numerical guardrailing that integration needs.
+- **2026-03-16**: Added a tracked model-rewrite helper for quantized SwiGLU MLPs and validated it on the Ubuntu RX 580.
+    - Added `QuantizedSwiGLU` plus `merge_quantized_swiglu_mlps(model, class_predicate=None)` in `mlx-src/python/mlx/nn/layers/quantized.py`, and exported both from `mlx-src/python/mlx/nn/layers/__init__.py`.
+    - This builds on the lower-level `MergedQuantizedLinear` surface and gives callers a direct way to replace compatible quantized `gate_proj` / `up_proj` / `down_proj` blocks in-place through tracked MLX code rather than carrying a Qwen-specific packed-weight concatenation monkeypatch.
+    - Added focused CPU semantic / rewrite coverage in `mlx-src/python/tests/test_quantized.py`:
+      - `QuantizedSwiGLU.from_separate_projections(...)` matches the separate CPU path,
+      - `merge_quantized_swiglu_mlps(...)` rewrites matching modules in-place.
+    - The first Ubuntu helper-test pass exposed two useful issues:
+      - the toy `down_proj` shapes in the new tests were invalid for `group_size=64`,
+      - and the initial nested rewrite test shape was too ambitious for a unit guard.
+      Both were fixed before the final RX 580 rerun.
+    - Updated the Ubuntu-only benchmark/probe scripts so they now consume the tracked helper path:
+      - `local_amd_probe_qwen_mlp_merge.py` now uses `QuantizedSwiGLU.from_separate_projections(...)`
+      - `local_amd_benchmark_qwen_mlp_monkeypatch.py` now applies `nn.merge_quantized_swiglu_mlps(model)` after load instead of overriding the Qwen MLP `__call__` by hand
+    - RX 580 validation through the local scripts shows:
+      - focused helper checks pass under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`
+      - helper-backed strict 16-token `generate_step` run: about `18.71s`, `0.855 tok/s`, first yield about `2.95s`
+      - current unchanged baseline in the same tree: about `23.22s`, `0.689 tok/s`, first yield about `3.77s`
+    - Result: the merged-MLP speedup is no longer trapped behind an ad hoc Qwen monkeypatch. This repo now contains a tracked integration surface that external callers can apply directly. The remaining decision is whether to wire that into `mlx-lm` proper next, and what numerical guardrails should accompany that step.
 
 - **2026-03-16**: Kept a narrower medium decoder QMM retune after validating it against the real RX 580 end-to-end benchmark.
     - Re-tuned `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` from 8 decoder outputs per workgroup down to 4, with the matching dispatch update in `mlx/backend/vulkan/primitives.cpp`.

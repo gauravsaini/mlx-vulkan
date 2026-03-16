@@ -90,9 +90,11 @@ from mlx.nn.layers.positional_encoding import ALiBi, RoPE, SinusoidalPositionalE
 from mlx.nn.layers.quantized import (
     QQLinear,
     MergedQuantizedLinear,
+    QuantizedSwiGLU,
     QuantizedEmbedding,
     QuantizedLinear,
     merge_quantized_linears,
+    merge_quantized_swiglu_mlps,
     quantize,
 )
 from mlx.nn.layers.recurrent import GRU, LSTM, RNN

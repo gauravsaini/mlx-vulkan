@@ -1362,6 +1362,102 @@ class TestQuantized(mlx_tests.MLXTestCase):
         with self.assertRaises(ValueError):
             nn.merge_quantized_linears(q0, q1)
 
+    def test_quantized_swiglu_matches_separate_projections(self):
+        prev_device = mx.default_device()
+        mx.set_default_device(mx.cpu)
+        try:
+            key = mx.random.key(0)
+            k1, k2, k3, k4 = mx.random.split(key, 4)
+            hidden_dims = 128
+            x = mx.random.normal(shape=(2, 3, 128), key=k1)
+
+            gate_proj = nn.QuantizedLinear.from_linear(
+                nn.Linear(128, hidden_dims, bias=False),
+                group_size=64,
+                bits=4,
+            )
+            up_proj = nn.QuantizedLinear.from_linear(
+                nn.Linear(128, hidden_dims, bias=False),
+                group_size=64,
+                bits=4,
+            )
+            down_proj = nn.QuantizedLinear.from_linear(
+                nn.Linear(hidden_dims, 128, bias=False),
+                group_size=64,
+                bits=4,
+            )
+
+            gate_w, gate_s, gate_b = mx.quantize(
+                mx.random.normal((hidden_dims, 128), key=k2), 64, 4
+            )
+            up_w, up_s, up_b = mx.quantize(
+                mx.random.normal((hidden_dims, 128), key=k3), 64, 4
+            )
+            down_w, down_s, down_b = mx.quantize(
+                mx.random.normal((128, hidden_dims), key=k4), 64, 4
+            )
+            gate_proj.weight, gate_proj.scales, gate_proj.biases = gate_w, gate_s, gate_b
+            up_proj.weight, up_proj.scales, up_proj.biases = up_w, up_s, up_b
+            down_proj.weight, down_proj.scales, down_proj.biases = (
+                down_w,
+                down_s,
+                down_b,
+            )
+
+            merged = nn.QuantizedSwiGLU.from_separate_projections(
+                gate_proj,
+                up_proj,
+                down_proj,
+            )
+            expected = down_proj(nn.silu(gate_proj(x)) * up_proj(x))
+            actual = merged(x)
+            self.assertEqual(actual.shape, expected.shape)
+            self.assertTrue(mx.allclose(actual, expected, atol=1e-5, rtol=1e-5))
+        finally:
+            mx.set_default_device(prev_device)
+
+    def test_merge_quantized_swiglu_mlps_rewrites_matching_modules(self):
+        prev_device = mx.default_device()
+        mx.set_default_device(mx.cpu)
+        try:
+            class ToyMLP(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    hidden_dims = 128
+                    self.gate_proj = nn.QuantizedLinear.from_linear(
+                        nn.Linear(128, hidden_dims, bias=False),
+                        group_size=64,
+                        bits=4,
+                    )
+                    self.up_proj = nn.QuantizedLinear.from_linear(
+                        nn.Linear(128, hidden_dims, bias=False),
+                        group_size=64,
+                        bits=4,
+                    )
+                    self.down_proj = nn.QuantizedLinear.from_linear(
+                        nn.Linear(hidden_dims, 128, bias=False),
+                        group_size=64,
+                        bits=4,
+                    )
+
+                def __call__(self, x):
+                    return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
+
+            class ToyModel(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.mlp = ToyMLP()
+                    self.proj = nn.QuantizedLinear(128, 64, group_size=64, bits=4)
+
+                def __call__(self, x):
+                    return self.proj(self.mlp(x))
+
+            model = ToyModel()
+            nn.merge_quantized_swiglu_mlps(model)
+            self.assertIsInstance(model.mlp, nn.QuantizedSwiGLU)
+        finally:
+            mx.set_default_device(prev_device)
+
 
 if __name__ == "__main__":
     mlx_tests.MLXTestRunner()

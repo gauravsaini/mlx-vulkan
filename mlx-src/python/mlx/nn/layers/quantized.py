@@ -4,8 +4,9 @@ import math
 from typing import Callable, Optional, Sequence, Union
 
 import mlx.core as mx
+from mlx.nn.layers.activations import silu
 from mlx.nn.layers.base import Module
-from mlx.utils import tree_map_with_path
+from mlx.utils import tree_map_with_path, tree_unflatten
 
 
 def _defaults_for_mode(mode, group_size, bits):
@@ -467,6 +468,66 @@ def merge_quantized_linears(*linear_layers: QuantizedLinear) -> MergedQuantizedL
     return MergedQuantizedLinear.from_quantized_linears(*linear_layers)
 
 
+class QuantizedSwiGLU(Module):
+    """Merged SwiGLU MLP using one quantized gate/up projection."""
+
+    def __init__(self, gate_up_proj: MergedQuantizedLinear, down_proj: Module):
+        super().__init__()
+        self.gate_up_proj = gate_up_proj
+        self.down_proj = down_proj
+
+    def __call__(self, x):
+        gate, up = self.gate_up_proj(x)
+        return self.down_proj(silu(gate) * up)
+
+    @classmethod
+    def from_separate_projections(
+        cls,
+        gate_proj: QuantizedLinear,
+        up_proj: QuantizedLinear,
+        down_proj: Module,
+    ):
+        return cls(
+            merge_quantized_linears(gate_proj, up_proj),
+            down_proj,
+        )
+
+
+def merge_quantized_swiglu_mlps(
+    model: Module,
+    class_predicate: Optional[Callable[[str, Module], bool]] = None,
+) -> Module:
+    """Replace compatible quantized SwiGLU MLP blocks with merged variants.
+
+    By default, this matches modules exposing ``gate_proj``, ``up_proj``, and
+    ``down_proj`` where both gate/up projections are :class:`QuantizedLinear`.
+    """
+
+    class_predicate = class_predicate or _is_mergeable_quantized_swiglu
+
+    updates = {}
+    for path, module in model.named_modules():
+        if not class_predicate(path, module):
+            continue
+        updates[path] = QuantizedSwiGLU.from_separate_projections(
+            module.gate_proj,
+            module.up_proj,
+            module.down_proj,
+        )
+
+    if not updates:
+        return model
+    if "" in updates:
+        if len(updates) != 1:
+            raise ValueError(
+                "Root module replacement cannot be combined with nested replacements."
+            )
+        return updates[""]
+
+    model.update_modules(tree_unflatten(updates))
+    return model
+
+
 class QQLinear(Module):
     """Quantizes the input and applies an affine transformation using quantized weights.
 
@@ -614,3 +675,13 @@ def _merged_linear_bias(linear_layers):
         else:
             merged_bias.append(mx.zeros((layer.weight.shape[0],), dtype=ref_bias.dtype))
     return mx.concatenate(merged_bias, axis=0)
+
+
+def _is_mergeable_quantized_swiglu(_: str, module: Module) -> bool:
+    return (
+        hasattr(module, "gate_proj")
+        and hasattr(module, "up_proj")
+        and hasattr(module, "down_proj")
+        and isinstance(module.gate_proj, QuantizedLinear)
+        and isinstance(module.up_proj, QuantizedLinear)
+    )

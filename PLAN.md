@@ -204,6 +204,14 @@ bash scripts/local_amd_profile_compile.sh
       - strict end-to-end `generate_step`, `max_tokens=16`, API-backed monkeypatch: about `18.29s`, `0.875 tok/s`, first yield about `3.04s`
       - matching current unmerged baseline in the same Ubuntu session: about `23.22s`, `0.689 tok/s`, first yield about `3.78s`
       Caveat: merged GPU outputs still differ noticeably from the separate GPU path (`max_abs_diff` about `0.716`, `mean_abs_diff` about `0.0476`) even though the CPU semantic check is exact and the end-to-end decode benchmark improves materially. So the next work is no longer “does this help?”; it is deciding where to integrate this tracked surface into the real Qwen path cleanly and whether any tighter numerical guardrails are needed there.
+- [~] **That merged-projection surface now has a model-facing SwiGLU integration helper in tracked MLX code**:
+      `mlx/nn/layers/quantized.py` now also exposes `QuantizedSwiGLU` plus `merge_quantized_swiglu_mlps(model, class_predicate=None)`, which rewrite compatible quantized `gate_proj` / `up_proj` / `down_proj` blocks in-place using `Module.update_modules(...)`.
+      This means external callers no longer need to hand-roll Qwen-specific packed-weight concatenation or `__call__` monkeypatches just to reach the RX 580 fast path.
+      Ubuntu-only validation through the local scripts shows:
+      - focused helper coverage passes under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`,
+      - the helper-backed strict 16-token RX 580 run lands at about `18.71s`, `0.855 tok/s`, first yield about `2.95s`,
+      - the current unchanged baseline from the same tree remains about `23.22s`, `0.689 tok/s`, first yield about `3.77s`.
+      So the integration surface is now strong enough to be consumed directly from outside this repo. The next real question is whether to push this through an upstream / vendored `mlx-lm` hook or to add stricter numerical guardrails before doing that.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
       It now also covers the real Qwen `q_proj`-class shape `1 x 2048 -> 4096`, and that stricter shape passes on the RX 580 as well.
