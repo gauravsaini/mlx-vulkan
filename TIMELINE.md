@@ -25,6 +25,12 @@
       - `o_proj` about `0.00202s`
       while the native SDPA pieces are all sub-millisecond.
     - Also tested a subgroup-based reduction path in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the RX 580's 64-wide wavefront. It improved the medium-QMM micro-profile, but two clean end-to-end runs stayed effectively flat in the same `~23.13-23.17s` band, so the change was reverted and not kept.
+    - Also tested a tied-logits-only follow-up: a separate fixed-64-workgroup `quantized_qmv_last` path gated only for `M == 1` / `lm_head_last`.
+      - the strict quantized smoke still passed,
+      - the new `direct_qmv_last=1` gate fired on the real `K=2048`, `N=248320`, `M=1` last-token path,
+      - but isolated timings stayed effectively flat at about `0.597s` for `lm_head_full` and about `0.538s` for `lm_head_last`,
+      - and the strict warmed 16-token benchmark stayed flat at about `23.16s` / `0.691 tok/s`, first yield about `3.81s`.
+      That experiment was reverted and not kept.
     - Result: the next steady-state decode target has shifted again. It is no longer the medium-kernel reduction tree; it is now the tied `lm_head` plus the attention-layer front-end (`q_proj` / `queries_split`) and the remaining per-layer QMM family.
 - **2026-03-16**: Specialized the medium decoder Vulkan kernel for the real Qwen `5-bit`, `group_size=64` path and pushed RX 580 decode forward again.
     - Kept the existing medium decoder direct-QMM dispatch path, but optimized the hot inner loop in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` for the actual repeated decoder format:

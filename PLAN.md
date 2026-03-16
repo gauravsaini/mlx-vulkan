@@ -166,6 +166,11 @@ bash scripts/local_amd_profile_compile.sh
       - `o_proj` about `0.00202s`
       while the native SDPA pieces are each sub-millisecond.
       A follow-up subgroup-reduction experiment in `quantized_qmv_medium.comp` improved the medium-QMM layer micro-profile slightly, but two clean end-to-end runs stayed flat in the same `~23.13-23.17s` band, so it was explicitly reverted.
+      A follow-up tied-logits experiment also proved narrower than useful: a dedicated `M == 1` / fixed-64-workgroup `quantized_qmv_last` shader compiled and passed the strict quantized smoke, and the new `direct_qmv_last=1` gate fired on the real `lm_head_last` path, but:
+      - isolated `lm_head_full` stayed about `0.597s`
+      - isolated `lm_head_last` stayed about `0.538s`
+      - strict warmed `generate_step`, `max_tokens=16` stayed flat at about `23.16s`, `0.691 tok/s`, first yield `3.81s`
+      so that last-token-only workgroup retune was explicitly reverted as well.
       Result: the next likely win is no longer another medium-kernel reduction tweak. It is either another tied-`lm_head` optimization or a reduction in attention-layer front-end overhead around `q_proj` / `queries_split` and the remaining per-layer QMM family.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
