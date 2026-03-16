@@ -45,6 +45,15 @@
       - helper-backed strict 16-token `generate_step` run: about `18.71s`, `0.855 tok/s`, first yield about `2.95s`
       - current unchanged baseline in the same tree: about `23.22s`, `0.689 tok/s`, first yield about `3.77s`
     - Result: the merged-MLP speedup is no longer trapped behind an ad hoc Qwen monkeypatch. This repo now contains a tracked integration surface that external callers can apply directly. The remaining decision is whether to wire that into `mlx-lm` proper next, and what numerical guardrails should accompany that step.
+- **2026-03-16**: Re-profiled the RX 580 decode stack with merged SwiGLU enabled and confirmed the next wall is tied logits again.
+    - Added a fresh Ubuntu-only decode-layer profiler around the tracked helper path and reran a one-token decode after prompt prefill.
+    - The merged-helper layer profile now shows:
+      - linear layers total about `0.401s`
+      - attention layers total about `0.097s`
+      - final norm about `0.0007s`
+      - tied `lm_head` about `0.512s`
+    - The hottest remaining decoder layers are now in a much tighter `~0.020-0.026s` band, which is a strong change from the pre-merge profile. In other words, the helper did what it was supposed to do: it made the repeated decoder layers cheap enough that the tied logits path is again the single clearest target.
+    - Result: the next backend optimization pass should shift back to `lm_head_tied` rather than more MLP or attention work.
 
 - **2026-03-16**: Kept a narrower medium decoder QMM retune after validating it against the real RX 580 end-to-end benchmark.
     - Re-tuned `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` from 8 decoder outputs per workgroup down to 4, with the matching dispatch update in `mlx/backend/vulkan/primitives.cpp`.

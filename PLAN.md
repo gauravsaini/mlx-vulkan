@@ -212,6 +212,14 @@ bash scripts/local_amd_profile_compile.sh
       - the helper-backed strict 16-token RX 580 run lands at about `18.71s`, `0.855 tok/s`, first yield about `2.95s`,
       - the current unchanged baseline from the same tree remains about `23.22s`, `0.689 tok/s`, first yield about `3.77s`.
       So the integration surface is now strong enough to be consumed directly from outside this repo. The next real question is whether to push this through an upstream / vendored `mlx-lm` hook or to add stricter numerical guardrails before doing that.
+- [~] **With merged SwiGLU enabled, the RX 580 decode bottleneck has clearly shifted back to tied logits**:
+      a fresh Ubuntu-only one-token decode-layer profile using the tracked `merge_quantized_swiglu_mlps(...)` helper shows:
+      - linear layers total about `0.401s`
+      - attention layers total about `0.097s`
+      - final norm about `0.0007s`
+      - tied `lm_head` about `0.512s`
+      The per-layer decode stack is now materially flatter than the unmerged baseline, but `lm_head_tied` is again the single biggest block by a clear margin.
+      Result: the next backend performance target should move back to the tied-logits path rather than more MLP or attention work.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
       It now also covers the real Qwen `q_proj`-class shape `1 x 2048 -> 4096`, and that stricter shape passes on the RX 580 as well.
