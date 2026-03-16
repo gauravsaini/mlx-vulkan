@@ -13,6 +13,23 @@
       - and a clean follow-up rerun lands at about `23.47s` / `0.682 tok/s`, first yield about `3.89s`.
       Those both beat the prior kept baseline of about `23.56s` / `0.679 tok/s`, first yield about `3.83s`.
     - Result: the narrower medium-QMM dispatch is a small but real win and becomes the new RX 580 baseline. The next remaining decode wall is still the tied `lm_head` plus the residual medium decoder / attention front-end path rather than another broad workgroup-shape rewrite.
+- **2026-03-16**: Found a much larger decode win via a merged Qwen3.5 MLP path, but it currently lives outside the tracked repo surface.
+    - Ran Ubuntu-only monkeypatch probes that replace the Qwen3.5 `MLP` pattern
+      `down_proj(swiglu(gate_proj(x), up_proj(x)))`
+      with a single merged quantized matmul over concatenated `gate_proj` and `up_proj` weights/scales/biases, followed by a split before `swiglu`.
+    - The isolated RX 580 MLP block improved materially:
+      - original MLP about `0.01659s`
+      - merged MLP about `0.01294s`
+    - The strict warmed 16-token decode benchmark improved far more than any recent Vulkan-kernel micro-retune:
+      - merged-MLP monkeypatch run about `18.55s` / `0.863 tok/s`, first yield about `3.04s`
+      - compared with the current kept Vulkan-only baseline in the `~23.2-23.5s` band
+    - Checked whether this was just a numerically bad fast path:
+      - separate `gate_proj` GPU vs CPU QMM error: max abs diff about `0.1641`, mean abs diff about `0.0160`
+      - separate `up_proj` GPU vs CPU QMM error: max abs diff about `0.1406`, mean abs diff about `0.0135`
+      - merged `12288` GPU vs CPU QMM error: max abs diff about `0.1641`, mean abs diff about `0.0147`
+      - merged CPU QMM output matches the separate CPU gate/up outputs exactly when split back apart
+    - Also tested whether routing the merged `12288` case away from `direct_qmv` and through the existing `medium_qmv` path helped correctness; it did not materially improve the output deltas.
+    - Result: the next meaningful speedup is likely a tracked integration for merged quantized MLP projections, not another backend kernel retune. Because `mlx_lm` is installed externally and not vendored in this workspace, landing that cleanly requires either an upstream / vendored `mlx-lm` change or a new tracked integration point for merged quantized projections.
 - **2026-03-16**: Rejected a race-free direct medium-QMM output path after it failed the real decoder bar.
     - Added a medium-kernel-only direct-write experiment in `mlx/backend/vulkan/kernels/quantized_qmv_medium.comp` and `mlx/backend/vulkan/primitives.cpp` that removed the float32 temp-and-cast bridge for `float16` / `bfloat16` outputs by packing adjacent reduced outputs from a single writer lane, avoiding the earlier word-sharing race.
     - The strict quantized smoke still passed on the RX 580.

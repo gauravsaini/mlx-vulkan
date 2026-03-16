@@ -187,6 +187,12 @@ bash scripts/local_amd_profile_compile.sh
       - `2048 -> 6144` average about `0.00573s`
       - `2048 -> 512` average about `0.00089s`
       But the real RX 580 decode benchmark regressed to about `23.73s`, `0.674 tok/s`, first yield `3.86s`, so that direct medium-output path was reverted and not kept.
+      A separate Ubuntu-only monkeypatch experiment found the first materially better decode strategy since the tied-`lm_head` work: merge the Qwen3.5 MLP `gate_proj` and `up_proj` into a single `12288`-wide quantized matmul and split the result afterward. On the RX 580, that dropped the isolated MLP block from about `0.01659s` to about `0.01294s`, and the full strict 16-token decode benchmark from the current `~23.2-23.5s` band down to about `18.55s`, `0.863 tok/s`, first yield `3.04s`. Crucially, the quantized-matmul error profile is not obviously worse than the baseline projections:
+      - `gate_proj` GPU vs CPU: max abs diff about `0.1641`, mean abs diff about `0.0160`
+      - `up_proj` GPU vs CPU: max abs diff about `0.1406`, mean abs diff about `0.0135`
+      - merged `12288` GPU vs CPU: max abs diff about `0.1641`, mean abs diff about `0.0147`
+      - merged CPU output matches separate CPU outputs exactly when split back into gate/up halves
+      The remaining blocker is integration, not promise: `mlx_lm` is not vendored in this repo, so realizing this win cleanly needs either a tracked integration point for merged quantized projections or a vendored / upstream `mlx-lm` patch rather than another Vulkan kernel micro-retune.
       Result: this smaller medium-QMM dispatch is worth keeping as the new baseline, but the remaining wall still looks like the tied `lm_head` plus the residual decoder QMM / attention front-end family rather than another large dispatch-shape change.
 - [x] **The stricter decoder-projection quantized smoke is now using a realistic medium decoder shape**:
       `tests/vulkan/test_quantized_gpu.py` now checks a transpose affine 5-bit case with `1 x 2048` activations against `512 x 2048` packed weights instead of the older `1 x 256` toy shape, and that stricter smoke passes on the RX 580 under `MLX_VULKAN_FAIL_ON_CPU_FALLBACK=1`.
